@@ -9,7 +9,8 @@ This is the idea place to study geometry effects on the power spectrum.
 Only strict requirements are:
 
   - numpy
-  - nbodykit
+  - pmesh
+  - mpsort
 
 ## Installation
 
