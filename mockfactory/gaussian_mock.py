@@ -16,6 +16,7 @@ def _make_array(value, shape, dtype='f8'):
     toret[...] = value
     return toret
 
+
 def _get_los(los):
     # return line of sight 3-vector
     if isinstance(los,str):
@@ -113,9 +114,8 @@ class BaseGaussianMock(BaseClass):
         Cartesian positions sampling the density field.
     """
     @CurrentMPIComm.enable
-    def __init__(self, power, boxsize, nmesh, boxcenter=0., los=None,
-                 seed=None, unitary_amplitude=False, inverted_phase=False,
-                 dtype='f4', mpicomm=None):
+    def __init__(self, power, nmesh=None, boxsize=None, cellsize=None, boxcenter=0., los=None,
+                 seed=None, unitary_amplitude=False, inverted_phase=False, dtype='f4', mpicomm=None):
         r"""
         Initialize :class:`GaussianFieldMesh` and set :attr:`mesh_delta_k`.
 
@@ -124,11 +124,16 @@ class BaseGaussianMock(BaseClass):
         power : callable
             The callable power spectrum function.
 
-        boxsize : float, 3-vector of floats
+        nmesh : int, 3-vector of int, default=None
+            Number of mesh cells per side.
+
+        boxsize : float, 3-vector of floats, default=None
             Box size.
 
-        nmesh : int, 3-vector of int
-            Number of mesh cells per side.
+        cellsize : float, 3-vector of floats, default=None
+            Physical size of mesh cells.
+            If not ``None``, and mesh size ``nmesh`` is not ``None``, used to set ``boxsize`` as ``nmesh * cellsize``.
+            If ``nmesh`` is ``None``, it is set as (the nearest integer(s) to) ``boxsize/cellsize``.
 
         boxcenter : float, 3-vector of floats, default=0.
             Box center.
@@ -163,8 +168,17 @@ class BaseGaussianMock(BaseClass):
         self.attrs['inverted_phase'] = inverted_phase
         self.dtype = np.dtype(dtype)
 
-        if nmesh is None or boxsize is None:
-            raise ValueError('Both nmesh and boxsize must be provided to initialize ParticleMesh')
+        if boxsize is None:
+            if cellsize is not None and nmesh is not None:
+                boxsize = nmesh * cellsize
+            else:
+                raise ValueError('boxsize (or cellsize) must be specified')
+
+        if nmesh is None:
+            if cellsize is not None:
+                nmesh = np.rint(boxsize/cellsize).astype(int)
+            else:
+                raise ValueError('nmesh (or cellsize) must be specified')
 
         self.boxcenter = boxcenter
         self.pm = ParticleMesh(BoxSize=_make_array(boxsize, 3, dtype='f8'), Nmesh=_make_array(nmesh, 3, dtype='i8'), dtype=self.dtype, comm=self.mpicomm)
@@ -359,7 +373,7 @@ class BaseGaussianMock(BaseClass):
 
     def poisson_sample(self, seed=None):
         """
-        Poisson sample density field and set :attr:`positions`.
+        Poisson sample density field and set :attr:`position`.
 
         Parameters
         ----------
@@ -367,14 +381,14 @@ class BaseGaussianMock(BaseClass):
             Random seed.
         """
         import mpsort
-        seed1, seed2 = mpi.bcast_seed(seed=seed, size=2)
+        seed1, seed2 = mpi.bcast_seed(seed=seed, size=2, mpicomm=self.mpicomm)
         # mean number of objects per cell
         cellsize = self.boxsize / self.nmesh
         dv = np.prod(cellsize)
         # number of objects in each cell (per rank, as a RealField)
         cellmean = (self.mesh_delta_r + 1.) * self.nbar*dv
         # create a random state with the input seed
-        rng = MPIRandomState(seed=seed1, mpicomm=self.mpicomm, size=self.mesh_delta_r.size)
+        rng = MPIRandomState(size=self.mesh_delta_r.size, seed=seed1, mpicomm=self.mpicomm)
         # generate poissons. Note that we use ravel/unravel to
         # maintain MPI invariance.
         number_ravel = rng.poisson(lam=cellmean.ravel())
@@ -401,14 +415,14 @@ class BaseGaussianMock(BaseClass):
 
         positions = mpsort.sort(positions, orderby=ids, comm=self.mpicomm)
 
-        rng_shift = MPIRandomState(seed=seed2, mpicomm=self.mpicomm, size=len(positions))
+        rng_shift = MPIRandomState(size=len(positions), seed=seed2, mpicomm=self.mpicomm)
         in_cell_shift = np.array([rng_shift.uniform(0, c) for c in cellsize]).T
 
         positions[...] += in_cell_shift
         positions[...] %= self.boxsize
         positions[...] += self.boxcenter
 
-        self.positions = positions
+        self.position = positions
 
     def to_nbodykit_catalog(self):
         """
@@ -418,6 +432,6 @@ class BaseGaussianMock(BaseClass):
         ----
         :meth:`poisson_sample` must be called first.
         """
-        source = {'Position':self.positions}
+        source = {'Position':self.position}
         from nbodykit.source.catalog import ArrayCatalog
         return ArrayCatalog(source, **self.attrs)

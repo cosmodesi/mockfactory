@@ -1,7 +1,7 @@
 import numpy as np
 from matplotlib import pyplot as plt
 
-from cosmoprimo.fiducial import AbacusSummitBase
+from cosmoprimo.fiducial import DESI
 from nbodykit.lab import FFTPower, UniformCatalog, FKPCatalog, ConvolvedFFTPower
 
 from mockfactory import EulerianLinearMock, LagrangianLinearMock, setup_logging
@@ -15,9 +15,9 @@ ells = (0,)
 redshift = 1.0
 f = 0.8
 bias = 2.0
-nbar = 1e-3
+nbar = 2e-3
 z = 1.
-power = AbacusSummitBase().get_fourier().pk_interpolator().to_1d(z=z)
+power = DESI().get_fourier().pk_interpolator().to_1d(z=z)
 
 
 def kaiser(k):
@@ -72,7 +72,7 @@ def test_eulerian():
     data['Weight'] = mock.readout(data['Position'], field='1+delta', resampler='cic')
 
     fkp = FKPCatalog(data, randoms, nbar='NZ')
-    mesh = fkp.to_mesh(position='Position', fkp_weight='WEIGHT_FKP', comp_weight='Weight', nbar='NZ', BoxSize=1000, Nmesh=128, resampler='tsc', interlaced=True)
+    mesh = fkp.to_mesh(position='Position', fkp_weight='WEIGHT_FKP', comp_weight='Weight', nbar='NZ', BoxSize=1000, Nmesh=128, resampler='cic', interlaced=True)
     result = ConvolvedFFTPower(mesh, poles=ells, dk=0.01)
     plot_power_spectrum(result, model=kaiser)
 
@@ -102,4 +102,4 @@ if __name__ == '__main__':
 
     setup_logging()
     test_eulerian()
-    test_lagrangian()
+    #test_lagrangian()

@@ -96,11 +96,11 @@ def gather_array(data, root=0, mpicomm=None):
     Parameters
     ----------
     data : array_like
-        the data on each rank to gather
+        The data on each rank to gather
     mpicomm : MPI communicator
-        the MPI communicator
+        The MPI communicator
     root : int, or Ellipsis
-        the rank number to gather the data to. If root is Ellipsis or None,
+        The rank number to gather the data to. If root is Ellipsis or None,
         broadcast the result to all ranks.
 
     Returns
@@ -532,7 +532,6 @@ class MPIRandomState(object):
     @CurrentMPIComm.enable
     def __init__(self, size, seed=None, chunksize=100000, mpicomm=None):
         self.mpicomm = mpicomm
-        self.seed = seed
         self.chunksize = chunksize
 
         self.size = size

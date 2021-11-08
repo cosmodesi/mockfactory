@@ -160,7 +160,7 @@ def cartesian_to_sky(position, wrap=True, degree=True):
         Position in cartesian coordinates.
 
     wrap : bool, default=True
-        Whether to wrap RA in :math:`[0, 2 \pi]`.
+        Whether to wrap RA in :math:`[0, 2 \pi]` radians.
 
     degree : bool, default=True
         Whether RA, Dec are in degrees (``True``) or radians (``False``).
@@ -220,33 +220,27 @@ def sky_to_cartesian(dist, ra, dec, degree=True, dtype=None):
     return (dist*np.asarray(position,dtype=dtype)).T
 
 
-def radecbox_area(ramin, ramax, decmin, decmax):
+def radecbox_area(rarange, decrange):
     """
     Return area of ra, dec box.
 
     Parameters
     ----------
-    ramin : float, array
-        Minimum right ascension (degree).
+    rarange : tuple
+        Range (min, max) of right ascension (degree).
 
-    ramax : float, array
-        Maximum right ascension (degree).
-
-    decmin : float, array
-        Minimum declination (degree).
-
-    decmax : float, array
-        Maximum declination (degree).
+    decrange : tuple
+        Range (min, max) of declination (degree).
 
     Returns
     -------
     area : float, ndarray.
         Area (degree^2).
     """
-    decfrac = np.diff(np.rad2deg(np.sin(np.deg2rad([decmin,decmax]))),axis=0)
-    rafrac = np.diff([ramin,ramax],axis=0)
+    decfrac = np.diff(np.rad2deg(np.sin(np.deg2rad(decrange))),axis=0)
+    rafrac = np.diff(rarange,axis=0)
     area = decfrac*rafrac
-    if np.isscalar(ramin):
+    if np.isscalar(rarange[0]):
         return area[0]
     return area
 

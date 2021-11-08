@@ -105,7 +105,8 @@ class LagrangianLinearMock(BaseGaussianMock):
 
     def poisson_sample(self, seed=None, resampler='cic'):
         """
-        Poisson sample density field.
+        Poisson sample density field and set :attr:`position` and :attr:`disp`,
+        Zeldovich displacements interpolated at :attr:`position`.
 
         Note
         ----
@@ -119,25 +120,17 @@ class LagrangianLinearMock(BaseGaussianMock):
         resampler : string, default='nnb'
             Resampler to interpolate the displacement field at sampled positions.
             e.g. 'nnb', 'cic', 'tsc', 'pcs'...
-
-        Returns
-        -------
-        positions : array of shape (N, 3)
-            Cartesian positions sampling the density field.
-
-        disps : array of shape (N, 3)
-            Zeldovich displacements interpolated at ``positions``.
         """
         super(LagrangianLinearMock, self).poisson_sample(seed=seed)
-        self.disps = self.positions.copy()
+        self.disps = self.position.copy()
         for i,mesh_disp_r in enumerate(self.mesh_disp_r):
-            self.disps[:,i] = mesh_disp_r.readout(self.positions - self.boxcenter, resampler=resampler)
+            self.disps[:,i] = mesh_disp_r.readout(self.position - self.boxcenter, resampler=resampler)
         # move particles from initial position based on the Zeldovich displacement
-        self.positions += self.disps
+        self.position += self.disps
 
-    def set_rsd(self, f=None, los=None):
+    def set_rsd(self, f, los=None):
         r"""
-        Add redshift space distortions to :attr:`positions`.
+        Add redshift space distortions to :attr:`position`.
 
         Note
         ----
@@ -145,23 +138,26 @@ class LagrangianLinearMock(BaseGaussianMock):
 
         Parameters
         ----------
+        f : callable, float
+            Relation between the Zeldovich displacement field :math:`\psi' and the RSD displacement.
+            If a callable, take the (flattened) distance to the observer as input, i.e. :math:`f(r) \psi'.
+            Else, a float to multiply the :math:`\psi' field, i.e. :math:`f \psi'.
+
         los : 'x', 'y', 'z'; int, 3-vector of int, default=None
             Line of sight :math:`\hat{\eta}` for RSD.
             If ``None``, use local line of sight.
-
-        f : callable, float, default=None
-            Relation between the Zeldovich displacement field :math:`\psi' and the RSD displacement.
-            If a callable, take the (flattened) distance to the observer as input, i.e. :math:`f(r) \psi'.
-            Else, a float to multiply the :math:`\psi' field, i.e. :math:`\psi'.
         """
-        los = _get_los(los)
+        if los is None:
+            los = self.position/utils.distance(self.position)
+        else:
+            los = _get_los(los)
         rsd = utils.vector_projection(self.disps, los)
         iscallable = callable(f)
         if iscallable:
-            rsd *= f(utils.distance(self.positions))
+            rsd *= f(utils.distance(self.position))
         else:
             rsd *= f
-        self.positions += f*rsd
+        self.position += rsd
 
     def to_nbodykit_catalog(self):
         """
@@ -171,6 +167,6 @@ class LagrangianLinearMock(BaseGaussianMock):
         ----
         :meth:`poisson_sample` and optionally :meth:`set_rsd` must be called first.
         """
-        source = {'Position':self.positions, 'Displacement':self.disps}
+        source = {'Position':self.position, 'Displacement':self.disps}
         from nbodykit.source.catalog import ArrayCatalog
         return ArrayCatalog(source, **self.attrs)
