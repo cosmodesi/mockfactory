@@ -1015,7 +1015,7 @@ class ParticleCatalog(BaseCatalog):
         return position + rsd
 
 
-class SurveyCatalog(ParticleCatalog):
+class CutskyCatalog(ParticleCatalog):
 
     """A catalog of particles, with a survey (cutsky) geometry."""
 
@@ -1207,12 +1207,12 @@ class BoxCatalog(ParticleCatalog):
 
         Returns
         -------
-        catalog : SurveyCatalog
+        catalog : CutskyCatalog
         """
         boxsize, isometry = cutsky_to_box(drange, rarange, decrange, return_isometry=True)
         if not np.all(self.boxsize > boxsize):
             raise ValueError('boxsize {} is too small for input survey geometry which requires {}'.format(self.boxsize, boxsize))
-        toret = SurveyCatalog(data=self.data.copy(), position=self._position, velocity=self._velocity, vectors=self.vectors, translational_invariants=self._translational_invariants, attrs=self.attrs)
+        toret = CutskyCatalog(data=self.data.copy(), position=self._position, velocity=self._velocity, vectors=self.vectors, translational_invariants=self._translational_invariants, attrs=self.attrs)
         dist, ra, dec = utils.cartesian_to_sky(toret.position, degree=True)
         mask = (dist >= drange[0]) & (dist <= drange[1]) & (ra >= rarange[0]) & (ra <= rarange[1]) & (dec >= decrange[0]) & (dec <= decrange[1])
         toret = toret[mask]
@@ -1261,14 +1261,14 @@ class RandomBoxCatalog(BoxCatalog):
         self[self._position] = np.array([rng.uniform(self.boxcenter[i] - self.boxsize[i]/2., self.boxcenter[i] + self.boxsize[i]/2.) for i in range(3)]).T
 
 
-class RandomSurveyCatalog(SurveyCatalog):
+class RandomCutskyCatalog(CutskyCatalog):
 
     """A catalog of random particles, with a cutsky geometry."""
 
     @CurrentMPIComm.enable
     def __init__(self, rarange=(0.,360.), decrange=(-90.,90.), drange=None, size=None, nbar=None, seed=None, **kwargs):
         """
-        Initialize :class:`RandomSurveyCatalog`, with a uniform sampling on the sky and as a function of distance.
+        Initialize :class:`RandomCutskyCatalog`, with a uniform sampling on the sky and as a function of distance.
         Set columns 'RA' (degree), 'DEC' (degree), 'Distance' and ``position``.
 
         Parameters
@@ -1296,23 +1296,23 @@ class RandomSurveyCatalog(SurveyCatalog):
         kwargs : dict
             Other optional arguments, see :class:`ParticleCatalog`.
         """
-        super(RandomSurveyCatalog,self).__init__(data={}, **kwargs)
+        super(RandomCutskyCatalog,self).__init__(data={}, **kwargs)
         area = utils.radecbox_area(rarange, decrange)
         if size is None:
             size = int(nbar*area + 0.5)
         self.attrs['seed'] = seed
         self.attrs['area'] = area
 
-        size = mpi.local_size(size, mpicomm=mpicomm)
+        size = mpi.local_size(size, mpicomm=self.mpicomm)
 
         seed1, seed2 = mpi.bcast_seed(seed=seed, size=2, mpicomm=self.mpicomm)
         mask = UniformAngularMask(rarange=rarange, decrange=decrange, mpicomm=self.mpicomm)
-        self['RA'], self['DEC'] = mask.sample(size, factor=1, seed=seed1)
+        self['RA'], self['DEC'] = mask.sample(size, seed=seed1)
         if drange is None:
             self['Distance'] = self.ones(dtype=self['RA'].dtype)
         else:
-            rng = MPIRandomState(size=size, seed=seed2, mpicomm=self.mpicomm)
-            self['Distance'] = rng.uniform(low=drange[0], high=drange[1])
+            mask = UniformRadialMask(zrange=drange, mpicomm=self.mpicomm)
+            self['Distance'] = mask.sample(size, distance=lambda z: z, seed=seed2)
         self['Position'] = utils.sky_to_cartesian(self['Distance'], self['RA'], self['DEC'], degree=True)
 
 
@@ -1350,7 +1350,7 @@ class BaseMask(BaseClass):
 
     def __call__(self, *args, seed=None, **kwargs):
         """
-        Apply downsampling to input uniformly distributed redshifts following selection function.
+        Apply selection function to input redshifts with constant volume-density (i.e. distance**2 distance-density).
 
         Parameters
         ----------
@@ -1404,7 +1404,7 @@ class MaskCollection(dict,BaseMask):
 
 class BaseRadialMask(BaseMask):
     r"""
-    Base template class to apply :math:`n(z)` selection.
+    Base template class to apply :math:`n(z)` (in 3D volume unit) selection.
     Subclasses should at least implement :meth:`prob`.
     """
     @CurrentMPIComm.enable
@@ -1427,7 +1427,7 @@ class BaseRadialMask(BaseMask):
         self.mpicomm = mpicomm
         self.mpiroot = mpiroot
 
-    def sample(self, size, distance, factor=3, seed=None):
+    def sample(self, size, distance, seed=None):
         """
         Draw redshifts from radial selection function.
         This is a very naive implementation, drawing uniform samples and masking them with :meth:`__call__`.
@@ -1439,10 +1439,8 @@ class BaseRadialMask(BaseMask):
 
         distance : callable
             Callable that provides distance as a function of redshift (array).
-
-        factor : int, default=3
-            Estimated subsampling factor w.r.t. uniform distribution in :attr:`zrange`.
-            A reasonable estimation of this factor will help convergence.
+            Redshifts are sampled by applying :meth:`__call__` distribution with constant volume-density
+            (i.e. distance-density following distance**2).
 
         seed : int, default=None
             The global random seed, used to set the seeds across all ranks.
@@ -1452,22 +1450,28 @@ class BaseRadialMask(BaseMask):
         z : array of shape (size,)
             Array of sampled redshifts.
         """
-        rng = MPIRandomState(size=factor*size, seed=seed, mpicomm=self.mpicomm)
-        # let us first generate samples with uniform density in volume units
         drange = distance(self.zrange)
-        dist = rng.uniform(drange[0], drange[1])
-        prob = dist**2 # jacobian, d^3 r = r^2 dr
-        prob /= prob.max()
-        mask = prob >= rng.uniform(low=0., high=1.)
-        z = DistanceToRedshift(distance, zmax=self.zrange[-1] + 0.1)(dist[mask])
-        mask = self(z)
-        nmask = mask.sum()
-        if size > nmask:
-            std = 1./np.sqrt(size)
-            updated_factor = factor*size*1./nmask*(1. + 3.*std)
-            return self.sample(size=size, factor=updated_factor)
-        z = z[mask][:size]
-        return z
+        def sample(size, seed=None):
+            rng = MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
+            dist = rng.uniform(drange[0], drange[1])
+            prob = dist**2 # jacobian, d^3 r = r^2 dr
+            prob /= prob.max()
+            mask = prob >= rng.uniform(low=0., high=1.)
+            z = DistanceToRedshift(distance, zmax=self.zrange[-1] + 0.1)(dist[mask])
+            mask = self(z)
+            return z[mask]
+
+        z = []
+        dsize = size
+        while dsize > 0:
+            std = 1./np.sqrt(dsize)
+            newsize = int(dsize*(1. + 3.*std) + 100.)
+            seed = mpi.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
+            tmpz = sample(newsize, seed=seed)
+            dsize -= tmpz.size
+            z.append(tmpz)
+
+        return np.concatenate(z, axis=0)[:size]
 
 
 class UniformRadialMask(BaseRadialMask):
@@ -1476,13 +1480,13 @@ class UniformRadialMask(BaseRadialMask):
 
     @CurrentMPIComm.enable
     def __init__(self, nbar=1., **kwargs):
-        self.nbar = np.asarray(nbar)
+        self.nbar = nbar
         super(UniformRadialMask, self).__init__(**kwargs)
 
     def prob(self, z):
         """Uniform density :attr:`nbar` within :attr:`zrange`."""
         z = np.asarray(z)
-        prob = np.clip(self.nbar, 0., 1.)
+        prob = np.clip(self.nbar, 0., 1.)*np.ones_like(z)
         mask = (z >= self.zrange[0]) & (z <= self.zrange[-1])
         prob[~mask] = 0.
         return prob
@@ -1640,7 +1644,22 @@ class TabulatedRadialMask(BaseRadialMask):
             self.log_info('Expected error: {:.5g}.'.format(error))
 
     def convert_to_cosmo(self, distance_self, distance_target, zedges=None):
-        # TODO
+        """
+        Rescale volume-density :attr:`nbar` to target cosmology.
+
+        Parameters
+        ----------
+        distance_self : callable
+            Callable that provides distance as a function of redshift (array) in current cosmology.
+
+        distance_other : callable
+            Callable that provides distance as a function of redshift (array) in target cosmology.
+
+        zedges : array, default=None
+            The original redshift edges in case of binned :attr:`nbar` where shell volumes were proportional
+            to ``distance_self(zedges[1:])**3-distance_self(dedges[:-1])**3``, in which case a perfect rescaling is achieved.
+            Defaults to edges falling in the middle of :attr:`z` points.
+        """
         if zedges is None:
             zedges = (self.z[:-1] + self.z[1:])/2.
             zedges = np.concatenate([self.z[0]],zedges,[self.z[-1]])
@@ -1681,7 +1700,7 @@ class BaseAngularMask(BaseMask):
         self.mpicomm = mpicomm
         self.mpiroot = mpiroot
 
-    def sample(self, size, factor=3, seed=None):
+    def sample(self, size, seed=None):
         """
         Draw ra, dec from angular selection function.
         This is a very naive implementation, drawing uniform samples and masking them with :meth:`__call__`.
@@ -1689,11 +1708,7 @@ class BaseAngularMask(BaseMask):
         Parameters
         ----------
         size : int
-            Local number of ra, dec positions to sample.
-
-        factor : int, default=3
-            Estimated subsampling factor w.r.t. uniform distribution in :attr:`rarange`, :attr:`decrange`.
-            A reasonable estimation of this factor will help convergence.
+            Local number of RA, Dec positions to sample.
 
         seed : int, default=None
             The global random seed, used to set the seeds across all ranks.
@@ -1701,20 +1716,28 @@ class BaseAngularMask(BaseMask):
         Returns
         -------
         ra : array of shape (size,)
-            Array of sampled ra, dec.
+            Array of sampled RA, Dec.
         """
-        rng = MPIRandomState(size=factor*size, seed=seed, mpicomm=self.mpicomm)
-        ra = rng.uniform(low=self.rarange[0], high=self.rarange[1])
-        urange = np.sin(np.asarray(self.decrange)*np.pi/180.)
-        dec = np.arcsin(rng.uniform(low=urange[0], high=urange[1]))/(np.pi/180.) % 360.
-        mask = self(ra, dec)
-        nmask = mask.sum()
-        if size > nmask:
-            std = 1./np.sqrt(size)
-            updated_factor = factor*size*1./nmask*(1. + 3.*std)
-            return self.sample(size=size, factor=updated_factor)
-        ra, dec = ra[mask][:size], dec[mask][:size]
-        return ra, dec
+        def sample(size, seed=None):
+            rng = MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
+            ra = rng.uniform(low=self.rarange[0], high=self.rarange[1])
+            urange = np.sin(np.asarray(self.decrange)*np.pi/180.)
+            dec = np.arcsin(rng.uniform(low=urange[0], high=urange[1]))/(np.pi/180.) % 360.
+            mask = self(ra, dec)
+            return ra[mask], dec[mask]
+
+        ra, dec = [], []
+        dsize = size
+        while dsize > 0:
+            std = 1./np.sqrt(dsize)
+            newsize = int(dsize*(1. + 3.*std) + 100.)
+            seed = mpi.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
+            tmpra, tmpdec = sample(newsize, seed=seed)
+            dsize -= tmpra.size
+            ra.append(tmpra)
+            dec.append(tmpdec)
+
+        return np.concatenate(ra, axis=0)[:size], np.concatenate(dec, axis=0)[:size]
 
 
 class UniformAngularMask(BaseAngularMask):
@@ -1723,13 +1746,13 @@ class UniformAngularMask(BaseAngularMask):
 
     @CurrentMPIComm.enable
     def __init__(self, nbar=1., **kwargs):
-        self.nbar = np.asarray(nbar)
+        self.nbar = nbar
         super(UniformAngularMask, self).__init__(**kwargs)
 
     def prob(self, ra, dec):
         """Uniform density :attr:`nbar` within :attr:`rarange` and :attr:`decrange`."""
-        z = np.asarray(z)
-        prob = np.clip(self.nbar, 0., 1.)
+        ra, dec = np.asarray(ra), np.asarray(dec)
+        prob = np.clip(self.nbar, 0., 1.)*np.ones_like(ra)
         mask = (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
         mask &= (dec >= self.decrange[0]) & (dec <= self.decrange[-1])
         prob[~mask] = 0
@@ -1764,10 +1787,10 @@ if HAVE_PYMANGLE:
             super(MangleAngularMask,self).__init__(**kwargs)
             if filename is not None:
                 if self.is_mpi_root():
-                    self.log_info('Loading geometry file: {}.'.format(filename))
+                    self.log_info('Loading Mangle geometry file: {}.'.format(filename))
                 self.nbar = pymangle.Mangle(filename)
             else:
-                self.nbar = nbar
+                self.nbar = np.asarray(nbar)
 
         def prob(self, ra, dec):
             """
@@ -1823,8 +1846,12 @@ if HAVE_HEALPY:
                 Nested scheme?
             """
             super(HealpixAngularMask,self).__init__(**kwargs)
-            if filename:
-                 self.nbar = healpy.fitsfunc.read_map(filename,nest=nest,**kwargs)
+            if filename is not None:
+                if self.is_mpi_root():
+                    self.log_info('Loading healpy geometry file: {}.'.format(filename))
+                self.nbar = healpy.fitsfunc.read_map(filename, nest=nest, **kwargs)
+            else:
+                self.nbar = np.asarray(nbar)
             self.nside = healpy.npix2nside(self.nbar.size)
             self.nest = nest
 

@@ -1,18 +1,16 @@
 import numpy as np
 
 from mockfactory.remap import Cuboid
-from mockfactory.make_survey import RandomBoxCatalog, EuclideanIsometry, DistanceToRedshift, TabulatedRadialMask, rotation_matrix_from_vectors
+from mockfactory.make_survey import RandomBoxCatalog, RandomCutskyCatalog, EuclideanIsometry, DistanceToRedshift, TabulatedRadialMask, rotation_matrix_from_vectors
 from mockfactory import utils
 
 
 def test_remap():
-    maxint = 1
-    test_lattice = Cuboid.generate_lattice_vectors(maxcomb=1, maxint=maxint)
-    assert len(test_lattice) == 7
 
     u = ((0, 1, 1), (1, 0, 1), (0, 1, 0))
-    size = 4
     rng = np.random.RandomState(seed=42)
+
+    size = 4
     position = np.array([rng.uniform(0., 1., size) for i in range(3)]).T
     cuboid = Cuboid(*u)
     test_transform = cuboid.transform(position)
@@ -20,6 +18,12 @@ def test_remap():
     ref = np.asarray([[1.242481120911554, 0.07927226867048176, 0.5366145978426384], [0.6109877044894946, 1.0016399037833623, 0.2301527456400675],
                      [0.05562675154380102, 0.5823615999835122, 0.4442670251479918], [1.298308859982872, 0.5311517137862527, 0.2857449536972063]])
     assert np.allclose(test_transform, ref)
+    inverse = cuboid.inverse_transform(test_transform)
+    assert np.allclose(position, inverse)
+
+    maxint = 1
+    test_lattice = Cuboid.generate_lattice_vectors(maxint=maxint, maxcomb=1, sort=True)
+    assert len(test_lattice) == 7
 
     try:
         from cuboid_remap.remap import generate_lattice_vectors as ref_generate_lattice_vectors
@@ -33,9 +37,19 @@ def test_remap():
         assert len(test_lattice) == len(ref)
         for key in ref:
             assert tuple(key) in test_lattice
-        cuboid = CuboidRef(*u)
-        ref = np.array([cuboid.Transform(*pos) for pos in position])
+        cuboidref = CuboidRef(*u)
+        ref = np.array([cuboidref.Transform(*pos) for pos in position])
         assert np.allclose(test_transform, ref)
+
+    boxsize = [1., 2., 3.]
+    #boxsize = [2.]*3
+    size = 10000
+    position = np.array([rng.uniform(0., boxsize[i], size) for i in range(3)]).T
+    cuboid = Cuboid(*u, boxsize=boxsize)
+    test = cuboid.transform(position)
+    assert np.all((test >= 0.) & (test <= cuboid.cuboidsize))
+    inverse = cuboid.inverse_transform(test)
+    assert np.allclose(position, inverse)
 
 
 def test_catalog():
@@ -54,6 +68,20 @@ def test_catalog():
     assert np.all(catalog.position == position)
     new['Position'] += 1.
     assert np.all((new.position >= -1.) & (new.position <= 3.))
+
+    rarange, decrange = [0., 30.], [-10., 10.]
+    catalog = RandomCutskyCatalog(size=1000, rarange=rarange, decrange=decrange)
+    assert np.all((catalog['RA'] >= rarange[0]) & (catalog['RA'] <= rarange[1]))
+    assert np.all((catalog['DEC'] >= decrange[0]) & (catalog['DEC'] <= decrange[1]))
+    assert np.all(catalog['Distance'] == 1.)
+    assert catalog.gsize == 1000
+
+    drange = [1000.,2000.]
+    catalog = RandomCutskyCatalog(size=1000, rarange=rarange, decrange=decrange, drange=drange)
+    assert np.all((catalog['RA'] >= rarange[0]) & (catalog['RA'] <= rarange[1]))
+    assert np.all((catalog['DEC'] >= decrange[0]) & (catalog['DEC'] <= decrange[1]))
+    assert np.all((catalog['Distance'] >= drange[0]) & (catalog['Distance'] <= drange[1]))
+    assert catalog.gsize == 1000
 
 
 def test_isometry():
@@ -119,7 +147,7 @@ def test_redshift_array():
     assert np.allclose(redshift(distance(z)), z, atol=1e-6)
 
 
-def test_radial_selection():
+def test_masks():
     n = 100; zrange = [0.6,1.1]
     z = np.linspace(0.5, 1.5, n)
     nbar = np.ones(n, dtype='f8')
@@ -127,6 +155,18 @@ def test_radial_selection():
     mask = selection(z)
     assert mask[(z>=zrange[0]) & (z<=zrange[1])].all()
     selection.normalize(0.5)
+    try:
+        import healpy
+        HAVE_HEALPY = True
+    except ImportError:
+        HAVE_HEALPY = False
+
+    if HAVE_HEALPY:
+        from mockfactory.make_survey import HealpixAngularMask
+        nbar = np.zeros(healpy.nside2npix(256), dtype='f8')
+        selection = HealpixAngularMask(nbar)
+        ra, dec = np.random.uniform(0.,1.,100), np.random.uniform(0.,1.,100)
+        assert np.all(selection.prob(ra, dec) == 0.)
 
 
 def test_rotation_matrix():
@@ -146,5 +186,5 @@ if __name__ == '__main__':
     test_remap()
     test_catalog()
     test_redshift_array()
-    test_radial_selection()
+    test_masks()
     test_rotation_matrix()
