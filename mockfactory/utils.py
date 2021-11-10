@@ -135,7 +135,7 @@ class BaseClass(object,metaclass=BaseMetaClass):
 
     def save(self, filename):
         self.log_info('Saving {}.'.format(filename))
-        np.save(filename, self.__getstate__())
+        np.save(filename, self.__getstate__(), allow_pickle=True)
 
     @classmethod
     def load(cls, filename):
@@ -148,6 +148,29 @@ class BaseClass(object,metaclass=BaseMetaClass):
 def distance(position):
     """Return cartesian distance, taking coordinates along ``position`` last axis."""
     return np.sqrt((position**2).sum(axis=-1))
+
+
+def wrap_angle(angle, degree=True):
+    r"""
+    Wrap angle in given range.
+
+    Parameters
+    ----------
+    angle : array_like
+        Angle.
+
+    degree : bool, default=True
+        Whether ``angle`` is in degrees (``True``) or radians (``False``).
+
+    Returns
+    -------
+    angle : array
+        Wrapped angle.
+    """
+    conversion = np.pi/180. if degree else 1.
+    angle = np.array(angle)*conversion
+    angle %= 2.*np.pi
+    return angle/conversion
 
 
 def cartesian_to_sky(position, wrap=True, degree=True):
@@ -178,7 +201,7 @@ def cartesian_to_sky(position, wrap=True, degree=True):
     """
     dist = distance(position)
     ra = np.arctan2(position[:,1], position[:,0])
-    if wrap: ra %= 2.*np.pi
+    ra = wrap_angle(ra, degree=False)
     dec = np.arcsin(position[:,2]/dist)
     conversion = np.pi/180. if degree else 1.
     return dist, ra/conversion, dec/conversion
@@ -210,8 +233,7 @@ def sky_to_cartesian(dist, ra, dec, degree=True, dtype=None):
     position : array of shape (N, 3)
         Position in cartesian coordinates.
     """
-    conversion = 1.
-    if degree: conversion = np.pi/180.
+    conversion = np.pi/180. if degree else 1.
     position = [None]*3
     cos_dec = np.cos(dec*conversion)
     position[0] = cos_dec*np.cos(ra*conversion)

@@ -419,8 +419,8 @@ class BaseGaussianMock(BaseClass):
         in_cell_shift = np.array([rng_shift.uniform(0, c) for c in cellsize]).T
 
         positions[...] += in_cell_shift
-        positions[...] %= self.boxsize
-        positions[...] += self.boxcenter
+        #positions[...] %= self.boxsize
+        positions[...] += self.boxcenter - self.boxsize/2.
 
         self.position = positions
 
@@ -435,3 +435,15 @@ class BaseGaussianMock(BaseClass):
         source = {'Position':self.position}
         from nbodykit.source.catalog import ArrayCatalog
         return ArrayCatalog(source, **self.attrs)
+
+    def to_catalog(self):
+        """
+        Export as :class:`make_survey.BoxCatalog`.
+
+        Note
+        ----
+        :meth:`poisson_sample` must be called first.
+        """
+        source = {'Position':self.position}
+        from .make_survey import BoxCatalog
+        return BoxCatalog(source, position='Position', boxsize=self.boxsize, boxcenter=self.boxcenter, attrs=self.attrs)

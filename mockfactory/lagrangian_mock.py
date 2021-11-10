@@ -148,7 +148,7 @@ class LagrangianLinearMock(BaseGaussianMock):
             If ``None``, use local line of sight.
         """
         if los is None:
-            los = self.position/utils.distance(self.position)
+            los = self.position/utils.distance(self.position)[:,None]
         else:
             los = _get_los(los)
         rsd = utils.vector_projection(self.disps, los)
@@ -170,3 +170,15 @@ class LagrangianLinearMock(BaseGaussianMock):
         source = {'Position':self.position, 'Displacement':self.disps}
         from nbodykit.source.catalog import ArrayCatalog
         return ArrayCatalog(source, **self.attrs)
+
+    def to_catalog(self):
+        """
+        Export as :class:`make_survey.BoxCatalog`.
+
+        Note
+        ----
+        :meth:`poisson_sample` must be called first.
+        """
+        source = {'Position':self.position, 'Displacement':self.disps}
+        from .make_survey import BoxCatalog
+        return BoxCatalog(source, position='Position', velocity='Displacement', boxsize=self.boxsize, boxcenter=self.boxcenter, attrs=self.attrs)

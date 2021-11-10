@@ -2,7 +2,6 @@ import os
 import logging
 import functools
 import itertools
-from collections import UserDict
 
 import numpy as np
 from scipy import interpolate, optimize
@@ -126,14 +125,14 @@ class EuclideanIsometry(BaseClass):
         if axis is not None:
             axis = self._get_axis(axis)
             angle = [angle if ax == axis else 0. for ax in range(3)]
-        angles = _make_array(angle, 3)
+        angles = _make_array(angle, 3, dtype='f8')
         matrix = np.eye(3, dtype='f8')
         for axis, angle in enumerate(angles):
             c, s = np.cos(angle), np.sin(angle)
-            if axis == 0: matrix = [[1.,0.,0.],[0.,c,-s],[0.,s,c]]
-            if axis == 1: matrix = [[c,0.,s],[0,1.,0.],[-s,0.,c]]
-            if axis == 2: matrix = [[c,-s,0],[s,c,0],[0.,0,1.]]
-            matrix = matrix.dot(matrix)
+            if axis == 0: mat = [[1.,0.,0.],[0.,c,-s],[0.,s,c]]
+            if axis == 1: mat = [[c,0.,s],[0,1.,0.],[-s,0.,c]]
+            if axis == 2: mat = [[c,-s,0],[s,c,0],[0.,0,1.]]
+            matrix = np.asarray(mat).dot(matrix)
         self._rotation = matrix.dot(self._rotation)
         if frame == 'origin':
             self._translation = matrix.dot(self._translation)
@@ -275,20 +274,20 @@ def cutsky_to_box(drange, rarange, decrange, return_isometry=False):
         If ``return_isometry`` is ``True``, :class:`EuclideanIsometry` instance
         to apply to the initial positions.
     """
-    drange, rarange, decrange = list(drange), list(rarange), list(decrange)
-    if rarange[0] > rarange[1]: rarange[0] -= 360.
+    rarange = utils.wrap_angle(rarange, degree=True)
+    if rarange[1] < rarange[0]: rarange[0] -= 360.
     deltara = abs(rarange[1]-rarange[0])/2.*np.pi/180.
     deltadec = abs(decrange[1]-decrange[0])/2.*np.pi/180.
     boxsize = np.empty(3, dtype='f8')
     boxsize[1] = 2.*drange[1]*np.sin(deltara)
     boxsize[2] = 2.*drange[1]*np.sin(deltadec)
     boxsize[0] = drange[1] - drange[0]*min(np.cos(deltara),np.cos(deltadec))
-    if return_operation:
-        operation = EuclideanIsometry()
-        operation.translation(drange[1]-boxsize[0]/2., axis='x', frame='origin')
-        operation.rotation((decrange[0]+decrange[1])/2., axis='y', degree=True, frame='origin')
-        operation.rotation((rarange[0]+rarange[1])/2., axis='z', degree=True, frame='origin')
-        return boxsize, operation
+    if return_isometry:
+        isometry = EuclideanIsometry()
+        isometry.translation(drange[1]-boxsize[0]/2., axis='x', frame='origin')
+        isometry.rotation(-(decrange[0]+decrange[1])/2., axis='y', degree=True, frame='origin') # minus because of direction convention
+        isometry.rotation((rarange[0]+rarange[1])/2., axis='z', degree=True, frame='origin')
+        return boxsize, isometry
     return boxsize
 
 
@@ -435,6 +434,8 @@ def vectorize_columns(func):
 
 
 class BaseCatalog(BaseClass):
+
+    _attrs = ['attrs']
 
     """Class that represents a catalog, as a dictionary of columns stored as arrays."""
 
@@ -729,17 +730,38 @@ class BaseCatalog(BaseClass):
         new = super(BaseCatalog,self).__copy__()
         if columns is None: columns = self.columns()
         new.data = {col:self[col] if col in self else None for col in columns}
+        import copy
+        for name in new._attrs:
+            if hasattr(self, name):
+                tmp = copy.copy(getattr(self, name))
+                setattr(new, name, tmp)
         return new
+
+    def deepcopy(self):
+        """Return deep copy."""
+        import copy
+        return copy.deepcopy(self)
 
     def __getstate__(self):
         """Return this class state dictionary."""
         data = {str(name):col for name,col in self.data.items()}
-        return {'data':data,'attrs':self.attrs}
+        state = {'data':data}
+        for name in self._attrs:
+            if hasattr(self, name):
+                state[name] = getattr(self, name)
+        return state
 
     def __setstate__(self, state):
         """Set the class state dictionary."""
-        self.data = state['data'].copy()
-        self.attrs = state['attrs']
+        self.__dict__.update(state)
+
+    @classmethod
+    @CurrentMPIComm.enable
+    def from_state(cls, state, mpiroot=0, mpicomm=None):
+        """Create class from state."""
+        new = cls.__new__(cls)
+        new.__setstate__(state)
+        return new
 
     def __getitem__(self, name):
         """Get catalog column ``name`` if string, else return copy with local slice."""
@@ -830,7 +852,7 @@ class BaseCatalog(BaseClass):
 
     @classmethod
     @CurrentMPIComm.enable
-    def load_fits(cls, filename,  columns=None, ext=None, mpiroot=0, mpicomm=None):
+    def load_fits(cls, filename, columns=None, ext=None, mpiroot=0, mpicomm=None):
         """
         Load catalog in *fits* binary format from disk.
 
@@ -883,17 +905,132 @@ class BaseCatalog(BaseClass):
             header.clean()
             attrs = dict(header)
             attrs['fitshdr'] = header
-            new = cls.from_array(new,mpiroot=mpiroot,mpicomm=mpicomm,attrs=attrs)
+            new = cls.from_array(new, attrs=attrs, mpiroot=mpiroot, mpicomm=mpicomm)
         return new
 
     def save_fits(self, filename):
         """Save catalog to ``filename`` as *fits* file. Possible to change fitsio to write by chunks?."""
-        import fitsio
         if self.is_mpi_root():
             self.log_info('Saving to {}.'.format(filename))
+            utils.mkdir(os.path.dirname(filename))
+        import fitsio
         array = self.to_array(struct=True)
-        array = mpi.gather_array(array,mpiroot=self.mpiroot,mpicomm=self.mpicomm)
-        fitsio.write(filename,array,header=self.attrs.get('fitshdr',None),clobber=True)
+        array = mpi.gather_array(array,mpicomm=self.mpicomm,root=self.mpiroot)
+        if self.is_mpi_root():
+            fitsio.write(filename,array,header=self.attrs.get('fitshdr',None),clobber=True)
+
+    @classmethod
+    @CurrentMPIComm.enable
+    def load_hdf5(cls, filename, group='/', columns=None, mpiroot=0, mpicomm=None):
+        """
+        Load catalog in *hdf5* binary format from disk.
+
+        Parameters
+        ----------
+        group : string, default='/'
+            HDF5 group where columns are located.
+
+        columns : list, default=None
+            List of column names to read. Defaults to all columns in ``group``.
+
+        mpiroot : int, default=0
+            Rank of process where input array lives.
+
+        mpicomm : MPI communicator, default=None
+            The MPI communicator.
+
+        Returns
+        -------
+        catalog : BaseCatalog
+        """
+        if mpicomm.rank == mpiroot:
+            cls.log_info('Loading {}.'.format(filename))
+        import h5py
+        with h5py.File(filename, 'r', driver='mpio', comm=self.mpicomm) as file:
+            attrs = file.attrs
+            grp = file[group]
+            data = {}
+
+            def set_dataset(name, obj):
+                data[name] = obj
+
+            grp.visititems(set_dataset)
+            if columns is not None:
+                data = {name:value for name,value in data.items() if name in columns}
+                if set(data.keys()) != set(columns):
+                    raise ValueError('Could not find columns {}'.format(set(columns) - set(data.keys())))
+            for name in data:
+                gsize = data[name].size
+                break
+            size = mpi.local_size(gsize, mpicomm=self.mpicomm)
+            csizes = np.cumsum([0] + mpicomm.allgather(size))
+            for name in data:
+                if data[name].size != gsize:
+                    raise ValueError('Column {} has different length (expected {:d}, found {:d})'.format(name, gsize, data[name].size))
+                data[name] = data[name][csizes[rank]:csizes[rank+1]]
+        return cls(data=data, attrs=attrs)
+
+
+    def save_hdf5(self, filename, group='/'):
+        """Save catalog to ``filename`` as hdf5* file."""
+        if self.is_mpi_root():
+            self.log_info('Saving to {}.'.format(filename))
+            utils.mkdir(os.path.dirname(filename))
+        import h5py
+        with h5py.File(filename, 'w', driver='mpio', comm=self.mpicomm) as file:
+            csizes = np.cumsum([0] + self.mpicomm.allgather(self.size))
+            gsize = csizes[-1]
+            rank = self.mpicomm.rank
+            grp = file.create_group(group)
+            grp.attrs = self.attrs
+            for name in self.columns():
+                dset = grp.create_dataset(name, shape=(gsize,)+self[name].shape[1:], dtype=self[name].dtype)
+                dset[csizes[rank]:csizes[rank+1]] = self[name]
+
+    @classmethod
+    @CurrentMPIComm.enable
+    def load(cls, filename, columns=None, mpiroot=0, mpicomm=None):
+        """
+        Load catalog in *npy* binary format from disk.
+
+        Parameters
+        ----------
+        columns : list, default=None
+            List of column names to read. Defaults to all columns.
+
+        mpiroot : int, default=0
+            Rank of process where input array lives.
+
+        mpicomm : MPI communicator, default=None
+            The MPI communicator.
+
+        Returns
+        -------
+        catalog : BaseCatalog
+        """
+        if mpicomm.rank == mpiroot:
+            cls.log_info('Loading {}.'.format(filename))
+            state = np.load(filename, allow_pickle=True)[()]
+            data = state.pop('data')
+            if columns is None: columns = list(data.keys())
+        else:
+            state = None
+        state = mpicomm.bcast(state, root=mpiroot)
+        columns = mpicomm.bcast(columns, root=mpiroot)
+        state['data'] = {}
+        for name in columns:
+            state['data'][name] = mpi.scatter_array(data[name] if mpicomm.rank == mpiroot else None, mpicomm=mpicomm, root=mpiroot)
+        return cls.from_state(state, mpicomm=mpicomm, mpiroot=mpiroot)
+
+    def save(self, filename):
+        """Save catalog to ``filename`` as *npy* file."""
+        if self.is_mpi_root():
+            self.log_info('Saving to {}.'.format(filename))
+            utils.mkdir(os.path.dirname(filename))
+        state = self.__getstate__()
+        state['data'] = {name: mpi.gather_array(state['data'][name], mpicomm=self.mpicomm, root=self.mpiroot) for name in self.columns()}
+        if self.is_mpi_root():
+            np.save(filename, state, allow_pickle=True)
 
     @vectorize_columns
     def sum(self, column, axis=0):
@@ -923,10 +1060,12 @@ class BaseCatalog(BaseClass):
 
 class ParticleCatalog(BaseCatalog):
 
+    _attrs = BaseCatalog._attrs + ['_position', '_velocity', '_vectors', '_translational_invariants']
+
     """A catalog of particles, with 'Position' and 'Velocity'."""
 
     @CurrentMPIComm.enable
-    def __init__(self, data=None, columns=None, position='Position', velocity='Velocity', vectors=None, translational_invariant=None, **kwargs):
+    def __init__(self, data=None, columns=None, position='Position', velocity='Velocity', vectors=None, translational_invariants=None, **kwargs):
         """
         Initialize :class:`ParticleCatalog`.
 
@@ -949,7 +1088,7 @@ class ParticleCatalog(BaseCatalog):
             Names of columns which live in Cartesian space
             (position and velocity columns will be added).
 
-        translational_invariant : list, tuple, set, default=None
+        translational_invariants : list, tuple, set, default=None
             Names of columns (of ``vectors``) which are invariant under translation, e.g. velocities.
 
         kwargs : dict
@@ -959,7 +1098,7 @@ class ParticleCatalog(BaseCatalog):
         self._position = position
         self._velocity = velocity
         self._vectors = set(vectors or [])
-        self._translational_invariants = set(translational_invariant or [])
+        self._translational_invariants = set(translational_invariants or [])
         self._vectors |= set([self._position, self._velocity])
         self._translational_invariants |= set([self._velocity])
 
@@ -1019,7 +1158,7 @@ class CutskyCatalog(ParticleCatalog):
 
     """A catalog of particles, with a survey (cutsky) geometry."""
 
-    def isometry_transform(self, isometry):
+    def isometry(self, isometry):
         """
         Apply input isometry to catalog.
 
@@ -1033,6 +1172,8 @@ class CutskyCatalog(ParticleCatalog):
 
 
 class BoxCatalog(ParticleCatalog):
+
+    _attrs = ParticleCatalog._attrs + ['_boxsize', '_boxcenter']
 
     """A catalog of particles, with a box geometry."""
 
@@ -1113,46 +1254,46 @@ class BoxCatalog(ParticleCatalog):
             if name not in self._translational_invariants:
                 self[name] = cuboid.transform(self[name] - offset, boxsize=self.boxsize) + offset
 
-    def subbox(self, limits=(0,1), boxsize_unit=True):
-        """
-        Return new catalog limited to input limits.
+    def subbox(self, ranges=(0,1), boxsize_unit=True):
+          """
+          Return new catalog brangeed to input ranges.
 
-        Parameters
-        ----------
-        limits : tuple, list of tuples
-            Cartesian limits (min, max) for the new catalog.
-            Can be provided for each axis, with a list of tuples.
+          Parameters
+          ----------
+          ranges : tuple, list of tuples
+              Cartesian ranges (min, max) for the new catalog.
+              Can be provided for each axis, with a list of tuples.
 
-        boxsize_unit : bool, default=True
-            ``True`` if input limits are in units of :attr:`boxsize` (typically between 0 and 1).
-            ``False`` if input limits are in Cartesian space, with the same unit as :attr:`boxsize`
-            (typically between ``self.boxcenter - self.boxsize/2.`` and ``self.boxcenter + self.boxsize/2.``).
+          boxsize_unit : bool, default=True
+              ``True`` if input ranges are in units of :attr:`boxsize` (typically between 0 and 1).
+              ``False`` if input ranges are in Cartesian space, with the same unit as :attr:`boxsize`
+              (typically between ``self.boxcenter - self.boxsize/2.`` and ``self.boxcenter + self.boxsize/2.``).
 
-        Returns
-        -------
-        new : BoxCatalog
-            Catalog cut to provided limits.
-        """
-        if np.ndim(limits[0]) == 0:
-            limits = [limits]*3
-        if len(limits) != 3:
-            raise ValueError('Provide limits for each axis')
-        mask = self.trues()
-        offset = [0]*3
-        if boxsize_unit:
-            offset = self.boxcenter - self.boxsize/2.
-        current_box = [self.boxcenter - self.boxsize/2., self.boxcenter + self.boxsize/2.]
-        box = [np.empty(3, dtype='f8') for i in range(2)]
-        for ii, limit in enumerate(limits):
-            if boxsize_unit:
-                limit = [self.boxsize[ii] * ll for ll in limit]
-            box[0][ii] = max(current_box[0][ii], limit[0])
-            box[1][ii] = min(current_box[1][ii], limit[1])
-            mask &= (self.position[:,ii] >= limit[0] + offset[ii]) & (self.position[:,ii] < limit[1] + offset[ii])
-        new = self[mask]
-        new.boxsize = np.asarray(box[1]) - np.asarray(box[0])
-        new.boxcenter = (np.asarray(box[1]) + np.asarray(box[0]))/2.
-        return new
+          Returns
+          -------
+          new : BoxCatalog
+              Catalog cut to provided ranges.
+          """
+          if np.ndim(ranges[0]) == 0:
+              ranges = [ranges]*3
+          if len(ranges) != 3:
+              raise ValueError('Provide ranges for each axis')
+          mask = self.trues()
+          offset = [0]*3
+          if boxsize_unit:
+              offset = self.boxcenter - self.boxsize/2.
+          current_box = [self.boxcenter - self.boxsize/2., self.boxcenter + self.boxsize/2.]
+          box = [np.empty(3, dtype='f8') for i in range(2)]
+          for ii, brange in enumerate(ranges):
+              if boxsize_unit:
+                  brange = [self.boxsize[ii] * bb + offset[ii] for bb in brange]
+              box[0][ii] = max(current_box[0][ii], brange[0])
+              box[1][ii] = min(current_box[1][ii], brange[1])
+              mask &= (self.position[:,ii] >= brange[0]) & (self.position[:,ii] < brange[1])
+          new = self[mask]
+          new.boxsize = np.asarray(box[1]) - np.asarray(box[0])
+          new.boxcenter = (np.asarray(box[1]) + np.asarray(box[0]))/2.
+          return new
 
     def pad(self, factor=1.1):
         """
@@ -1190,7 +1331,8 @@ class BoxCatalog(ParticleCatalog):
             new[col] = np.concatenate(data[col], axis=0)
         return new
 
-    def cutsky(self, drange, rarange, decrange):
+
+    def cutsky(self, drange, rarange, decrange, external_margin=0., internal_margin=0., noutput=1):
         """
         Cut box to sky geometry.
 
@@ -1205,17 +1347,65 @@ class BoxCatalog(ParticleCatalog):
         decrange : tuple, array
             Dec range.
 
+        external_margin : float, array, default=0
+            Margin to apply on box edges to avoid spurious large scale correlations
+            when no periodic boundary conditions are applied.
+
+        internal_margin : float, array, default=0
+            Margin between subboxes to reduce correlation between output catalogs.
+
+        noutput : int, default=1
+            Number of output catalogs.
+            If ``1``, one catalog is output.
+            Else, if ``None``, cut maximum number of disjoint catalogs.
+            Else, return this number of catalogs.
+
         Returns
         -------
         catalog : CutskyCatalog
         """
+        external_margin = _make_array(external_margin, 3, dtype='f8')
+        internal_margin = _make_array(internal_margin, 3, dtype='f8')
         boxsize, isometry = cutsky_to_box(drange, rarange, decrange, return_isometry=True)
-        if not np.all(self.boxsize > boxsize):
-            raise ValueError('boxsize {} is too small for input survey geometry which requires {}'.format(self.boxsize, boxsize))
-        toret = CutskyCatalog(data=self.data.copy(), position=self._position, velocity=self._velocity, vectors=self.vectors, translational_invariants=self._translational_invariants, attrs=self.attrs)
-        dist, ra, dec = utils.cartesian_to_sky(toret.position, degree=True)
-        mask = (dist >= drange[0]) & (dist <= drange[1]) & (ra >= rarange[0]) & (ra <= rarange[1]) & (dec >= decrange[0]) & (dec <= decrange[1])
-        toret = toret[mask]
+        factor = (self.boxsize - 2.*external_margin) / boxsize
+        if not np.all(factor > 1.):
+            raise ValueError('boxsize {} with margin {} is too small for input survey geometry which requires {}'.format(self.boxsize, external_margin, boxsize))
+        boxes = []
+        if noutput == 1:
+            box = self.subbox()
+            box.recenter()
+            boxes.append(box)
+        else:
+            # boxsize * nboxes + internal_margin * (nboxes - 1) + 2 * external_margin = self.boxsize
+            nboxes = (self.boxsize - 2.*external_margin + internal_margin)/(boxsize + internal_margin)
+            nboxes = nboxes.astype(int)
+            # extend margins to occupy full volume (same rescaling factor assumed for internal and external)
+            rescale_margin = (self.boxsize - boxsize * nboxes)/(internal_margin * (nboxes - 1) + 2 * external_margin)
+            assert np.all(rescale_margin >= 1.)
+            internal_margin = rescale_margin * internal_margin
+            external_margin = rescale_margin * external_margin
+            ranges = []
+            for iaxis,nbox in enumerate(nboxes)[:noutput]:
+                tmp1 = external_margin[iaxis]/self.boxsize + (boxsize[iaxis] + internal_margin[iaxis]) * np.arange(nbox)/self.boxsize
+                tmp2 = tmp1 + boxsize[iaxis]/self.boxsize
+                ranges.append(zip(tmp1, tmp2)) # in boxsize_unit
+            for ranges in itertools.product(*ranges):
+                box = self.subbox(ranges=ranges, boxsize_unit=True)
+                box.recenter()
+                boxes.append(box)
+
+        toret = []
+        for box in boxes:
+            catalog = CutskyCatalog(data=box.data, position=self._position, velocity=self._velocity, vectors=self.vectors, translational_invariants=self._translational_invariants, attrs=self.attrs)
+            catalog.isometry(isometry)
+            dist, ra, dec = utils.cartesian_to_sky(catalog.position, degree=True, wrap=False)
+            mask_radial = UniformRadialMask(zrange=drange)
+            mask_angular = UniformAngularMask(rarange=rarange, decrange=decrange)
+            mask = mask_radial(dist) & mask_angular(ra, dec)
+            catalog = catalog[mask]
+            toret.append(catalog)
+        if noutput == 1:
+            toret = toret[0]
         return toret
 
 
@@ -1408,13 +1598,13 @@ class BaseRadialMask(BaseMask):
     Subclasses should at least implement :meth:`prob`.
     """
     @CurrentMPIComm.enable
-    def __init__(self, zrange=(-np.inf, np.inf), mpicomm=None, mpiroot=0):
+    def __init__(self, zrange=None, mpicomm=None, mpiroot=0):
         """
         Initialize :class:`BaseRadialMask`.
 
         Parameters
         ----------
-        zrange : tuple, list, default=(-np.inf, np.inf)
+        zrange : tuple, list, default=None
             Redshift range.
 
         mpicomm : MPI communicator, default=None
@@ -1423,7 +1613,7 @@ class BaseRadialMask(BaseMask):
         mpiroot : int, default=0
             The rank number to use as master.
         """
-        self.zrange = tuple(zrange)
+        self.zrange = tuple(zrange) if zrange is not None else (0., np.inf)
         self.mpicomm = mpicomm
         self.mpiroot = mpiroot
 
@@ -1484,7 +1674,7 @@ class UniformRadialMask(BaseRadialMask):
         super(UniformRadialMask, self).__init__(**kwargs)
 
     def prob(self, z):
-        """Uniform density :attr:`nbar` within :attr:`zrange`."""
+        """Uniform probability within :attr:`zrange`."""
         z = np.asarray(z)
         prob = np.clip(self.nbar, 0., 1.)*np.ones_like(z)
         mask = (z >= self.zrange[0]) & (z <= self.zrange[-1])
@@ -1602,6 +1792,8 @@ class TabulatedRadialMask(BaseRadialMask):
             raise ValueError('Provide z when giving w')
         if weights is None:
             weights = 1.
+            if normalize_weights:
+                weights = weights/self.mpicomm.allreduce(z.size)
         elif normalize_weights:
             weights = weights/mpi.sum_array(weights, mpicomm=mpicomm)
         return mpi.sum_array(self.prob(z)*weights, mpicomm=self.mpicomm)
@@ -1677,16 +1869,16 @@ class BaseAngularMask(BaseMask):
     Subclasses should at least implement :meth:`prob`.
     """
     @CurrentMPIComm.enable
-    def __init__(self, rarange=(-np.inf, np.inf), decrange=(-np.inf, np.inf), mpicomm=None, mpiroot=0):
+    def __init__(self, rarange=None, decrange=None, mpicomm=None, mpiroot=0):
         """
         Initialize :class:`BaseRadialMask`.
 
         Parameters
         ----------
-        rarange : tuple, list, default=(-np.inf, np.inf)
+        rarange : tuple, list, default=None
             Right ascension range.
 
-        decrange : tuple, list, default=(-np.inf, np.inf)
+        decrange : tuple, list, default=None
             Declination range.
 
         mpicomm : MPI communicator, default=None
@@ -1695,8 +1887,16 @@ class BaseAngularMask(BaseMask):
         mpiroot : int, default=0
             The rank number to use as master.
         """
-        self.rarange = tuple(rarange)
-        self.decrange = tuple(decrange)
+        if rarange is not None:
+            rarange = utils.wrap_angle(rarange, degree=True)
+            if rarange[1] < rarange[0]: rarange[0] -= 360.
+            self.rarange = tuple(rarange)
+        else:
+            self.rarange = (0., 360.)
+        if decrange is not None:
+            self.decrange = tuple(decrange)
+        else:
+            self.decrange = (-90., 90.)
         self.mpicomm = mpicomm
         self.mpiroot = mpiroot
 
@@ -1750,8 +1950,8 @@ class UniformAngularMask(BaseAngularMask):
         super(UniformAngularMask, self).__init__(**kwargs)
 
     def prob(self, ra, dec):
-        """Uniform density :attr:`nbar` within :attr:`rarange` and :attr:`decrange`."""
-        ra, dec = np.asarray(ra), np.asarray(dec)
+        """Uniform probability within :attr:`rarange` and :attr:`decrange`."""
+        ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
         prob = np.clip(self.nbar, 0., 1.)*np.ones_like(ra)
         mask = (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
         mask &= (dec >= self.decrange[0]) & (dec <= self.decrange[-1])
@@ -1809,6 +2009,7 @@ if HAVE_PYMANGLE:
             prob : array
                 Selection probability.
             """
+            ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
             ids, prob = self.nbar.polyid_and_weight(ra, dec)
             mask = ids != -1
             mask &= (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
@@ -1872,7 +2073,8 @@ if HAVE_HEALPY:
             prob : array
                 Selection probability.
             """
-            theta,phi = (-dec+90.)*np.pi/180., ra*np.pi/180.
+            ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
+            theta, phi = (-dec+90.)*np.pi/180., ra*np.pi/180.
             prob = self.nbar[healpy.ang2pix(self.nside,theta,phi,nest=self.nest,lonlat=False)]
             mask = (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
             mask &= (dec >= self.decrange[0]) & (dec <= self.decrange[-1])

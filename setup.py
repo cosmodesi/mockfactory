@@ -8,6 +8,6 @@ setup(name='mockfactory',
       description='Small nbodykit-based extension to produce Gaussian mocks for validation of clustering pipelines',
       license='GPL3',
       url='http://github.com/adematti/mockfactory',
-      install_requires=['nbodykit'],
+      install_requires=['numpy', 'scipy', 'pmesh', 'mpsort'],
       packages=['mockfactory']
 )

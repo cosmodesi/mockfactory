@@ -1,7 +1,12 @@
+import os
+import tempfile
 import numpy as np
 
 from mockfactory.remap import Cuboid
-from mockfactory.make_survey import RandomBoxCatalog, RandomCutskyCatalog, EuclideanIsometry, DistanceToRedshift, TabulatedRadialMask, rotation_matrix_from_vectors
+from mockfactory.make_survey import (RandomBoxCatalog, RandomCutskyCatalog, ParticleCatalog,
+                                    EuclideanIsometry, DistanceToRedshift,
+                                    TabulatedRadialMask, rotation_matrix_from_vectors,
+                                    cutsky_to_box, box_to_cutsky)
 from mockfactory import utils
 
 
@@ -61,7 +66,7 @@ def test_catalog():
     assert name == 'randoms'
     new = catalog.subbox((0.1, 0.5), boxsize_unit=True)
     assert np.allclose(new.boxsize, [4.]*3, rtol=1e-7, atol=1e-7)
-    assert np.allclose(new.boxcenter, [3.]*3, rtol=1e-7, atol=1e-7)
+    assert np.allclose(new.boxcenter, [1.]*3, rtol=1e-7, atol=1e-7)
     new.attrs['name'] = 'subrandoms'
     assert catalog.attrs['name'] == name
     new['Position'] -= 1.
@@ -85,10 +90,13 @@ def test_catalog():
 
 
 def test_isometry():
-    isometry = EuclideanIsometry()
-    isometry.translational(1.)
+
     rng = np.random.RandomState(seed=42)
+    size = 10
     position = np.array([rng.uniform(0., 1., size) for i in range(3)]).T
+
+    isometry = EuclideanIsometry()
+    isometry.translation(1.)
     assert np.all(isometry.transform(position) == position + 1.)
     isometry.reset_translate()
     isometry.rotation(angle=90., axis='x', degree=True)
@@ -104,47 +112,34 @@ def test_isometry():
     isometry.reset_rotation()
     assert np.allclose(rposition, position[:,[1,0,2]]*np.array([-1,1,1]),rtol=1e-7,atol=1e-7)
     distance = utils.distance(position)
-    rposition = isometry.rotation(axis=np.random.randint(0,3), angle=np.random.uniform(0.,360.))
+    isometry.rotation(axis=np.random.randint(0,3), angle=np.random.uniform(0.,360.))
+    rposition = isometry.transform(position)
     assert np.allclose(utils.distance(rposition), distance, rtol=1e-7, atol=1e-7)
-    """
-    position = new.position
-    new.rotate_about_origin_axis(axis='x',angle=90.)
-    assert np.allclose(new.Position,position[:,[0,2,1]]*np.array([1,-1,1]),rtol=1e-7,atol=1e-7)
-    new.reset_rotate_about_origin()
-    new.rotate_about_origin_axis(axis='y',angle=90.)
-    assert np.allclose(new.Position,position[:,[2,1,0]]*np.array([1,1,-1]),rtol=1e-7,atol=1e-7)
-    new.reset_rotate_about_origin()
-    new.rotate_about_origin_axis(axis='z',angle=90.)
-    assert np.allclose(new.Position,position[:,[1,0,2]]*np.array([-1,1,1]),rtol=1e-7,atol=1e-7)
-    distance = new.distance()
-    new.rotate_about_origin_axis(axis=np.random.randint(0,3),angle=np.random.uniform(0.,360.))
-    assert np.allclose(new.distance(),distance,rtol=1e-7,atol=1e-7)
-    """
 
-"""
+    isometry = EuclideanIsometry()
+    size = 5
+    angles = rng.uniform(-10., 10., 2)
+    isometry.rotation(angle=angles[0], axis='y', degree=True)
+    isometry.rotation(angle=angles[1], axis='y', degree=True)
+    tmp = isometry.transform(position)
+    isometry.reset_rotation()
+    isometry.rotation(angle=sum(angles), axis='y', degree=True)
+    assert np.allclose(isometry.transform(position), tmp)
+
+
 def test_cutsky():
 
-    drange = [10.,20.]; rarange = np.array([0.,50.])-20.; decrange = [-5.,5.]
-    boxsize,operations = cutsky_to_box(drange=drange,rarange=rarange,decrange=decrange)
-    deltara,deltadec,dmin = box_to_cutsky(boxsize=boxsize,dmax=drange[-1])
-    assert np.allclose(dmin,drange[0],rtol=1e-7,atol=1e-7)
-    assert np.allclose(deltara,abs(rarange[1]-rarange[0]),rtol=1e-7,atol=1e-7)
-    assert np.allclose(deltadec,abs(decrange[1]-decrange[0]),rtol=1e-7,atol=1e-7)
-    catalog = RandomBoxCatalog(boxsize=boxsize,size=10000,boxcenter=0.)
-    catalog.recenter()
-    catalog.apply_operation(*operations)
-    catalog['distance'],catalog['RA'],catalog['DEC'] = catalog.cartesian_to_sky(wrap=False)
-    #for col in ['distance','RA','DEC']: print(col, catalog[col].min(), catalog[col].max())
-"""
-
-def test_redshift_array():
-    from astropy import cosmology
-    cosmo = cosmology.wCDM(H0=0.71, Om0=0.31, Ode0=0.69, w0=-1)
-    zmax = 10.
-    distance = lambda z: cosmo.comoving_distance(z).value*cosmo.h
-    redshift = DistanceToRedshift(distance=distance, zmax=zmax, nz=4096)
-    z = np.random.uniform(0., 2., 10000)
-    assert np.allclose(redshift(distance(z)), z, atol=1e-6)
+    drange = [2200.,2300.]; rarange = [0.,50.]; decrange = [-1.,5.]
+    boxsize = cutsky_to_box(drange=drange,rarange=rarange,decrange=decrange,return_isometry=False)
+    drange2, rarange2,decrange2 = box_to_cutsky(boxsize=boxsize,dmax=drange[-1])
+    assert np.allclose(drange2,drange,rtol=1e-7,atol=1e-7)
+    assert np.allclose(abs(rarange2[1]-rarange2[0]),abs(rarange[1]-rarange[0]),rtol=1e-7,atol=1e-7)
+    assert np.allclose(abs(decrange2[1]-decrange2[0]),abs(decrange[1]-decrange[0]),rtol=1e-7,atol=1e-7)
+    catalog = RandomBoxCatalog(boxsize=boxsize*1.1,size=10000,boxcenter=10000.,seed=42)
+    cutsky = catalog.cutsky(drange=drange,rarange=rarange,decrange=decrange)
+    assert cutsky.gsize
+    dist, ra, dec = utils.cartesian_to_sky(cutsky['Position'], wrap=False)
+    assert np.all((dist >= drange[0]) & (dist <= drange[1]) & (ra >= rarange[0]) & (ra < rarange[1]) & (dec >= decrange[0]) & (dec <= decrange[1]))
 
 
 def test_masks():
@@ -169,6 +164,44 @@ def test_masks():
         assert np.all(selection.prob(ra, dec) == 0.)
 
 
+def test_redshift_array():
+
+    from cosmoprimo.fiducial import DESI
+    cosmo = DESI()
+    zmax = 10.
+    distance = lambda z: cosmo.comoving_radial_distance(z)
+    redshift = DistanceToRedshift(distance=distance, zmax=zmax, nz=4096)
+    z = np.random.uniform(0., 2., 10000)
+    assert np.allclose(redshift(distance(z)), z, atol=1e-6)
+
+
+def test_save():
+
+    ref = RandomBoxCatalog(boxsize=100.,size=10000,boxcenter=10000.,seed=42)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        fn = os.path.join(tmp_dir, 'tmp.npy')
+        ref.save(fn)
+        test = RandomBoxCatalog.load(fn)
+        assert np.all(test.boxsize == ref.boxsize)
+        assert np.all(test.position == ref.position)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        fn = os.path.join(tmp_dir, 'tmp.fits')
+        ref.save_fits(fn)
+        test = ParticleCatalog.load_fits(fn)
+        assert np.all(test.position == ref.position)
+
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        fn = os.path.join(tmp_dir, 'tmp.hdf5')
+        ref.save_hdf5(fn)
+        test = ParticleCatalog.load_hdf5(fn)
+        assert np.all(test.position == ref.position)
+    """
+
+
+
 def test_rotation_matrix():
 
     def norm(v):
@@ -183,8 +216,13 @@ def test_rotation_matrix():
 
 if __name__ == '__main__':
 
+    test_save()
+    exit()
+
     test_remap()
+    test_isometry()
     test_catalog()
-    test_redshift_array()
+    test_cutsky()
     test_masks()
+    test_redshift_array()
     test_rotation_matrix()
