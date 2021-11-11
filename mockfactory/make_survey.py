@@ -644,7 +644,7 @@ class BaseCatalog(BaseClass):
         If ``mpiroot`` is ``None`` or ``Ellipsis`` return result on all processes.
         """
         if mpiroot is None: mpiroot = Ellipsis
-        return mpi.gather_array(self[column],mpiroot=Ellipsis,mpicomm=self.mpicomm)
+        return mpi.gather_array(self[column], mpicomm=self.mpicomm, root=mpiroot)
 
     def gslice(self, *args):
         """
@@ -879,9 +879,9 @@ class BaseCatalog(BaseClass):
         import fitsio
         # Stolen from https://github.com/bccp/nbodykit/blob/master/nbodykit/io/fits.py
         msg = 'Input FITS file {}'.format(filename)
-        with fitsio.FITS(filename) as ff:
+        with fitsio.FITS(filename) as file:
             if ext is None:
-                for i, hdu in enumerate(ff):
+                for i, hdu in enumerate(file):
                     if hdu.has_data():
                         ext = i
                         break
@@ -889,19 +889,19 @@ class BaseCatalog(BaseClass):
                     raise IOError('{} has no binary table to read'.format(msg))
             else:
                 if isinstance(ext,str):
-                    if ext not in ff:
+                    if ext not in file:
                         raise IOError('{} does not contain extension with name {}'.format(msg,ext))
-                elif ext >= len(ff):
+                elif ext >= len(file):
                     raise IOError('{} extension {} is not valid'.format(msg,ext))
-            ff = ff[ext]
+            file = file[ext]
             # make sure we crash if data is wrong or missing
-            if not ff.has_data() or ff.get_exttype() == 'IMAGE_HDU':
+            if not file.has_data() or file.get_exttype() == 'IMAGE_HDU':
                 raise ValueError('{} extension {} is not a readable binary table'.format(msg,ext))
-            size = ff.get_nrows()
+            size = file.get_nrows()
             start = mpicomm.rank * size // mpicomm.size
             stop = (mpicomm.rank + 1) * size // mpicomm.size
-            new = ff.read(ext=ext,columns=columns,rows=range(start,stop))
-            header = ff.read_header()
+            new = file.read(ext=ext,columns=columns,rows=range(start,stop))
+            header = file.read_header()
             header.clean()
             attrs = dict(header)
             attrs['fitshdr'] = header
@@ -946,8 +946,8 @@ class BaseCatalog(BaseClass):
         if mpicomm.rank == mpiroot:
             cls.log_info('Loading {}.'.format(filename))
         import h5py
-        with h5py.File(filename, 'r', driver='mpio', comm=self.mpicomm) as file:
-            attrs = file.attrs
+        with h5py.File(filename, 'r') as file:
+            attrs = dict(file.attrs)
             grp = file[group]
             data = {}
 
@@ -962,30 +962,42 @@ class BaseCatalog(BaseClass):
             for name in data:
                 gsize = data[name].size
                 break
-            size = mpi.local_size(gsize, mpicomm=self.mpicomm)
+            size = mpi.local_size(gsize, mpicomm=mpicomm)
             csizes = np.cumsum([0] + mpicomm.allgather(size))
+            rank = mpicomm.rank
             for name in data:
                 if data[name].size != gsize:
                     raise ValueError('Column {} has different length (expected {:d}, found {:d})'.format(name, gsize, data[name].size))
                 data[name] = data[name][csizes[rank]:csizes[rank+1]]
         return cls(data=data, attrs=attrs)
 
-
     def save_hdf5(self, filename, group='/'):
         """Save catalog to ``filename`` as hdf5* file."""
         if self.is_mpi_root():
             self.log_info('Saving to {}.'.format(filename))
             utils.mkdir(os.path.dirname(filename))
+        driver = 'mpio'
+        kwargs = {'comm': self.mpicomm}
         import h5py
-        with h5py.File(filename, 'w', driver='mpio', comm=self.mpicomm) as file:
+        try:
+            h5py.File(filename, 'w', driver=driver, **kwargs)
+        except ValueError:
+            driver = None
+            kwargs = {}
+        with h5py.File(filename, 'w', driver=driver, **kwargs) as file:
             csizes = np.cumsum([0] + self.mpicomm.allgather(self.size))
             gsize = csizes[-1]
-            rank = self.mpicomm.rank
-            grp = file.create_group(group)
-            grp.attrs = self.attrs
+            grp = file
+            if group != '/':
+                grp = file.create_group(group)
+            grp.attrs.update(self.attrs)
             for name in self.columns():
-                dset = grp.create_dataset(name, shape=(gsize,)+self[name].shape[1:], dtype=self[name].dtype)
-                dset[csizes[rank]:csizes[rank+1]] = self[name]
+                if driver == 'mpio':
+                    rank = self.mpicomm.rank
+                    dset = grp.create_dataset(name, shape=(gsize,)+self[name].shape[1:], dtype=self[name].dtype)
+                    dset[csizes[rank]:csizes[rank+1]] = self[name]
+                else:
+                    dset = grp.create_dataset(name, data=self.gget(name))
 
     @classmethod
     @CurrentMPIComm.enable
@@ -1028,7 +1040,7 @@ class BaseCatalog(BaseClass):
             self.log_info('Saving to {}.'.format(filename))
             utils.mkdir(os.path.dirname(filename))
         state = self.__getstate__()
-        state['data'] = {name: mpi.gather_array(state['data'][name], mpicomm=self.mpicomm, root=self.mpiroot) for name in self.columns()}
+        state['data'] = {name: self.gget(name) for name in self.columns()}
         if self.is_mpi_root():
             np.save(filename, state, allow_pickle=True)
 
@@ -1249,10 +1261,10 @@ class BoxCatalog(ParticleCatalog):
         cuboid : :class:`remap.Cuboid`
             Cuboid instance for remapping.
         """
-        offset = self.boxcenter - self.boxsize/2.
+        ofileset = self.boxcenter - self.boxsize/2.
         for name in self.vectors:
             if name not in self._translational_invariants:
-                self[name] = cuboid.transform(self[name] - offset, boxsize=self.boxsize) + offset
+                self[name] = cuboid.transform(self[name] - ofileset, boxsize=self.boxsize) + ofileset
 
     def subbox(self, ranges=(0,1), boxsize_unit=True):
           """
@@ -1279,14 +1291,14 @@ class BoxCatalog(ParticleCatalog):
           if len(ranges) != 3:
               raise ValueError('Provide ranges for each axis')
           mask = self.trues()
-          offset = [0]*3
+          ofileset = [0]*3
           if boxsize_unit:
-              offset = self.boxcenter - self.boxsize/2.
+              ofileset = self.boxcenter - self.boxsize/2.
           current_box = [self.boxcenter - self.boxsize/2., self.boxcenter + self.boxsize/2.]
           box = [np.empty(3, dtype='f8') for i in range(2)]
           for ii, brange in enumerate(ranges):
               if boxsize_unit:
-                  brange = [self.boxsize[ii] * bb + offset[ii] for bb in brange]
+                  brange = [self.boxsize[ii] * bb + ofileset[ii] for bb in brange]
               box[0][ii] = max(current_box[0][ii], brange[0])
               box[1][ii] = min(current_box[1][ii], brange[1])
               mask &= (self.position[:,ii] >= brange[0]) & (self.position[:,ii] < brange[1])
@@ -1332,7 +1344,7 @@ class BoxCatalog(ParticleCatalog):
         return new
 
 
-    def cutsky(self, drange, rarange, decrange, external_margin=0., internal_margin=0., noutput=1):
+    def cutsky(self, drange, rarange, decrange, external_margin=None, internal_margin=None, noutput=1):
         """
         Cut box to sky geometry.
 
@@ -1347,12 +1359,14 @@ class BoxCatalog(ParticleCatalog):
         decrange : tuple, array
             Dec range.
 
-        external_margin : float, array, default=0
+        external_margin : float, tuple, list, default=None
             Margin to apply on box edges to avoid spurious large scale correlations
             when no periodic boundary conditions are applied.
+            If ``None``, set to ``internal_margin`` and maximize margin.
 
-        internal_margin : float, array, default=0
+        internal_margin : float, tuple, list, default=None
             Margin between subboxes to reduce correlation between output catalogs.
+            If ``None``, set to ``external_margin`` and maximize margin.
 
         noutput : int, default=1
             Number of output catalogs.
@@ -1364,35 +1378,53 @@ class BoxCatalog(ParticleCatalog):
         -------
         catalog : CutskyCatalog
         """
-        external_margin = _make_array(external_margin, 3, dtype='f8')
-        internal_margin = _make_array(internal_margin, 3, dtype='f8')
+        if np.ndim(external_margin) == 0:
+            external_margin = [external_margin]*3
+        if np.ndim(internal_margin) == 0:
+            internal_margin = [internal_margin]*3
         boxsize, isometry = cutsky_to_box(drange, rarange, decrange, return_isometry=True)
-        factor = (self.boxsize - 2.*external_margin) / boxsize
-        if not np.all(factor > 1.):
-            raise ValueError('boxsize {} with margin {} is too small for input survey geometry which requires {}'.format(self.boxsize, external_margin, boxsize))
         boxes = []
         if noutput == 1:
+            em = np.array([0. if m is None else m for m in external_margin])
+            factor = (self.boxsize - 2.*em) / boxsize
+            if not np.all(factor > 1.):
+                raise ValueError('boxsize {} with margin {} is too small for input survey geometry which requires {}'.format(self.boxsize, external_margin, boxsize))
             box = self.subbox()
             box.recenter()
             boxes.append(box)
         else:
-            # boxsize * nboxes + internal_margin * (nboxes - 1) + 2 * external_margin = self.boxsize
-            nboxes = (self.boxsize - 2.*external_margin + internal_margin)/(boxsize + internal_margin)
-            nboxes = nboxes.astype(int)
-            # extend margins to occupy full volume (same rescaling factor assumed for internal and external)
-            rescale_margin = (self.boxsize - boxsize * nboxes)/(internal_margin * (nboxes - 1) + 2 * external_margin)
-            assert np.all(rescale_margin >= 1.)
-            internal_margin = rescale_margin * internal_margin
-            external_margin = rescale_margin * external_margin
             ranges = []
-            for iaxis,nbox in enumerate(nboxes)[:noutput]:
-                tmp1 = external_margin[iaxis]/self.boxsize + (boxsize[iaxis] + internal_margin[iaxis]) * np.arange(nbox)/self.boxsize
-                tmp2 = tmp1 + boxsize[iaxis]/self.boxsize
-                ranges.append(zip(tmp1, tmp2)) # in boxsize_unit
+            for iaxis in range(3):
+                # boxsize * nboxes + internal_margin * (nboxes - 1) + 2 * external_margin = self.boxsize
+                em = external_margin[iaxis] or 0.
+                im = internal_margin[iaxis] or 0.
+                nboxes = int((self.boxsize[iaxis] - 2.*em + im)/(boxsize[iaxis] + im))
+                if external_margin[iaxis] is None and internal_margin[iaxis] is None:
+                    tm = self.boxsize[iaxis] - boxsize[iaxis] * nboxes
+                    em = im = tm / (nboxes + 1.)
+                if external_margin[iaxis] is None: em = im
+                if internal_margin[iaxis] is None: im = em
+                if (em < 0) or (im < 0):
+                    raise ValueError('margins must be > 0')
+                if (em > 0.) or (im > 0.):
+                    # extend margins to occupy full volume (same rescaling factor assumed for internal and external)
+                    rescale_margin = (self.boxsize[iaxis] - boxsize[iaxis] * nboxes)/(im * (nboxes - 1) + 2 * em)
+                    assert rescale_margin >= 1.
+                    im = rescale_margin * im
+                    em = rescale_margin * em
+                tmp1 = em/self.boxsize[iaxis] + (boxsize[iaxis] + im) * np.arange(nboxes)/self.boxsize[iaxis]
+                tmp2 = tmp1 + boxsize[iaxis]/self.boxsize[iaxis]
+                ranges.append(list(zip(tmp1, tmp2))) # in boxsize_unit
+            nmax = np.prod([len(r) for r in ranges])
+            if noutput is not None and nmax < noutput:
+                raise ValueError('can only cut {:d} catalogs from box, not noutput = {:d}'.format(nmax, noutput))
+            ioutput = 0
             for ranges in itertools.product(*ranges):
+                if noutput is not None and ioutput >= noutput: break
                 box = self.subbox(ranges=ranges, boxsize_unit=True)
                 box.recenter()
                 boxes.append(box)
+                ioutput += 1
 
         toret = []
         for box in boxes:

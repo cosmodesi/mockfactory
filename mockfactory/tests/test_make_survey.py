@@ -3,7 +3,7 @@ import tempfile
 import numpy as np
 
 from mockfactory.remap import Cuboid
-from mockfactory.make_survey import (RandomBoxCatalog, RandomCutskyCatalog, ParticleCatalog,
+from mockfactory.make_survey import (RandomBoxCatalog, RandomCutskyCatalog, ParticleCatalog, CutskyCatalog,
                                     EuclideanIsometry, DistanceToRedshift,
                                     TabulatedRadialMask, rotation_matrix_from_vectors,
                                     cutsky_to_box, box_to_cutsky)
@@ -141,6 +141,11 @@ def test_cutsky():
     dist, ra, dec = utils.cartesian_to_sky(cutsky['Position'], wrap=False)
     assert np.all((dist >= drange[0]) & (dist <= drange[1]) & (ra >= rarange[0]) & (ra < rarange[1]) & (dec >= decrange[0]) & (dec <= decrange[1]))
 
+    catalog = RandomBoxCatalog(boxsize=boxsize*2.1,size=10000,boxcenter=10000.,seed=42)
+    cutsky = catalog.cutsky(drange=drange,rarange=rarange,decrange=decrange,noutput=None)
+    assert type(cutsky) is not CutskyCatalog
+    assert len(cutsky) == 8
+
 
 def test_masks():
     n = 100; zrange = [0.6,1.1]
@@ -192,14 +197,11 @@ def test_save():
         test = ParticleCatalog.load_fits(fn)
         assert np.all(test.position == ref.position)
 
-    """
     with tempfile.TemporaryDirectory() as tmp_dir:
         fn = os.path.join(tmp_dir, 'tmp.hdf5')
         ref.save_hdf5(fn)
         test = ParticleCatalog.load_hdf5(fn)
         assert np.all(test.position == ref.position)
-    """
-
 
 
 def test_rotation_matrix():
@@ -216,12 +218,10 @@ def test_rotation_matrix():
 
 if __name__ == '__main__':
 
-    test_save()
-    exit()
-
     test_remap()
     test_isometry()
     test_catalog()
+    test_save()
     test_cutsky()
     test_masks()
     test_redshift_array()

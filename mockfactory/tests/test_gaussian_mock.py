@@ -9,13 +9,13 @@ from mockfactory import EulerianLinearMock, LagrangianLinearMock, setup_logging
 seed = 42
 boxsize = 500*np.ones(3, dtype='f8')
 los = np.array([0,0,1], dtype='f8')
-nmesh = 64*np.ones(3, dtype='i8')
+nmesh = 100*np.ones(3, dtype='i8')
 boxcenter = 40000.*los
-ells = (0,)
+ells = (0, 2)
 redshift = 1.0
 f = 0.8
 bias = 2.0
-nbar = 2e-3
+nbar = 4e-3
 z = 1.
 power = DESI().get_fourier().pk_interpolator().to_1d(z=z)
 
@@ -55,7 +55,6 @@ def plot_power_spectrum(result, model=None):
 
 
 def test_eulerian():
-
     mock = EulerianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
     mock.set_real_delta_field(bias=bias)
     #mock.set_rsd(f=f, los=los)
@@ -63,18 +62,29 @@ def test_eulerian():
     result = FFTPower(mock.mesh_delta_r, los=los, mode='2d', poles=ells, dk=0.01, kmin=0.)
     plot_power_spectrum(result, model=kaiser)
 
+    kn = np.pi * nmesh/boxsize
+    def powerw(k):
+        #return power(k) / (1 - 2./3. * np.sin(np.pi*k/2/kn[0])**2)
+        return power(k) / (1 - np.sin(np.pi*k/2/kn[0])**2 + 2./15.*np.sin(np.pi*k/2/kn[0])**4)
+
+    mock = EulerianLinearMock(powerw, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
+    mock.set_real_delta_field(bias=bias)
+    #mock.set_rsd(f=f, los=los)
+    mock.set_rsd(f=f)
+
     data = UniformCatalog(nbar, boxsize, seed=seed)
     randoms = UniformCatalog(nbar, boxsize, seed=seed+1)
     for catalog in [data, randoms]:
         catalog['Position'] += mock.boxcenter - mock.boxsize/2.
         catalog['NZ'] = catalog['Weight']*nbar
         catalog['WEIGHT_FKP'] = np.ones(catalog.size,dtype='f8')
-    data['Weight'] = mock.readout(data['Position'], field='1+delta', resampler='cic')
+    data['Weight'] = mock.readout(data['Position'], field='1+delta', resampler='tsc')
 
     fkp = FKPCatalog(data, randoms, nbar='NZ')
-    mesh = fkp.to_mesh(position='Position', fkp_weight='WEIGHT_FKP', comp_weight='Weight', nbar='NZ', BoxSize=1000, Nmesh=128, resampler='cic', interlaced=True)
+    mesh = fkp.to_mesh(position='Position', fkp_weight='WEIGHT_FKP', comp_weight='Weight', nbar='NZ', BoxSize=1000, Nmesh=100, resampler='cic', interlaced=True)
     result = ConvolvedFFTPower(mesh, poles=ells, dk=0.01)
     plot_power_spectrum(result, model=kaiser)
+    #plot_power_spectrum(result, model=lambda k: [bias**2*power(k)]*3)
 
 
 def test_lagrangian():
