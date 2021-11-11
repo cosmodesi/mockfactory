@@ -27,6 +27,10 @@ def test_remap():
     assert np.allclose(position, inverse)
 
     maxint = 1
+    boxsize = 3.14
+    test_lattice = Cuboid.generate_lattice_vectors(maxint=maxint, maxcomb=1, sort=False, boxsize=boxsize)
+    for v in test_lattice:
+        assert np.allclose(np.prod(v), boxsize**3)
     test_lattice = Cuboid.generate_lattice_vectors(maxint=maxint, maxcomb=1, sort=True)
     assert len(test_lattice) == 7
 
@@ -73,6 +77,12 @@ def test_catalog():
     assert np.all(catalog.position == position)
     new['Position'] += 1.
     assert np.all((new.position >= -1.) & (new.position <= 3.))
+    u = ((0, 1, 1), (1, 0, 1), (0, 1, 0))
+    ref = catalog.remap(*u)
+    test = catalog.remap(Cuboid(*u, boxsize=catalog.boxsize))
+    for col in ref:
+        assert np.allclose(test[col], ref[col])
+    assert np.all(test.position >= test.boxcenter - test.boxsize/2.) & np.all(test.position <= test.boxcenter + test.boxsize/2.)
 
     rarange, decrange = [0., 30.], [-10., 10.]
     catalog = RandomCutskyCatalog(size=1000, rarange=rarange, decrange=decrange)

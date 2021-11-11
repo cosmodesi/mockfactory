@@ -1,6 +1,6 @@
 """
 A vectorisation of Duncan Campbell's script https://github.com/duncandc/cuboid_remap,
-based on Jordan Carlson and Martin White algorithm of arXiv:1003.3178.
+based on Jordan Carlson and Martin White's algorithm of arXiv:1003.3178.
 """
 
 import logging
@@ -373,8 +373,9 @@ class Cuboid(BaseClass):
         for u in triplets:
             if det3(*u) == 1:
                 # calculate cuboid side lengths
-                cuboidsize = [norm(e*boxsize) for e in orthogonalize(*u)]
+                cuboidsize = tuple(norm(e*boxsize) for e in orthogonalize(*u))
                 if cuboidranges is None or (cuboidranges[1][0] <= cuboidsize[1] <= cuboidranges[1][1] and cuboidranges[2][0] <= cuboidsize[2] <= cuboidranges[2][1]):
+                    box = cuboidsize
                     if sort:
                         box = tuple(sorted(cuboidsize)[::-1])
                     if box not in toret:

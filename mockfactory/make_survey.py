@@ -587,6 +587,10 @@ class BaseCatalog(BaseClass):
         """Whether catalog contains column name ``column``."""
         return column in self.data
 
+    def __iter__(self):
+        """Iterate on catalog columns."""
+        return iter(self.data)
+
     def gindices(self):
         """Row numbers in the global catalog."""
         sizes = self.mpicomm.allgather(len(self))
@@ -737,10 +741,15 @@ class BaseCatalog(BaseClass):
                 setattr(new, name, tmp)
         return new
 
-    def deepcopy(self):
-        """Return deep copy."""
+    def deepcopy(self, columns=None):
+        """Return copy, including column names ``columns`` (defaults to all columns)."""
         import copy
-        return copy.deepcopy(self)
+        new = self.copy(columns=columns)
+        for name in self._attrs:
+            if hasattr(self, name):
+                setattr(new, name, copy.deepcopy(getattr(self, name)))
+        new.data = {col:self[col].copy() for col in new}
+        return new
 
     def __getstate__(self):
         """Return this class state dictionary."""
@@ -768,7 +777,6 @@ class BaseCatalog(BaseClass):
         if isinstance(name,str):
             return self.get(name)
         new = self.copy()
-        new.attrs = self.attrs.copy()
         new.data = {col:self[col][name] for col in self.data}
         return new
 
@@ -1252,60 +1260,79 @@ class BoxCatalog(ParticleCatalog):
         """Return unit vector to the box center."""
         return self.boxcenter/utils.distance(self.boxcenter)
 
-    def remap(self, cuboid):
+    def remap(self, *args):
         """
         Remap box catalog.
 
         Parameters
         ----------
-        cuboid : :class:`remap.Cuboid`
-            Cuboid instance for remapping.
+        args : :class:`remap.Cuboid`, 3-vectors
+            Cuboid instance for remapping, or 3 lattice vectors.
+
+        Returns
+        -------
+        new : BoxCatalog
+            Remapped catalog.
         """
-        ofileset = self.boxcenter - self.boxsize/2.
+        from .remap import Cuboid
+        if not args:
+            raise ValueError('Provide either remap.Cuboid instance or 3 lattice vectors')
+        if len(args) == 1:
+            if isinstance(args[0], Cuboid):
+                cuboid = args[0]
+            else:
+                args = args[0]
+        if len(args) > 1:
+            cuboid = Cuboid(*args, boxsize=self.boxsize)
+        offset = self.boxcenter - self.boxsize/2.
+        new = self.copy()
+        new.boxsize = cuboid.cuboidsize
+        cuboidoffset = new.boxcenter - new.boxsize/2.
         for name in self.vectors:
             if name not in self._translational_invariants:
-                self[name] = cuboid.transform(self[name] - ofileset, boxsize=self.boxsize) + ofileset
+                new[name] = cuboid.transform(self[name] - offset) + cuboidoffset
+        return new
 
     def subbox(self, ranges=(0,1), boxsize_unit=True):
-          """
-          Return new catalog brangeed to input ranges.
+        """
+        Return new catalog limited to input ranges.
 
-          Parameters
-          ----------
-          ranges : tuple, list of tuples
-              Cartesian ranges (min, max) for the new catalog.
-              Can be provided for each axis, with a list of tuples.
+        Parameters
+        ----------
+        ranges : tuple, list of tuples
+            Cartesian ranges (min, max) for the new catalog.
+            Can be provided for each axis, with a list of tuples.
 
-          boxsize_unit : bool, default=True
-              ``True`` if input ranges are in units of :attr:`boxsize` (typically between 0 and 1).
-              ``False`` if input ranges are in Cartesian space, with the same unit as :attr:`boxsize`
-              (typically between ``self.boxcenter - self.boxsize/2.`` and ``self.boxcenter + self.boxsize/2.``).
+        boxsize_unit : bool, default=True
+            ``True`` if input ranges are in units of :attr:`boxsize` (typically between 0 and 1).
+            ``False`` if input ranges are in Cartesian space, with the same unit as :attr:`boxsize`
+            (typically between ``self.boxcenter - self.boxsize/2.`` and ``self.boxcenter + self.boxsize/2.``).
 
-          Returns
-          -------
-          new : BoxCatalog
-              Catalog cut to provided ranges.
-          """
-          if np.ndim(ranges[0]) == 0:
-              ranges = [ranges]*3
-          if len(ranges) != 3:
-              raise ValueError('Provide ranges for each axis')
-          mask = self.trues()
-          ofileset = [0]*3
-          if boxsize_unit:
-              ofileset = self.boxcenter - self.boxsize/2.
-          current_box = [self.boxcenter - self.boxsize/2., self.boxcenter + self.boxsize/2.]
-          box = [np.empty(3, dtype='f8') for i in range(2)]
-          for ii, brange in enumerate(ranges):
-              if boxsize_unit:
-                  brange = [self.boxsize[ii] * bb + ofileset[ii] for bb in brange]
-              box[0][ii] = max(current_box[0][ii], brange[0])
-              box[1][ii] = min(current_box[1][ii], brange[1])
-              mask &= (self.position[:,ii] >= brange[0]) & (self.position[:,ii] < brange[1])
-          new = self[mask]
-          new.boxsize = np.asarray(box[1]) - np.asarray(box[0])
-          new.boxcenter = (np.asarray(box[1]) + np.asarray(box[0]))/2.
-          return new
+        Returns
+        -------
+        new : BoxCatalog
+            Catalog cut to provided ranges.
+        """
+        if np.ndim(ranges[0]) == 0:
+            ranges = [ranges]*3
+        if len(ranges) != 3:
+            raise ValueError('Provide ranges for each axis')
+        mask = self.trues()
+        offset = [0]*3
+        if boxsize_unit:
+            offset = self.boxcenter - self.boxsize/2.
+        current_box = [self.boxcenter - self.boxsize/2., self.boxcenter + self.boxsize/2.]
+        box = [np.empty(3, dtype='f8') for i in range(2)]
+        for ii, brange in enumerate(ranges):
+            if boxsize_unit:
+                brange = [self.boxsize[ii] * bb + offset[ii] for bb in brange]
+            box[0][ii] = max(current_box[0][ii], brange[0])
+            box[1][ii] = min(current_box[1][ii], brange[1])
+            mask &= (self.position[:,ii] >= brange[0]) & (self.position[:,ii] < brange[1])
+        new = self[mask]
+        new.boxsize = np.asarray(box[1]) - np.asarray(box[0])
+        new.boxcenter = (np.asarray(box[1]) + np.asarray(box[0]))/2.
+        return new
 
     def pad(self, factor=1.1):
         """
@@ -1342,7 +1369,6 @@ class BoxCatalog(ParticleCatalog):
         for col in new:
             new[col] = np.concatenate(data[col], axis=0)
         return new
-
 
     def cutsky(self, drange, rarange, decrange, external_margin=None, internal_margin=None, noutput=1):
         """
