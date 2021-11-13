@@ -7,7 +7,8 @@ from mockfactory.make_survey import (RandomBoxCatalog, RandomCutskyCatalog, Part
                                     EuclideanIsometry, DistanceToRedshift,
                                     TabulatedRadialMask, rotation_matrix_from_vectors,
                                     cutsky_to_box, box_to_cutsky)
-from mockfactory import utils
+
+from mockfactory import utils, setup_logging
 
 
 def test_remap():
@@ -227,6 +228,8 @@ def test_rotation_matrix():
 
 
 if __name__ == '__main__':
+
+    setup_logging()
 
     test_remap()
     test_isometry()

@@ -432,12 +432,249 @@ def vectorize_columns(func):
     return wrapper
 
 
+def _dict_to_array(data, struct=True):
+    """
+    Return dict as *numpy* array.
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary of name: array.
+
+    struct : bool, default=True
+        Whether to return structured array, with columns accessible through e.g. ``array['Position']``.
+        If ``False``, *numpy* will attempt to cast types of different columns.
+
+    Returns
+    -------
+    array : array
+    """
+    array = [(name,data[name]) for name in data]
+    if struct:
+        array = np.empty(array[0][1].shape[0], dtype=[(name, col.dtype, col.shape[1:]) for name,col in array])
+        for name in data: array[name] = data[name]
+    else:
+        array = np.array([col for _,col in array])
+    return array
+
+
+class BaseFile(BaseClass):
+    """
+    Base class to read/write a file from/to disk.
+    File handlers should extend this class, by (at least) implementing :meth:`read`, :meth:`get` and :meth:`write`.
+    """
+    @CurrentMPIComm.enable
+    def __init__(self, filename, attrs=None, mpicomm=None, mpiroot=0):
+        """
+        Initialize :class:`BaseFile`.
+
+        Parameters
+        ----------
+        filename : string
+            File name.
+
+        attrs : dict, default=None
+            File attributes. Will be complemented by those read from disk.
+            These will eventually be written to disk.
+
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
+
+        mpiroot : int, default=0
+            The rank number to use as master.
+        """
+        self.filename = filename
+        self.attrs = attrs or {}
+        self.mpicomm = mpicomm
+        self.mpiroot = mpiroot
+
+    @property
+    def start(self):
+        """Start of the data local chunk."""
+        return self.mpicomm.rank * self.gsize // self.mpicomm.size
+
+    @property
+    def stop(self):
+        """End of the data local chunk."""
+        return (self.mpicomm.rank + 1) * self.gsize // self.mpicomm.size
+
+    @property
+    def size(self):
+        """Size of local data chunk."""
+        return self.stop - self.start
+
+    def is_mpi_root(self):
+        """Whether current rank is root."""
+        return self.mpicomm.rank == self.mpiroot
+
+    def read(self):
+        """
+        Set :attr:`gsize`, :attr:`columns` and update attr:`attrs`.
+        To be implemented in your file handler.
+        """
+        raise NotImplementedError('Implement method "read" in your "{}"-inherited file handler'.format(self.__class__.___name__))
+
+    def get(self, column):
+        """
+        Read column from file.
+        To be implemented in your file handler.
+        """
+        raise NotImplementedError('Implement method "get" in your "{}"-inherited file handler'.format(self.__class__.___name__))
+
+    def write(self, data):
+         """
+         Write ``data`` (structured array or dict) to file.
+         To be implemented in your file handler.
+         """
+         raise NotImplementedError('Implement method "write" in your "{}"-inherited file handler'.format(self.__class__.___name__))
+
+
+class FitsFile(BaseFile):
+
+    """Class to read/write a FITS file from/to disk."""
+
+    def __init__(self, filename, ext=None, **kwargs):
+        """
+        Initialize :class:`FitsFile`.
+
+        Parameters
+        ----------
+        ext : int, default=None
+            FITS extension. Defaults to first extension with data.
+        """
+        self.ext = ext
+        super(FitsFile, self).__init__(filename=filename, **kwargs)
+
+    def read(self):
+        if self.is_mpi_root():
+            self.log_info('Loading {}.'.format(self.filename))
+        import fitsio
+        # Stolen from https://github.com/bccp/nbodykit/blob/master/nbodykit/io/fits.py
+        msg = 'Input FITS file {}'.format(self.filename)
+        with fitsio.FITS(self.filename) as file:
+            if self.ext is None:
+                for i, hdu in enumerate(file):
+                    if hdu.has_data():
+                        self.ext = i
+                        break
+                if self.ext is None:
+                    raise IOError('{} has no binary table to read'.format(msg))
+            else:
+                if isinstance(self.ext, str):
+                    if self.ext not in file:
+                        raise IOError('{} does not contain extension with name {}'.format(msg, self.ext))
+                elif self.ext >= len(file):
+                    raise IOError('{} extension {} is not valid'.format(msg, self.ext))
+            file = file[self.ext]
+            # make sure we crash if data is wrong or missing
+            if not file.has_data() or file.get_exttype() == 'IMAGE_HDU':
+                raise ValueError('{} extension {} is not a readable binary table'.format(msg, self.ext))
+            self.gsize = file.get_nrows()
+            self.columns = file.get_rec_dtype()[0].names
+
+            header = file.read_header()
+            self.attrs.update(dict(header))
+            header.clean()
+
+    def get(self, column):
+        import fitsio
+        return fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(self.start,self.stop))
+
+    def write(self, data):
+        import fitsio
+        """Possible to change fitsio to write by chunks?."""
+        if self.is_mpi_root():
+            self.log_info('Saving to {}.'.format(self.filename))
+            utils.mkdir(os.path.dirname(self.filename))
+        if not isinstance(data, np.ndarray):
+            data = _dict_to_array(data)
+        array = mpi.gather_array(data, mpicomm=self.mpicomm, root=self.mpiroot)
+        if self.is_mpi_root():
+            fitsio.write(self.filename, data, header=self.attrs.get('fitshdr',None), clobber=True)
+
+
+class HDF5File(BaseFile):
+
+    """Class to read/write a HDF5 file from/to disk."""
+
+    def __init__(self, filename, group='/', **kwargs):
+        """
+        Initialize :class:`HDF5File`.
+
+        Parameters
+        ----------
+        group : string, default='/'
+            HDF5 group where columns are located.
+        """
+        self.group = group
+        if not group or group == '/'*len(group):
+            self.group = '/'
+        super(HDF5File, self).__init__(filename=filename, **kwargs)
+
+    def read(self):
+        import h5py
+        with h5py.File(self.filename, 'r') as file:
+            grp = file[self.group]
+            self.attrs.update(dict(grp.attrs))
+            self.columns = list(grp.keys())
+            self.gsize = grp[self.columns[0]].shape[0]
+            for name in self.columns:
+                if grp[name].shape[0] != self.gsize:
+                    raise ValueError('Column {} has different length (expected {:d}, found {:d})'.format(name, self.gsize, grp[name].shape[0]))
+
+    def get(self, column):
+        import h5py
+        with h5py.File(self.filename, 'r') as file:
+            grp = file[self.group]
+            toret = grp[column][self.start:self.stop]
+        return toret
+
+    def write(self, data):
+        import h5py
+        if self.is_mpi_root():
+            self.log_info('Saving to {}.'.format(self.filename))
+            utils.mkdir(os.path.dirname(self.filename))
+        if isinstance(data, np.ndarray):
+            data = {name: data[name] for name in data.dtype.names}
+        driver = 'mpio'
+        kwargs = {'comm': self.mpicomm}
+        import h5py
+        try:
+            h5py.File(self.filename, 'w', driver=driver, **kwargs)
+        except ValueError:
+            driver = None
+            kwargs = {}
+        if driver == 'mpio':
+            with h5py.File(self.filename, 'w', driver=driver, **kwargs) as file:
+                csizes = np.cumsum([0] + self.mpicomm.allgather(self.size))
+                start, stop = csizes[self.mpicomm.rank], csizes[self.mpicomm.rank+1]
+                gsize = csizes[-1]
+                grp = file
+                if self.group != '/':
+                    grp = file.create_group(self.group)
+                grp.attrs.update(self.attrs)
+                for name in data:
+                    dset = grp.create_dataset(name, shape=(gsize,)+data[name].shape[1:], dtype=data[name].dtype)
+                    dset[start:stop] = self[name]
+        else:
+            if self.is_mpi_root():
+                first = True
+                for name in data:
+                    with h5py.File(self.filename, 'w', driver=driver, **kwargs) as file:
+                        grp = file
+                        if first:
+                            if self.group != '/':
+                                grp = file.create_group(self.group)
+                            grp.attrs.update(self.attrs)
+                        dset = grp.create_dataset(name, data=mpi.gather_array(data[name], mpicomm=self.mpicomm, root=self.mpiroot))
+                    first = False
+
 
 class BaseCatalog(BaseClass):
 
     _attrs = ['attrs']
 
-    """Class that represents a catalog, as a dictionary of columns stored as arrays."""
+    """Base class that represents a catalog, as a dictionary of columns stored as arrays."""
 
     @CurrentMPIComm.enable
     def __init__(self, data=None, columns=None, attrs=None, mpicomm=None, mpiroot=0):
@@ -453,7 +690,7 @@ class BaseCatalog(BaseClass):
             List of column names.
             Defaults to ``data.keys()``.
 
-        attrs : dict
+        attrs : dict, default=None
             Other attributes.
 
         mpicomm : MPI communicator, default=None
@@ -519,7 +756,10 @@ class BaseCatalog(BaseClass):
     def __len__(self):
         """Return catalog (local) length (``0`` if no column)."""
         keys = list(self.data.keys())
-        if not keys or self[keys[0]] is None:
+        if not keys:
+            source = getattr(self, '_source', None)
+            if source is not None:
+                return source.size
             return 0
         return len(self[keys[0]])
 
@@ -555,7 +795,11 @@ class BaseCatalog(BaseClass):
         toret = None
 
         if self.is_mpi_root():
-            toret = allcols = list(self.data.keys())
+            allcols = set(self.data.keys())
+            source = getattr(self, '_source', None)
+            if source is not None:
+                allcols |= set(source.columns)
+            toret = allcols = list(allcols)
 
             def toregex(name):
                 return name.replace('.','\.').replace('*','(.*)')
@@ -634,6 +878,8 @@ class BaseCatalog(BaseClass):
                 raise SyntaxError('Too many arguments!')
             has_default = True
             default = kwargs['default']
+        if getattr(self, '_source', None) is not None and column in self._source.columns:
+            self.data[column] = self._source.get(column)
         if column not in self.data and has_default:
             return default
         return self.data[column]
@@ -682,11 +928,8 @@ class BaseCatalog(BaseClass):
         """
         if columns is None:
             columns = self.columns()
-        if struct:
-            toret = np.empty(self.size,dtype=[(col,self[col].dtype,self[col].shape[1:]) for col in columns])
-            for col in columns: toret[col] = self[col]
-            return toret
-        return np.array([self[col] for col in columns])
+        data = {col: self[col] for col in columns}
+        return _dict_to_array(data, struct=struct)
 
     @classmethod
     @CurrentMPIComm.enable
@@ -789,7 +1032,14 @@ class BaseCatalog(BaseClass):
 
     def __delitem__(self, name):
         """Delete column ``name``."""
-        del self.data[name]
+        try:
+            del self.data[name]
+        except KeyError as exc:
+            source = getattr(self, '_source', None)
+            if source is not None:
+                source.columns.remove(name)
+            else:
+                raise KeyError('Column {} not found') from exc
 
     def __repr__(self):
         """Return string representation of catalog, including global size and columns."""
@@ -857,20 +1107,19 @@ class BaseCatalog(BaseClass):
                     toret = False
                     break
         return self.mpicomm.bcast(toret,root=self.mpiroot)
-
     @classmethod
     @CurrentMPIComm.enable
-    def load_fits(cls, filename, columns=None, ext=None, mpiroot=0, mpicomm=None):
+    def load_fits(cls, filename, ext=None, mpiroot=0, mpicomm=None):
         """
-        Load catalog in *fits* binary format from disk.
+        Load catalog in FITS binary format from disk.
 
         Parameters
         ----------
-        columns : list, default=None
-            List of column names to read. Defaults to all columns.
+        filename : string
+            File name to load catalog from.
 
         ext : int, default=None
-            *fits* extension. Defaults to first extension with data.
+            FITS extension. Defaults to first extension with data.
 
         mpiroot : int, default=0
             Rank of process where input array lives.
@@ -882,64 +1131,30 @@ class BaseCatalog(BaseClass):
         -------
         catalog : BaseCatalog
         """
-        if mpicomm.rank == mpiroot:
-            cls.log_info('Loading {}.'.format(filename))
-        import fitsio
-        # Stolen from https://github.com/bccp/nbodykit/blob/master/nbodykit/io/fits.py
-        msg = 'Input FITS file {}'.format(filename)
-        with fitsio.FITS(filename) as file:
-            if ext is None:
-                for i, hdu in enumerate(file):
-                    if hdu.has_data():
-                        ext = i
-                        break
-                if ext is None:
-                    raise IOError('{} has no binary table to read'.format(msg))
-            else:
-                if isinstance(ext,str):
-                    if ext not in file:
-                        raise IOError('{} does not contain extension with name {}'.format(msg,ext))
-                elif ext >= len(file):
-                    raise IOError('{} extension {} is not valid'.format(msg,ext))
-            file = file[ext]
-            # make sure we crash if data is wrong or missing
-            if not file.has_data() or file.get_exttype() == 'IMAGE_HDU':
-                raise ValueError('{} extension {} is not a readable binary table'.format(msg,ext))
-            size = file.get_nrows()
-            start = mpicomm.rank * size // mpicomm.size
-            stop = (mpicomm.rank + 1) * size // mpicomm.size
-            new = file.read(ext=ext,columns=columns,rows=range(start,stop))
-            header = file.read_header()
-            header.clean()
-            attrs = dict(header)
-            attrs['fitshdr'] = header
-            new = cls.from_array(new, attrs=attrs, mpiroot=mpiroot, mpicomm=mpicomm)
+        source = FitsFile(filename, ext=ext, mpiroot=mpiroot, mpicomm=mpicomm)
+        source.read()
+        new = cls(attrs={'fitshdr':source.attrs})
+        new._source = source
         return new
 
     def save_fits(self, filename):
-        """Save catalog to ``filename`` as *fits* file. Possible to change fitsio to write by chunks?."""
-        if self.is_mpi_root():
-            self.log_info('Saving to {}.'.format(filename))
-            utils.mkdir(os.path.dirname(filename))
-        import fitsio
-        array = self.to_array(struct=True)
-        array = mpi.gather_array(array,mpicomm=self.mpicomm,root=self.mpiroot)
-        if self.is_mpi_root():
-            fitsio.write(filename,array,header=self.attrs.get('fitshdr',None),clobber=True)
+        """Save catalog to ``filename`` as *fits* file."""
+        source = FitsFile(filename, ext=1, mpiroot=self.mpiroot, mpicomm=self.mpicomm)
+        source.write({name: self[name] for name in self.columns()})
 
     @classmethod
     @CurrentMPIComm.enable
-    def load_hdf5(cls, filename, group='/', columns=None, mpiroot=0, mpicomm=None):
+    def load_hdf5(cls, filename, group='/', mpiroot=0, mpicomm=None):
         """
-        Load catalog in *hdf5* binary format from disk.
+        Load catalog in HDF5 binary format from disk.
 
         Parameters
         ----------
+        filename : string
+            File name to load catalog from.
+
         group : string, default='/'
             HDF5 group where columns are located.
-
-        columns : list, default=None
-            List of column names to read. Defaults to all columns in ``group``.
 
         mpiroot : int, default=0
             Rank of process where input array lives.
@@ -951,61 +1166,26 @@ class BaseCatalog(BaseClass):
         -------
         catalog : BaseCatalog
         """
-        if mpicomm.rank == mpiroot:
-            cls.log_info('Loading {}.'.format(filename))
-        import h5py
-        with h5py.File(filename, 'r') as file:
-            attrs = dict(file.attrs)
-            grp = file[group]
-            data = {}
-
-            def set_dataset(name, obj):
-                data[name] = obj
-
-            grp.visititems(set_dataset)
-            if columns is not None:
-                data = {name:value for name,value in data.items() if name in columns}
-                if set(data.keys()) != set(columns):
-                    raise ValueError('Could not find columns {}'.format(set(columns) - set(data.keys())))
-            for name in data:
-                gsize = data[name].size
-                break
-            size = mpi.local_size(gsize, mpicomm=mpicomm)
-            csizes = np.cumsum([0] + mpicomm.allgather(size))
-            rank = mpicomm.rank
-            for name in data:
-                if data[name].size != gsize:
-                    raise ValueError('Column {} has different length (expected {:d}, found {:d})'.format(name, gsize, data[name].size))
-                data[name] = data[name][csizes[rank]:csizes[rank+1]]
-        return cls(data=data, attrs=attrs)
+        source = HDF5File(filename, group=group, mpiroot=mpiroot, mpicomm=mpicomm)
+        source.read()
+        new = cls(attrs=source.attrs)
+        new._source = source
+        return new
 
     def save_hdf5(self, filename, group='/'):
-        """Save catalog to ``filename`` as hdf5* file."""
-        if self.is_mpi_root():
-            self.log_info('Saving to {}.'.format(filename))
-            utils.mkdir(os.path.dirname(filename))
-        driver = 'mpio'
-        kwargs = {'comm': self.mpicomm}
-        import h5py
-        try:
-            h5py.File(filename, 'w', driver=driver, **kwargs)
-        except ValueError:
-            driver = None
-            kwargs = {}
-        with h5py.File(filename, 'w', driver=driver, **kwargs) as file:
-            csizes = np.cumsum([0] + self.mpicomm.allgather(self.size))
-            gsize = csizes[-1]
-            grp = file
-            if group != '/':
-                grp = file.create_group(group)
-            grp.attrs.update(self.attrs)
-            for name in self.columns():
-                if driver == 'mpio':
-                    rank = self.mpicomm.rank
-                    dset = grp.create_dataset(name, shape=(gsize,)+self[name].shape[1:], dtype=self[name].dtype)
-                    dset[csizes[rank]:csizes[rank+1]] = self[name]
-                else:
-                    dset = grp.create_dataset(name, data=self.gget(name))
+        """
+        Save catalog to disk in *hdf5* binary format.
+
+        Parameters
+        ----------
+        filename : string
+            File name where to save catalog.
+
+        group : string, default='/'
+            HDF5 group where columns are located.
+        """
+        source = HDF5File(filename, group=group, mpiroot=self.mpiroot, mpicomm=self.mpicomm)
+        source.write({name: self[name] for name in self.columns()})
 
     @classmethod
     @CurrentMPIComm.enable

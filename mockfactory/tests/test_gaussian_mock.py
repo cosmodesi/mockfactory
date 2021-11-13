@@ -67,6 +67,16 @@ def test_pm():
         print(rslab)
 
 
+def test_uniform():
+
+    nbar = 1e-3
+    boxsize = 1000.
+    first = UniformCatalog(nbar, boxsize, seed=42).to_mesh(Nmesh=nmesh, resampler='cic', interlaced=True)
+    second = UniformCatalog(nbar, boxsize, seed=43).to_mesh(Nmesh=nmesh, resampler='cic', interlaced=True)
+    result = FFTPower(first, second=second, los=los, mode='2d', poles=(0,), dk=0.01, kmin=0.)
+    plot_power_spectrum(result, model=None)
+
+
 def test_eulerian():
     mock = EulerianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
     mock.set_real_delta_field(bias=bias)
@@ -146,6 +156,7 @@ def test_lagrangian():
 if __name__ == '__main__':
 
     setup_logging()
+    #test_uniform()
     #test_pm()
     test_eulerian()
     test_lagrangian()
