@@ -56,7 +56,6 @@ class LagrangianLinearMock(BaseGaussianMock):
         """
         super(LagrangianLinearMock, self).set_real_delta_field(bias=bias, lognormal_transform=lognormal_transform)
         disp_k = [self.pm.create(type='untransposedcomplex') for i in range(self.ndim)]
-        for i in range(self.ndim): disp_k[i][:] = 1j
         slabs = [self.mesh_delta_k.slabs.x, self.mesh_delta_k.slabs] + [d.slabs for d in disp_k]
         for islabs in zip(*slabs):
             kslab, delta_slab = islabs[:2] # the k arrays and delta slab
@@ -66,44 +65,45 @@ class LagrangianLinearMock(BaseGaussianMock):
             k2[mask_zero] = 1. # avoid dividing by zero
             for i in range(self.ndim):
                 disp_slab = islabs[2+i]
-                disp_slab[...] *= kslab[i] / k2 * delta_slab[...]
+                disp_slab[...] = 1j * kslab[i] / k2 * delta_slab[...]
                 #disp_slab[mask_zero] = 0. # no bulk displacement
         self.mesh_disp_r = [d.c2r() for d in disp_k]
 
-    def readout(self, positions, field='1+delta', resampler='nnb'):
+    def readout(self, positions, field='delta', resampler='nnb', compensate=False):
         """
-        Read density field and displacements at input positions.
+        Read density field at input positions.
 
         Parameters
         ----------
         positions : array of shape (N,3)
             Cartesian positions.
 
-        field : string, default='1+delta'
-            Type of field to read, either '1+delta', 'nbar*delta', 'nbar*(1+delta)', 'nbar',
-            'disp_x', 'disp_y', 'disp_z'
+        field : string, pm.RealField, default='1+delta'
+            Mesh or type of field to read, either 'delta', 'nbar*delta', 'nbar*(1+delta)', 'nbar',
+            'disp_x', 'disp_y', 'disp_z'.
             Fields with 'nbar' require calling :meth:`set_analytic_selection_function` first.
 
         resampler : string, default='nnb'
             Resampler to interpolate the field at input positions.
-            e.g. 'nnb', 'cic', 'tsc', 'pcs'...
+            e.g. 'ngp', 'cic', 'tsc', 'pcs'...
+
+        compensate : bool, default=False
+            Whether to compensate for smooting due to resampling, to make the power spectrum
+            of output (positions, values) match that of ``field`` (up to sampling noise).
 
         Returns
         -------
         values : array of shape (N,)
             Field values interpolated at input positions.
         """
-        # half cell shift already included in resampling
-        try:
-            return super(LagrangianLinearMock, self).readout(positions, field, resampler=resampler)
-        except ValueError:
-            pass
-        if field.startswith('disp_'):
+        if isinstance(field, str) and field.startswith('disp_'):
             iaxis = 'xyz'.index(field[len('disp_'):])
-            return self.mesh_disp_r[iaxis].readout(positions - self.boxcenter, resampler=resampler)
-        raise ValueError('Unknown field {}'.format(field))
+            field = self.mesh_disp_r[iaxis]
 
-    def poisson_sample(self, seed=None, resampler='cic'):
+        return super(LagrangianLinearMock, self).readout(positions, field, resampler=resampler)
+
+
+    def poisson_sample(self, seed=None, resampler='cic', compensate=False):
         """
         Poisson sample density field and set :attr:`position` and :attr:`disp`,
         Zeldovich displacements interpolated at :attr:`position`.
@@ -119,13 +119,15 @@ class LagrangianLinearMock(BaseGaussianMock):
 
         resampler : string, default='nnb'
             Resampler to interpolate the displacement field at sampled positions.
-            e.g. 'nnb', 'cic', 'tsc', 'pcs'...
+            e.g. 'ngp', 'cic', 'tsc', 'pcs'...
+
+        compensate : bool, default=False
+            Whether to compensate for smooting due to resampling.
         """
         super(LagrangianLinearMock, self).poisson_sample(seed=seed)
         self.disps = self.position.copy()
         for i,mesh_disp_r in enumerate(self.mesh_disp_r):
-            self.disps[:,i] = mesh_disp_r.readout(self.position - self.boxcenter, resampler=resampler)
-        # move particles from initial position based on the Zeldovich displacement
+            self.disps[:,i] = self.readout(self.position, field=mesh_disp_r, resampler=resampler, compensate=compensate)
         self.position += self.disps
 
     def set_rsd(self, f, los=None):

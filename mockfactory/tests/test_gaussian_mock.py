@@ -4,7 +4,7 @@ from matplotlib import pyplot as plt
 from cosmoprimo.fiducial import DESI
 from nbodykit.lab import FFTPower, UniformCatalog, FKPCatalog, ConvolvedFFTPower
 
-from mockfactory import EulerianLinearMock, LagrangianLinearMock, setup_logging
+from mockfactory import EulerianLinearMock, LagrangianLinearMock, utils, setup_logging
 
 seed = 42
 boxsize = 500*np.ones(3, dtype='f8')
@@ -54,6 +54,19 @@ def plot_power_spectrum(result, model=None):
         plt.show()
 
 
+def test_pm():
+    from pmesh.pm import ParticleMesh
+    pm = ParticleMesh(BoxSize=[1.]*3, Nmesh=[2]*3, dtype='f8')
+    mesh = pm.create(type='real')
+    positions = np.array([0.6]*3)[None,:]
+    mesh.paint(positions, resampler='cic')
+    print(mesh.value[:])
+    values = mesh.readout(positions, resampler='nnb')
+    print(values)
+    for rslab, slab in zip(mesh.slabs.x,mesh.slabs):
+        print(rslab)
+
+
 def test_eulerian():
     mock = EulerianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
     mock.set_real_delta_field(bias=bias)
@@ -62,12 +75,7 @@ def test_eulerian():
     result = FFTPower(mock.mesh_delta_r, los=los, mode='2d', poles=ells, dk=0.01, kmin=0.)
     plot_power_spectrum(result, model=kaiser)
 
-    kn = np.pi * nmesh/boxsize
-    def powerw(k):
-        #return power(k) / (1 - 2./3. * np.sin(np.pi*k/2/kn[0])**2)
-        return power(k) / (1 - np.sin(np.pi*k/2/kn[0])**2 + 2./15.*np.sin(np.pi*k/2/kn[0])**4)
-
-    mock = EulerianLinearMock(powerw, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
+    mock = EulerianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
     mock.set_real_delta_field(bias=bias)
     #mock.set_rsd(f=f, los=los)
     mock.set_rsd(f=f)
@@ -78,7 +86,7 @@ def test_eulerian():
         catalog['Position'] += mock.boxcenter - mock.boxsize/2.
         catalog['NZ'] = catalog['Weight']*nbar
         catalog['WEIGHT_FKP'] = np.ones(catalog.size,dtype='f8')
-    data['Weight'] = mock.readout(data['Position'], field='1+delta', resampler='tsc')
+    data['Weight'] = mock.readout(data['Position'], field='delta', resampler='ngp', compensate=True) + 1.
 
     fkp = FKPCatalog(data, randoms, nbar='NZ')
     mesh = fkp.to_mesh(position='Position', fkp_weight='WEIGHT_FKP', comp_weight='Weight', nbar='NZ', BoxSize=1000, Nmesh=100, resampler='cic', interlaced=True)
@@ -89,27 +97,55 @@ def test_eulerian():
 
 def test_lagrangian():
 
+    bias = 2.
+
     mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
-    mock.set_real_delta_field(bias=bias-1)
+    mock.set_real_delta_field(bias=bias-1.)
     mock.set_analytic_selection_function(nbar=nbar)
-    mock.poisson_sample(seed=seed)
+    mock.poisson_sample(seed=seed, resampler='cic', compensate=True)
+    #mock.set_rsd(f=f, los=los)
     mock.set_rsd(f=f)
     data = mock.to_nbodykit_catalog()
 
     randoms = UniformCatalog(nbar, boxsize, seed=seed+1)
-    randoms['Position'] += mock.boxcenter
+    randoms['Position'] += mock.boxcenter - mock.boxsize/2.
+    for catalog in [data, randoms]:
+        catalog['NZ'] = catalog['Weight']*nbar
+        catalog['WEIGHT_FKP'] = np.ones(catalog.size,dtype='f8')
+
+
+    fkp = FKPCatalog(data, randoms, nbar='NZ')
+    mesh = fkp.to_mesh(position='Position', fkp_weight='WEIGHT_FKP', comp_weight='Weight', nbar='NZ', BoxSize=1000, Nmesh=100, resampler='tsc', interlaced=True)
+    result = ConvolvedFFTPower(mesh, poles=ells, dk=0.01)
+    #plot_power_spectrum(result, model=kaiser)
+    plot_power_spectrum(result, model=lambda k: [bias**2*power(k)]*3)
+
+
+    from nbodykit.lab import LogNormalCatalog
+    from nbodykit import cosmology
+    cosmo = cosmology.Planck15
+    data = LogNormalCatalog(power, bias=bias, cosmo=cosmo, redshift=redshift, nbar=nbar, BoxSize=boxsize, Nmesh=nmesh, seed=seed, unitary_amplitude=True)
+    fref = cosmo.scale_independent_growth_rate(redshift)
+    data['Displacement'] = data['VelocityOffset']/fref
+    data['Position'] += mock.boxcenter - mock.boxsize/2.
+    #data['Position'] -= data['Displacement']
+    data['Position'] += f*utils.vector_projection(data['Displacement'], los)
     for catalog in [data, randoms]:
         catalog['NZ'] = catalog['Weight']*nbar
         catalog['WEIGHT_FKP'] = np.ones(catalog.size,dtype='f8')
 
     fkp = FKPCatalog(data, randoms, nbar='NZ')
-    mesh = fkp.to_mesh(position='Position', fkp_weight='WEIGHT_FKP', comp_weight='Weight', nbar='NZ', BoxSize=1000, Nmesh=128, resampler='tsc', interlaced=True)
-    result = ConvolvedFFTPower(mesh, poles=ells, dk=0.01)
-    plot_power_spectrum(result, model=kaiser)
+    mesh = fkp.to_mesh(position='Position', fkp_weight='WEIGHT_FKP', comp_weight='Weight', nbar='NZ', BoxSize=1000, Nmesh=100, resampler='tsc', interlaced=True)
+    ref = ConvolvedFFTPower(mesh, poles=ells, dk=0.01)
+    kref = ref.poles['k']
+    pkref = [ref.poles['power_{:d}'.format(ell)].real - (ell == 0) * ref.attrs['shotnoise'] for ell in ells]
+    #plot_power_spectrum(result, model=kaiser)
+    plot_power_spectrum(result, model=lambda k: [np.interp(k, kref, pk) for pk in pkref])
 
 
 if __name__ == '__main__':
 
     setup_logging()
+    #test_pm()
     test_eulerian()
-    #test_lagrangian()
+    test_lagrangian()

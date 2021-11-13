@@ -42,7 +42,7 @@ def _make_array(value, shape, dtype='f8'):
 
 def _get_los(los):
     # return line of sight 3-vector
-    if isinstance(los,str):
+    if isinstance(los, str):
         los = 'xyz'.index(los)
     if np.ndim(los) == 0:
         ilos = los

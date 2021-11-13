@@ -194,7 +194,7 @@ def cartesian_to_sky(position, wrap=True, degree=True):
         Distance.
 
     ra : array
-        Right Ascension.
+        Right ascension.
 
     dec : array
         Declination.

@@ -51,7 +51,7 @@ class EulerianLinearMock(BaseGaussianMock):
             If ``None``, use local line of sight.
         """
         # cartesian product faster than harmonic (I guess due to non-trivial Ymls)
-        offset = self.boxcenter + 0.5*self.boxsize / self.nmesh
+        offset = self.boxcenter #+ 0.5*self.boxsize / self.nmesh
         disp_deriv_k = self.mesh_delta_k.copy()
         iscallable = callable(f)
 
@@ -81,6 +81,7 @@ class EulerianLinearMock(BaseGaussianMock):
                         slab[...] *= kslab[i]*kslab[j]/k2
                     disp_deriv_k.c2r(out=mesh_delta_rsd)
                     for rslab, slab in zip(mesh_delta_rsd.slabs.x,mesh_delta_rsd.slabs):
+                        # reslab in [-boxsize/2., boxsize/2.]
                         rgrid = [r + o for r,o in zip(rslab, offset)]
                         r2 = np.sum(rr**2 for rr in rgrid)
                         slab[...] *= rgrid[i]*rgrid[j]/r2

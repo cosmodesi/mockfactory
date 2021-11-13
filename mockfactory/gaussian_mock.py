@@ -29,6 +29,23 @@ def _get_los(los):
     return los
 
 
+def _compensate_mesh(mesh, resampler='nnb'):
+    # compensate resampling by applying window
+    p = {'nnb':1,'ngp':1,'cic':2,'tsc':3,'pcs':4}[resampler]
+
+    def window(x):
+        toret = 1.
+        for xi in x:
+            toret = toret * np.sinc(0.5 * xi / np.pi) ** p
+        return toret
+
+    mesh = mesh.r2c()
+    cellsize = mesh.pm.BoxSize/mesh.pm.Nmesh
+    for k, slab in zip(mesh.slabs.x, mesh.slabs):
+        slab[...] /= window(ki * ci for ki, ci in zip(k, cellsize))
+    return mesh.c2r()
+
+
 class SetterProperty(object):
     """
     Attribute setter, runs ``func`` when setting a class attribute.
@@ -40,40 +57,6 @@ class SetterProperty(object):
 
     def __set__(self, obj, value):
         return self.func(obj, value)
-
-
-def cartesian_to_sky(position, wrap=True, degree=True):
-    r"""
-    Transform cartesian coordinates into distance, RA, Dec.
-
-    Parameters
-    ----------
-    position : array of shape (3, N)
-        Position in cartesian coordinates.
-
-    wrap : bool, default=True
-        Whether to wrap RA in :math:`[0, 2 \pi]`.
-
-    degree : bool, default=True
-        Whether RA, Dec are in degrees (``True``) or radians (``False``).
-
-    Returns
-    -------
-    dist : array
-        Distance.
-
-    ra : array
-        Right Ascension.
-
-    dec : array
-        Declination.
-    """
-    dist = sum(pos**2 for pos in position)**0.5
-    ra = np.arctan2(position[:,1], position[:,0])
-    if wrap: ra %= 2.*np.pi
-    dec = np.arcsin(position[:,2]/dist)
-    conversion = np.pi/180. if degree else 1.
-    return dist, ra/conversion, dec/conversion
 
 
 class BaseGaussianMock(BaseClass):
@@ -293,15 +276,23 @@ class BaseGaussianMock(BaseClass):
             self.attrs['norm'] = np.prod(self.nmesh)*self.nbar**2*dv
             return
         self.nbar = self.pm.create(type='real')
+
+        def cartesian_to_sky(*position):
+            dist = sum(pos**2 for pos in position)**0.5
+            ra = np.arctan2(position[1], position[0]) % 2.*np.pi
+            dec = np.arcsin(position[2]/dist)
+            conversion = np.pi/180.
+            return dist, ra/conversion, dec/conversion
+
         for rslab, slab in zip(self.nbar.slabs.x,self.nbar.slabs):
-            dist,ra,dec = cartesian_to_sky([r.flatten() for r in rslab])
+            dist,ra,dec = cartesian_to_sky(r.flatten() for r in rslab)
             slab[...].flat = nbar(dist, ra, dec)
         if interlaced:
             nbar2 = self.nbar.copy()
             #shifted = pm.affine.shift(0.5)
             offset = 0.5*cellsize
             for rslab, slab in zip(nbar2.slabs.x,nbar2.slabs):
-                dist,ra,dec = cartesian_to_sky([(r + o).flatten() for r,o in zip(rslab,offset)])
+                dist,ra,dec = cartesian_to_sky((r + o).flatten() for r,o in zip(rslab,offset))
                 slab[...].flat = nbar(dist, ra, dec)
             c1 = self.nbar.r2c()
             c2 = nbar2.r2c()
@@ -329,7 +320,7 @@ class BaseGaussianMock(BaseClass):
         dv = np.prod(self.pm.boxsize/self.pm.nmesh)
         self.mesh_delta_r += noise*self.nbar*dv
 
-    def readout(self, positions, field='1+delta', resampler='nnb'):
+    def readout(self, positions, field='delta', resampler='nnb', compensate=False):
         """
         Read density field at input positions.
 
@@ -338,29 +329,44 @@ class BaseGaussianMock(BaseClass):
         positions : array of shape (N,3)
             Cartesian positions.
 
-        field : string, default='1+delta'
-            Type of field to read, either '1+delta', 'nbar*delta', 'nbar*(1+delta)', 'nbar'.
+        field : string, pm.RealField, default='1+delta'
+            Mesh or type of field to read, either 'delta', 'nbar*delta', 'nbar*(1+delta)', 'nbar'.
             Fields with 'nbar' require calling :meth:`set_analytic_selection_function` first.
 
         resampler : string, default='nnb'
             Resampler to interpolate the field at input positions.
             e.g. 'nnb', 'cic', 'tsc', 'pcs'...
 
+        compensate : bool, default=False
+            Whether to compensate for smooting due to resampling, to make the power spectrum
+            of output (positions, values) match that of ``field`` (up to sampling noise).
+
         Returns
         -------
         values : array of shape (N,)
             Field values interpolated at input positions.
         """
+        if not isinstance(field, str):
+            mesh = field
+        elif field == 'delta':
+            mesh = self.mesh_delta_r
+        elif field == 'nbar*delta':
+            mesh = self.nbar*self.mesh_delta_r
+        elif field == 'nbar*(1+delta)':
+            mesh = self.nbar*(self.mesh_delta_r + 1)
+        elif field == 'nbar':
+            mesh = self.nbar
+        else:
+            raise ValueError('Unknown field {}'.format(field))
+
+        resampler = resampler.lower()
+
+        if compensate:
+            mesh = _compensate_mesh(mesh, resampler=resampler)
+
+        if resampler == 'ngp': resampler = 'nnb'
         # half cell shift already included in resampling
-        if field == '1+delta':
-            return self.mesh_delta_r.readout(positions - self.boxcenter, resampler=resampler) + 1.
-        if field == 'nbar*delta':
-            return (self.nbar*self.mesh_delta_r).readout(positions - self.boxcenter, resampler=resampler)
-        if field == 'nbar*(1+delta)':
-            return (self.nbar*(self.mesh_delta_r + 1)).readout(positions - self.boxcenter, resampler=resampler)
-        if field == 'nbar':
-            return self.nbar.readout(positions - self.boxcenter, resampler=resampler)
-        raise ValueError('Unknown field {}'.format(field))
+        return mesh.readout(positions - self.boxcenter + self.boxsize/2., resampler=resampler)
 
     def to_nbodykit_mesh(self):
         """Export density fied ``self.mesh_delta_r*self.nbar`` to :class:`nbodykit.source.mesh.field.FieldMesh`."""
@@ -386,7 +392,7 @@ class BaseGaussianMock(BaseClass):
         cellsize = self.boxsize / self.nmesh
         dv = np.prod(cellsize)
         # number of objects in each cell (per rank, as a RealField)
-        cellmean = (self.mesh_delta_r + 1.) * self.nbar*dv
+        cellmean = (1. + self.mesh_delta_r) * self.nbar*dv
         # create a random state with the input seed
         rng = MPIRandomState(size=self.mesh_delta_r.size, seed=seed1, mpicomm=self.mpicomm)
         # generate poissons. Note that we use ravel/unravel to
