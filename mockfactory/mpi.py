@@ -379,10 +379,7 @@ def scatter_array(data, counts=None, root=0, mpicomm=None):
     newshape = list(shape)
 
     if counts is None:
-        newlength = shape[0] // mpicomm.size
-        if mpicomm.rank < shape[0] % mpicomm.size:
-            newlength += 1
-        newshape[0] = newlength
+        newshape[0] = newlength = local_size(shape[0], mpicomm=mpicomm)
     else:
         if counts.sum() != shape[0]:
             raise ValueError('the sum of the `counts` array needs to be equal to data length')
@@ -894,8 +891,11 @@ def local_size(size, mpicomm=None):
     localsize : int
         Local size. Sum of local sizes over all processes equals global size.
     """
-    localsize = size // mpicomm.size
-    if mpicomm.rank < size % mpicomm.size: localsize += 1
+    start = mpicomm.rank * size // mpicomm.size
+    stop = (mpicomm.rank + 1) * size // mpicomm.size
+    localsize = stop - start
+    #localsize = size // mpicomm.size
+    #if mpicomm.rank < size % mpicomm.size: localsize += 1
     return localsize
 
 

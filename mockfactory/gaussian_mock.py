@@ -46,6 +46,16 @@ def _compensate_mesh(mesh, resampler='nnb'):
     return mesh.c2r()
 
 
+def _transform_rslab(rslab, boxsize):
+    # we do not use the same conventions as pmesh...
+    toret = []
+    for ii,r in enumerate(rslab):
+        mask = r < 0.
+        r[mask] += boxsize[ii]
+        toret.append(r)
+    return toret
+
+
 class SetterProperty(object):
     """
     Attribute setter, runs ``func`` when setting a class attribute.
@@ -239,11 +249,12 @@ class BaseGaussianMock(BaseClass):
             Whether to apply a lognormal transform to the (biased) real field, i.e. :math:`\exp{(\delta)}'
         """
         mesh_delta_r = self.mesh_delta_k.c2r()
-        offset = self.boxcenter + 0.5*self.boxsize / self.nmesh
+        offset = self.boxcenter - self.boxsize/2. #+ 0.5*self.boxsize / self.nmesh
         if bias is not None:
             if callable(bias):
                 for islabs in zip(mesh_delta_r.slabs.x, mesh_delta_r.slabs):
                     rslab, delta_slab = islabs[:2]
+                    rslab = _transform_rslab(rslab, self.boxsize)
                     rnorm = np.sum((r + o)**2 for r,o in zip(rslab,offset))**0.5
                     delta_slab[...].flat = bias(delta_slab[...].flat, rnorm.flatten())
             else:
@@ -285,21 +296,23 @@ class BaseGaussianMock(BaseClass):
             return dist, ra/conversion, dec/conversion
 
         for rslab, slab in zip(self.nbar.slabs.x,self.nbar.slabs):
+            rslab = _transform_rslab(rslab, self.boxsize)
             dist,ra,dec = cartesian_to_sky(r.flatten() for r in rslab)
             slab[...].flat = nbar(dist, ra, dec)
         if interlaced:
             nbar2 = self.nbar.copy()
             #shifted = pm.affine.shift(0.5)
             offset = 0.5*cellsize
-            for rslab, slab in zip(nbar2.slabs.x,nbar2.slabs):
-                dist,ra,dec = cartesian_to_sky((r + o).flatten() for r,o in zip(rslab,offset))
+            for rslab, slab in zip(nbar2.slabs.x, nbar2.slabs):
+                rslab = _transform_rslab(rslab, self.boxsize)
+                dist,ra,dec = cartesian_to_sky((r + o).flatten() for r,o in zip(rslab, offset))
                 slab[...].flat = nbar(dist, ra, dec)
             c1 = self.nbar.r2c()
             c2 = nbar2.r2c()
             # and then combine
             for k, s1, s2 in zip(c1.slabs.x, c1.slabs, c2.slabs):
-                kcellsize = sum(k[i] * cellsize[i] for i in range(self.nbar.ndim))
-                s1[...] = s1[...] * 0.5 + s2[...] * 0.5 * np.exp(0.5 * 1j * kcellsize)
+                kc = sum(k[i] * cellsize[i] for i in range(self.nbar.ndim))
+                s1[...] = s1[...] * 0.5 + s2[...] * 0.5 * np.exp(0.5 * 1j * kc)
             # FFT back to real-space
             c1.c2r(out=self.nbar)
         self.attrs['norm'] = (self.nbar**2).csum()*dv
@@ -366,7 +379,11 @@ class BaseGaussianMock(BaseClass):
 
         if resampler == 'ngp': resampler = 'nnb'
         # half cell shift already included in resampling
-        return mesh.readout(positions - self.boxcenter + self.boxsize/2., resampler=resampler)
+        positions = positions - self.boxcenter + self.boxsize/2.
+        layout = self.pm.decompose(positions, smoothing=resampler)
+        positions = layout.exchange(positions)
+        values = mesh.readout(positions, resampler=resampler)
+        return layout.gather(values, mode='sum', out=None)
 
     def to_nbodykit_mesh(self):
         """Export density fied ``self.mesh_delta_r*self.nbar`` to :class:`nbodykit.source.mesh.field.FieldMesh`."""
@@ -406,7 +423,7 @@ class BaseGaussianMock(BaseClass):
             self.log_info('Poisson sampling done, total number of objects is {:d}'.format(ntotal))
 
         # create uniform grid of particles, one per grid point, in BoxSize coordinates
-        positions, ids = self.pm.generate_uniform_particle_grid(shift=0.0, return_id=True)
+        positions, ids = self.pm.generate_uniform_particle_grid(shift=0, return_id=True)
         # no need to do decompose because pos_mesh is strictly within the
         # local volume of the RealField.
         number_per_cell = number.readout(positions, resampler='nnb')
@@ -425,6 +442,9 @@ class BaseGaussianMock(BaseClass):
         in_cell_shift = np.array([rng_shift.uniform(0, c) for c in cellsize]).T
 
         positions[...] += in_cell_shift
+        #for ii in range(3):
+        #    positions[positions[:,ii] >= self.boxsize[ii]/2,ii] -= self.boxsize[ii]
+        #print(positions.min(axis=0), positions.max(axis=0))
         #positions[...] %= self.boxsize
         positions[...] += self.boxcenter - self.boxsize/2.
 

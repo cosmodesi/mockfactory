@@ -10,7 +10,7 @@ from mockfactory import LagrangianLinearMock, utils, setup_logging
 
 # First generate mock in box
 # power is the callable power spectrum as a function of k
-mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=size, boxcenter=boxcenter, seed=42, unitary_amplitude=False)
+mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, unitary_amplitude=False)
 # This is Lagrangian bias, Eulerian bias - 1
 mock.set_real_delta_field(bias=bias-1)
 mock.set_analytic_selection_function(nbar=nbar)
@@ -20,7 +20,7 @@ data = mock.to_catalog()
 
 # We've got data, now turn to randoms
 from mockfactory.make_survey import RandomBoxCatalog
-randoms = RandomBoxCatalog(nbar=4.*nbar, boxsize=size, seed=44)
+randoms = RandomBoxCatalog(nbar=10.*nbar, boxsize=boxsize)
 
 # Apply cutsky geometry
 data = data.cutsky(drange=drange, rarange=rarange, decrange=decrange, noutput=None)
@@ -42,6 +42,19 @@ randoms = randoms[mask_radial(randoms['Z'], seed=85)]
 # Save to disk
 data.save_fits(data_fn)
 randoms.save_fits(randoms_fn)
+```
+
+One can also apply Jordan Carlson and Martin White's remapping algorithm to any periodic mock, e.g. (pseudo-code, for an example with all variables defined see [this notebook](https://github.com/adematti/mockfactory/blob/main/nb/remap_examples.ipynb)):
+```
+# We start from a random catalog, but can be anything with a periodic box geometry
+from mockfactory.make_survey import RandomBoxCatalog
+randoms = RandomBoxCatalog(nbar=nbar, boxsize=boxsize)
+# Let's choose the 3 lattice vectors in available ones
+from mockfactory.remap import Cuboid
+lattice = Cuboid.generate_lattice_vectors(maxint=1, maxcomb=1, sort=False, boxsize=catalog.boxsize)
+# lattice is a dictionary of cuboidsize: [basis]
+# Choose the cuboid (final) size that best suits you and:
+remapped_randoms = randoms.remap(*basis)
 ```
 
 Example notebooks are provided in directory nb/.

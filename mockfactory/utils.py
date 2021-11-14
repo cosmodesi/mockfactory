@@ -9,8 +9,11 @@ import functools
 
 import numpy as np
 
+from .mpi import CurrentMPIComm
 
-def exception_handler(exc_type, exc_value, exc_traceback):
+
+@CurrentMPIComm.enable
+def exception_handler(exc_type, exc_value, exc_traceback, mpicomm=None):
     """Print exception with a logger."""
     # Do not print traceback if the exception has been handled and logged
     _logger_name = 'Exception'
@@ -22,6 +25,7 @@ def exception_handler(exc_type, exc_value, exc_traceback):
         log.critical('Interrupted by the user.')
     else:
         log.critical('An error occured.')
+    mpicomm.Abort()
 
 
 def mkdir(dirname):
@@ -64,8 +68,10 @@ def setup_logging(level=logging.INFO, stream=sys.stdout, filename=None, filemode
 
     class MyFormatter(logging.Formatter):
 
-        def format(self, record):
-            self._style._fmt = '[%09.2f] ' % (time.time() - t0) + ' %(asctime)s %(name)-28s %(levelname)-8s %(message)s'
+        @CurrentMPIComm.enable
+        def format(self, record, mpicomm=None):
+            ranksize = '[{:{dig}d}/{:d}]'.format(mpicomm.rank,mpicomm.size,dig=len(str(mpicomm.size)))
+            self._style._fmt = '[%09.2f] ' % (time.time() - t0) + ranksize + ' %(asctime)s %(name)-25s %(levelname)-8s %(message)s'
             return super(MyFormatter,self).format(record)
 
     fmt = MyFormatter(datefmt='%m-%d %H:%M ')
@@ -100,8 +106,10 @@ class BaseMetaClass(type):
         def make_logger(level):
 
             @classmethod
-            def logger(cls, *args, **kwargs):
-                return getattr(cls.logger, level)(*args, **kwargs)
+            @CurrentMPIComm.enable
+            def logger(cls, *args, rank=None, mpicomm=None, **kwargs):
+                if rank is None or mpicomm.rank == rank:
+                    getattr(cls.logger,level)(*args,**kwargs)
 
             return logger
 

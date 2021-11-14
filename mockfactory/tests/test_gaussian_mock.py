@@ -56,15 +56,33 @@ def plot_power_spectrum(result, model=None):
 
 def test_pm():
     from pmesh.pm import ParticleMesh
-    pm = ParticleMesh(BoxSize=[1.]*3, Nmesh=[2]*3, dtype='f8')
+    pm = ParticleMesh(BoxSize=[2.]*3, Nmesh=[2]*3, dtype='f8')
     mesh = pm.create(type='real')
-    positions = np.array([0.6]*3)[None,:]
+    positions = np.array([1.8]*3)[None,:]
     mesh.paint(positions, resampler='cic')
     print(mesh.value[:])
     values = mesh.readout(positions, resampler='nnb')
     print(values)
     for rslab, slab in zip(mesh.slabs.x,mesh.slabs):
-        print(rslab)
+        print('x', rslab[0])
+        print('y', rslab[1])
+        print('z', rslab[2])
+        print('value', slab)
+
+
+def test_readout():
+    from pmesh.pm import ParticleMesh
+    pm = ParticleMesh(BoxSize=[100.]*3, Nmesh=[100]*3, dtype='f8')
+    mesh = pm.create(type='real')
+    for rslab, slab in zip(mesh.slabs.x,mesh.slabs):
+        mask = (rslab[0] <= 0) & (~np.isnan(rslab[1])) & (~np.isnan(rslab[2]))
+        slab[mask] = 1.
+    positions = np.array([np.linspace(0., pm.BoxSize[ii], 10) for ii in range(3)]).T
+    layout = pm.decompose(positions, smoothing='nnb')
+    positions = layout.exchange(positions)
+    values = mesh.readout(positions, resampler='nnb')
+    print(positions)
+    print(values)
 
 
 def test_uniform():
@@ -130,7 +148,6 @@ def test_lagrangian():
     #plot_power_spectrum(result, model=kaiser)
     plot_power_spectrum(result, model=lambda k: [bias**2*power(k)]*3)
 
-
     from nbodykit.lab import LogNormalCatalog
     from nbodykit import cosmology
     cosmo = cosmology.Planck15
@@ -153,10 +170,57 @@ def test_lagrangian():
     plot_power_spectrum(result, model=lambda k: [np.interp(k, kref, pk) for pk in pkref])
 
 
+def test_mpi():
+    nmesh = 64
+    nbar = 1e-5
+    from mpi4py import MPI
+    from mockfactory.make_survey import RandomBoxCatalog
+
+    def run_eulerian(mpicomm=MPI.COMM_WORLD):
+        mock = EulerianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True, mpicomm=mpicomm)
+        mock.set_real_delta_field(bias=bias)
+        #mock.set_rsd(f=f, los=los)
+        mock.set_rsd(f=f)
+        data = RandomBoxCatalog(nbar=nbar, boxsize=boxsize, boxcenter=boxcenter, seed=seed, mpicomm=mpicomm)
+        data['Weight'] = mock.readout(data['Position'], field='delta', resampler='ngp', compensate=True) + 1.
+        return data
+
+    def run_lagrangian(mpicomm=MPI.COMM_WORLD):
+
+        mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True, mpicomm=mpicomm)
+        mock.set_real_delta_field(bias=bias-1.)
+        mock.set_analytic_selection_function(nbar=nbar)
+        mock.poisson_sample(seed=seed, resampler='cic', compensate=True)
+        #mock.set_rsd(f=f, los=los)
+        mock.set_rsd(f=f)
+        data = mock.to_catalog()
+        return data
+
+    data = run_eulerian()
+    positions, weights = data.gget('Position'), data.gget('Weight')
+
+    if data.is_mpi_root():
+        data = run_eulerian(mpicomm=MPI.COMM_SELF)
+        ref_positions = data.get('Position')
+        ref_weights = data.get('Weight')
+        assert np.allclose(positions, ref_positions)
+        assert np.allclose(weights, ref_weights)
+
+    data = run_lagrangian()
+    positions = data.gget('Position')
+
+    if data.is_mpi_root():
+        data = run_lagrangian(mpicomm=MPI.COMM_SELF)
+        ref_positions = data.get('Position')
+        assert np.allclose(positions, ref_positions)
+
+
 if __name__ == '__main__':
 
     setup_logging()
     #test_uniform()
     #test_pm()
+    #test_readout()
     test_eulerian()
     test_lagrangian()
+    test_mpi()

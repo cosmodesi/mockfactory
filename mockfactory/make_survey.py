@@ -1361,124 +1361,120 @@ class UniformAngularMask(BaseAngularMask):
         return prob
 
 
-try:
-    import pymangle
-    HAVE_PYMANGLE = True
-except ImportError:
-    HAVE_PYMANGLE = False
-
-if HAVE_PYMANGLE:
-
-    class MangleAngularMask(BaseAngularMask):
-
-        """Angular mask based on Mangle."""
-
-        def __init__(self, nbar=None, filename=None, **kwargs):
-            """
-            Initialize :class:`MangleAngularMask`.
-
-            Parameters
-            ----------
-            nbar : pymangle.Mangle, default=None
-                Mangle mask with method :meth:`pymangle.Mangle.polyid_and_weight`
-
-            filename : string, default=None
-                If provided, file name to load Mangle mask from.
-                This requires **pymangle**.
-            """
-            super(MangleAngularMask,self).__init__(**kwargs)
-            if filename is not None:
-                if self.is_mpi_root():
-                    self.log_info('Loading Mangle geometry file: {}.'.format(filename))
-                self.nbar = pymangle.Mangle(filename)
-            else:
-                self.nbar = np.asarray(nbar)
-
-        def prob(self, ra, dec):
-            """
-            Return selection probability.
-
-            Parameters
-            ----------
-            ra : array
-                Right ascension (degree).
-
-            dec : array
-                Declination (degree).
-
-            Returns
-            -------
-            prob : array
-                Selection probability.
-            """
-            ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
-            ids, prob = self.nbar.polyid_and_weight(ra, dec)
-            mask = ids != -1
-            mask &= (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
-            mask &= (dec >= self.decrange[0]) & (dec <= self.decrange[-1])
-            prob[~mask] = 0.
-            return prob
+try: import pymangle
+except ImportError: pymangle = None
 
 
-try:
-    import healpy
-    HAVE_HEALPY = True
-except ImportError:
-    HAVE_HEALPY = False
+class MangleAngularMask(BaseAngularMask):
 
-if HAVE_HEALPY:
+    """Angular mask based on Mangle."""
 
-    class HealpixAngularMask(BaseAngularMask):
+    def __init__(self, nbar=None, filename=None, **kwargs):
         """
-        Angular mask based on Healpix.
-        This requires healpy.
+        Initialize :class:`MangleAngularMask`.
+
+        Parameters
+        ----------
+        nbar : pymangle.Mangle, default=None
+            Mangle mask with method :meth:`pymangle.Mangle.polyid_and_weight`
+
+        filename : string, default=None
+            If provided, file name to load Mangle mask from.
+            This requires **pymangle**.
         """
-        def __init__(self, nbar=None, filename=None, nest=False, **kwargs):
-            """
-            Initialize :class:`MangleAngularMask`.
+        if pymangle is None:
+            raise ImportError('Install pymangle')
+        super(MangleAngularMask,self).__init__(**kwargs)
+        if filename is not None:
+            if self.is_mpi_root():
+                self.log_info('Loading Mangle geometry file: {}.'.format(filename))
+            self.nbar = pymangle.Mangle(filename)
+        else:
+            self.nbar = np.asarray(nbar)
 
-            Parameters
-            ----------
-            nbar : array
-                Healpix nbar for each Healpix index.
+    def prob(self, ra, dec):
+        """
+        Return selection probability.
 
-            filename : string, default=None
-                If provided, file name to load Healpix map from.
+        Parameters
+        ----------
+        ra : array
+            Right ascension (degree).
 
-            nest : bool, default=False
-                Nested scheme?
-            """
-            super(HealpixAngularMask,self).__init__(**kwargs)
-            if filename is not None:
-                if self.is_mpi_root():
-                    self.log_info('Loading healpy geometry file: {}.'.format(filename))
-                self.nbar = healpy.fitsfunc.read_map(filename, nest=nest, **kwargs)
-            else:
-                self.nbar = np.asarray(nbar)
-            self.nside = healpy.npix2nside(self.nbar.size)
-            self.nest = nest
+        dec : array
+            Declination (degree).
 
-        def prob(self, ra, dec):
-            """
-            Return selection probability.
+        Returns
+        -------
+        prob : array
+            Selection probability.
+        """
+        ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
+        ids, prob = self.nbar.polyid_and_weight(ra, dec)
+        mask = ids != -1
+        mask &= (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
+        mask &= (dec >= self.decrange[0]) & (dec <= self.decrange[-1])
+        prob[~mask] = 0.
+        return prob
 
-            Parameters
-            ----------
-            ra : array
-                Right ascension (degree).
 
-            dec : array
-                Declination (degree).
+try: import healpy
+except ImportError: healpy = None
 
-            Returns
-            -------
-            prob : array
-                Selection probability.
-            """
-            ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
-            theta, phi = (-dec+90.)*np.pi/180., ra*np.pi/180.
-            prob = self.nbar[healpy.ang2pix(self.nside,theta,phi,nest=self.nest,lonlat=False)]
-            mask = (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
-            mask &= (dec >= self.decrange[0]) & (dec <= self.decrange[-1])
-            prob[~mask] = 0.
-            return prob
+
+class HealpixAngularMask(BaseAngularMask):
+    """
+    Angular mask based on Healpix.
+    This requires healpy.
+    """
+    def __init__(self, nbar=None, filename=None, nest=False, **kwargs):
+        """
+        Initialize :class:`MangleAngularMask`.
+
+        Parameters
+        ----------
+        nbar : array
+            Healpix nbar for each Healpix index.
+
+        filename : string, default=None
+            If provided, file name to load Healpix map from.
+
+        nest : bool, default=False
+            Nested scheme?
+        """
+        if healpy is None:
+            raise ImportError('Install healpy')
+        super(HealpixAngularMask,self).__init__(**kwargs)
+        if filename is not None:
+            if self.is_mpi_root():
+                self.log_info('Loading healpy geometry file: {}.'.format(filename))
+            self.nbar = healpy.fitsfunc.read_map(filename, nest=nest, **kwargs)
+        else:
+            self.nbar = np.asarray(nbar)
+        self.nside = healpy.npix2nside(self.nbar.size)
+        self.nest = nest
+
+    def prob(self, ra, dec):
+        """
+        Return selection probability.
+
+        Parameters
+        ----------
+        ra : array
+            Right ascension (degree).
+
+        dec : array
+            Declination (degree).
+
+        Returns
+        -------
+        prob : array
+            Selection probability.
+        """
+        ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
+        theta, phi = (-dec+90.)*np.pi/180., ra*np.pi/180.
+        prob = self.nbar[healpy.ang2pix(self.nside,theta,phi,nest=self.nest,lonlat=False)]
+        mask = (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
+        mask &= (dec >= self.decrange[0]) & (dec <= self.decrange[-1])
+        prob[~mask] = 0.
+        return prob

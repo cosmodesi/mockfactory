@@ -193,26 +193,35 @@ def test_redshift_array():
 
 def test_save():
 
-    ref = RandomBoxCatalog(boxsize=100.,size=10000,boxcenter=10000.,seed=42)
+    size = 10
+    ref = RandomBoxCatalog(boxsize=100., size=size, boxcenter=10000., seed=42)
+    mpicomm = ref.mpicomm
+    assert ref.gsize == size
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        fn = os.path.join(tmp_dir, 'tmp.npy')
+        fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.npy'), root=0)
         ref.save(fn)
         test = RandomBoxCatalog.load(fn)
         assert np.all(test.boxsize == ref.boxsize)
         assert np.all(test.position == ref.position)
 
+    from nbodykit.lab import FITSCatalog
     with tempfile.TemporaryDirectory() as tmp_dir:
-        fn = os.path.join(tmp_dir, 'tmp.fits')
+        #tmp_dir = 'tmp'
+        fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.fits'), root=0)
         ref.save_fits(fn)
-        test = ParticleCatalog.load_fits(fn)
-        assert np.all(test.position == ref.position)
+        #catalog = FITSCatalog(fn)['Position'][:10].compute()
+        for ii in range(10):
+            test = ParticleCatalog.load_fits(fn)
+            assert np.all(test.position == ref.position)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        fn = os.path.join(tmp_dir, 'tmp.hdf5')
+        #tmp_dir = 'tmp'
+        fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.hdf5'))
         ref.save_hdf5(fn)
-        test = ParticleCatalog.load_hdf5(fn)
-        assert np.all(test.position == ref.position)
+        for ii in range(10):
+            test = ParticleCatalog.load_hdf5(fn)
+            assert np.all(test.position == ref.position)
 
 
 def test_rotation_matrix():
@@ -230,7 +239,6 @@ def test_rotation_matrix():
 if __name__ == '__main__':
 
     setup_logging()
-
     test_remap()
     test_isometry()
     test_catalog()

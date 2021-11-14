@@ -124,59 +124,83 @@ class BaseFile(BaseClass):
          raise NotImplementedError('Implement method "write" in your "{}"-inherited file handler'.format(self.__class__.___name__))
 
 
+try: import fitsio
+except ImportError: fitsio = None
+
+
 class FitsFile(BaseFile):
+    """
+    Class to read/write a FITS file from/to disk.
 
-    """Class to read/write a FITS file from/to disk."""
-
+    Note
+    ----
+    In some circumstances (e.g. catalog has just been written), :meth:`get` fails with a file not found error.
+    We have tried making sure processes read the file one after the other, but that does not solve the issue.
+    A similar issue happens with nbodykit - though at a lower frequency.
+    """
     def __init__(self, filename, ext=None, **kwargs):
         """
         Initialize :class:`FitsFile`.
 
         Parameters
         ----------
+        filename : string
+            File name.
+
         ext : int, default=None
             FITS extension. Defaults to first extension with data.
+
+        kwargs : dict
+            Arguments for :class:`BaseFile`.
         """
+        if fitsio is None:
+            raise ImportError('Install fitsio')
         self.ext = ext
         super(FitsFile, self).__init__(filename=filename, **kwargs)
 
     def read(self):
+        # Taken from https://github.com/bccp/nbodykit/blob/master/nbodykit/io/fits.py
         if self.is_mpi_root():
             self.log_info('Loading {}.'.format(self.filename))
-        import fitsio
-        # Stolen from https://github.com/bccp/nbodykit/blob/master/nbodykit/io/fits.py
-        msg = 'Input FITS file {}'.format(self.filename)
-        with fitsio.FITS(self.filename) as file:
-            if self.ext is None:
-                for i, hdu in enumerate(file):
-                    if hdu.has_data():
-                        self.ext = i
-                        break
+            msg = 'Input FITS file {}'.format(self.filename)
+            with fitsio.FITS(self.filename) as file:
                 if self.ext is None:
-                    raise IOError('{} has no binary table to read'.format(msg))
-            else:
-                if isinstance(self.ext, str):
-                    if self.ext not in file:
-                        raise IOError('{} does not contain extension with name {}'.format(msg, self.ext))
-                elif self.ext >= len(file):
-                    raise IOError('{} extension {} is not valid'.format(msg, self.ext))
-            file = file[self.ext]
-            # make sure we crash if data is wrong or missing
-            if not file.has_data() or file.get_exttype() == 'IMAGE_HDU':
-                raise ValueError('{} extension {} is not a readable binary table'.format(msg, self.ext))
-            self.gsize = file.get_nrows()
-            self.columns = file.get_rec_dtype()[0].names
-
-            header = file.read_header()
-            self.attrs.update(dict(header))
-            header.clean()
+                    for i, hdu in enumerate(file):
+                        if hdu.has_data():
+                            self.ext = i
+                            break
+                    if self.ext is None:
+                        raise IOError('{} has no binary table to read'.format(msg))
+                else:
+                    if isinstance(self.ext, str):
+                        if self.ext not in file:
+                            raise IOError('{} does not contain extension with name {}'.format(msg, self.ext))
+                    elif self.ext >= len(file):
+                        raise IOError('{} extension {} is not valid'.format(msg, self.ext))
+                file = file[self.ext]
+                # make sure we crash if data is wrong or missing
+                if not file.has_data() or file.get_exttype() == 'IMAGE_HDU':
+                    raise ValueError('{} extension {} is not a readable binary table'.format(msg, self.ext))
+                self.gsize = file.get_nrows()
+                self.columns = file.get_rec_dtype()[0].names
+                header = file.read_header()
+                self.attrs.update(dict(header))
+                header.clean()
+                state = {name: getattr(self, name) for name in ['filename','gsize','columns','ext','attrs']}
+        self.__dict__.update(self.mpicomm.bcast(state if self.is_mpi_root() else None, root=self.mpiroot))
+        #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
 
     def get(self, column):
-        import fitsio
         return fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(self.start,self.stop))
+        #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
+        #if not self.is_mpi_root():
+        #    do = self.mpicomm.recv(source=self.mpicomm.rank-1, tag=42)
+        #toret = fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(self.start,self.stop))
+        #if self.mpicomm.rank < self.mpicomm.size -1:
+        #    self.mpicomm.send(True, dest=self.mpicomm.rank+1, tag=42)
+        #return toret
 
     def write(self, data):
-        import fitsio
         """Possible to change fitsio to write by chunks?."""
         if self.is_mpi_root():
             self.log_info('Saving to {}.'.format(self.filename))
@@ -185,47 +209,68 @@ class FitsFile(BaseFile):
             data = _dict_to_array(data)
         array = mpi.gather_array(data, mpicomm=self.mpicomm, root=self.mpiroot)
         if self.is_mpi_root():
-            fitsio.write(self.filename, data, header=self.attrs.get('fitshdr',None), clobber=True)
+            fitsio.write(self.filename, array, header=self.attrs.get('fitshdr',None), clobber=True)
+
+
+try: import h5py
+except ImportError: h5py = None
 
 
 class HDF5File(BaseFile):
+    """
+    Class to read/write a HDF5 file from/to disk.
 
-    """Class to read/write a HDF5 file from/to disk."""
-
+    Note
+    ----
+    In some circumstances (e.g. catalog has just been written), :meth:`get` fails with a file not found error.
+    We have tried making sure processes read the file one after the other, but that does not solve the issue.
+    A similar issue happens with nbodykit - though at a lower frequency.
+    """
     def __init__(self, filename, group='/', **kwargs):
         """
         Initialize :class:`HDF5File`.
 
         Parameters
         ----------
+        filename : string
+            File name.
+
         group : string, default='/'
             HDF5 group where columns are located.
+
+        kwargs : dict
+            Arguments for :class:`BaseFile`.
         """
+        if h5py is None:
+            raise ImportError('Install h5py')
         self.group = group
         if not group or group == '/'*len(group):
             self.group = '/'
         super(HDF5File, self).__init__(filename=filename, **kwargs)
 
     def read(self):
-        import h5py
-        with h5py.File(self.filename, 'r') as file:
-            grp = file[self.group]
-            self.attrs.update(dict(grp.attrs))
-            self.columns = list(grp.keys())
-            self.gsize = grp[self.columns[0]].shape[0]
-            for name in self.columns:
-                if grp[name].shape[0] != self.gsize:
-                    raise ValueError('Column {} has different length (expected {:d}, found {:d})'.format(name, self.gsize, grp[name].shape[0]))
+        if self.is_mpi_root():
+            self.log_info('Loading {}.'.format(self.filename))
+            with h5py.File(self.filename, 'r') as file:
+                grp = file[self.group]
+                self.attrs.update(dict(grp.attrs))
+                self.columns = list(grp.keys())
+                self.gsize = grp[self.columns[0]].shape[0]
+                for name in self.columns:
+                    if grp[name].shape[0] != self.gsize:
+                        raise ValueError('Column {} has different length (expected {:d}, found {:d})'.format(name, self.gsize, grp[name].shape[0]))
+                state = {name: getattr(self, name) for name in ['filename','gsize','columns','attrs']}
+        self.__dict__.update(self.mpicomm.bcast(state if self.is_mpi_root() else None, root=self.mpiroot))
+        #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
 
     def get(self, column):
-        import h5py
+        #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
         with h5py.File(self.filename, 'r') as file:
             grp = file[self.group]
             toret = grp[column][self.start:self.stop]
         return toret
 
     def write(self, data):
-        import h5py
         if self.is_mpi_root():
             self.log_info('Saving to {}.'.format(self.filename))
             utils.mkdir(os.path.dirname(self.filename))
@@ -252,17 +297,18 @@ class HDF5File(BaseFile):
                     dset = grp.create_dataset(name, shape=(gsize,)+data[name].shape[1:], dtype=data[name].dtype)
                     dset[start:stop] = self[name]
         else:
-            if self.is_mpi_root():
-                first = True
-                for name in data:
+            first = True
+            for name in data:
+                array = mpi.gather_array(data[name], mpicomm=self.mpicomm, root=self.mpiroot)
+                if self.is_mpi_root():
                     with h5py.File(self.filename, 'w', driver=driver, **kwargs) as file:
                         grp = file
                         if first:
                             if self.group != '/':
                                 grp = file.create_group(self.group)
                             grp.attrs.update(self.attrs)
-                        dset = grp.create_dataset(name, data=mpi.gather_array(data[name], mpicomm=self.mpicomm, root=self.mpiroot))
-                    first = False
+                        dset = grp.create_dataset(name, data=array)
+                first = False
 
 
 class BaseCatalog(BaseClass):
@@ -702,6 +748,7 @@ class BaseCatalog(BaseClass):
                     toret = False
                     break
         return self.mpicomm.bcast(toret,root=self.mpiroot)
+
     @classmethod
     @CurrentMPIComm.enable
     def load_fits(cls, filename, ext=None, mpiroot=0, mpicomm=None):
