@@ -73,7 +73,7 @@ def test_pm():
 def test_readout():
     from pmesh.pm import ParticleMesh
     pm = ParticleMesh(BoxSize=[100.]*3, Nmesh=[100]*3, dtype='f8')
-    mesh = pm.create(type='real')
+    mesh = pm.create(type='real', value=0.)
     for rslab, slab in zip(mesh.slabs.x,mesh.slabs):
         mask = (rslab[0] <= 0) & (~np.isnan(rslab[1])) & (~np.isnan(rslab[2]))
         slab[mask] = 1.
@@ -96,6 +96,7 @@ def test_uniform():
 
 
 def test_eulerian():
+
     mock = EulerianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
     mock.set_real_delta_field(bias=bias)
     #mock.set_rsd(f=f, los=los)
@@ -114,7 +115,7 @@ def test_eulerian():
         catalog['Position'] += mock.boxcenter - mock.boxsize/2.
         catalog['NZ'] = catalog['Weight']*nbar
         catalog['WEIGHT_FKP'] = np.ones(catalog.size,dtype='f8')
-    data['Weight'] = mock.readout(data['Position'], field='delta', resampler='ngp', compensate=True) + 1.
+    data['Weight'] = mock.readout(data['Position'], field='delta', resampler='cic', compensate=True) + 1.
 
     fkp = FKPCatalog(data, randoms, nbar='NZ')
     mesh = fkp.to_mesh(position='Position', fkp_weight='WEIGHT_FKP', comp_weight='Weight', nbar='NZ', BoxSize=1000, Nmesh=100, resampler='cic', interlaced=True)
@@ -124,8 +125,6 @@ def test_eulerian():
 
 
 def test_lagrangian():
-
-    bias = 2.
 
     mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
     mock.set_real_delta_field(bias=bias-1.)
