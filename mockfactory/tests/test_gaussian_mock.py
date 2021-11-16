@@ -102,18 +102,22 @@ def test_uniform():
 
 
 def test_eulerian():
-
     mock = EulerianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
     mock.set_real_delta_field(bias=bias)
-    #mock.set_rsd(f=f, los=los)
+    #mock.set_rsd(f=f, los='z')
     mock.set_rsd(f=f)
+    #mock.set_analytic_selection_function(nbar=1e4)
+    mock.set_real_white_noise(seed=42)
     result = FFTPower(mock.mesh_delta_r, los=los, mode='2d', poles=ells, dk=0.01, kmin=0.)
     plot_power_spectrum(result, model=kaiser)
 
     mock = EulerianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
-    mock.set_real_delta_field(bias=bias)
+    def bias_callable(delta, dist): return bias*delta
+    mock.set_real_delta_field(bias=bias_callable)
     #mock.set_rsd(f=f, los=los)
-    mock.set_rsd(f=f)
+    #mock.set_rsd(f=f)
+    # just checking everything runs
+    mock.set_rsd(f=lambda d: f*np.ones_like(d))
 
     data = UniformCatalog(nbar, boxsize, seed=seed)
     randoms = UniformCatalog(nbar, boxsize, seed=seed+1)
@@ -135,6 +139,8 @@ def test_lagrangian():
     mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
     mock.set_real_delta_field(bias=bias-1.)
     mock.set_analytic_selection_function(nbar=nbar)
+    def nbar_callable(dist, ra, dec): return nbar
+    mock.set_analytic_selection_function(nbar=nbar_callable, interlaced=True)
     mock.poisson_sample(seed=seed, resampler='cic', compensate=True)
     #mock.set_rsd(f=f, los=los)
     mock.set_rsd(f=f)

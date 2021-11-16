@@ -15,7 +15,6 @@ mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxce
 mock.set_real_delta_field(bias=bias-1)
 mock.set_analytic_selection_function(nbar=nbar)
 mock.poisson_sample(seed=43)
-mock.set_rsd(f=f, los=None)
 data = mock.to_catalog()
 
 # We've got data, now turn to randoms
@@ -23,8 +22,17 @@ from mockfactory.make_survey import RandomBoxCatalog
 randoms = RandomBoxCatalog(nbar=10.*nbar, boxsize=boxsize)
 
 # Apply cutsky geometry
-data = data.cutsky(drange=drange, rarange=rarange, decrange=decrange, noutput=None)
 randoms = randoms.cutsky(drange=drange, rarange=rarange, decrange=decrange)
+# For data, we want to apply RSD *before* selection function
+isometry, mask_radial, mask_angular = data.isometry_for_cutsky(drange=drange, rarange=rarange, decrange=decrange)
+# First move data to its final position
+data = data.cutsky_from_isometry(isometry, dradec=None)
+# Apply RSD
+data['RSDPosition'] = data.rsd_position(f=f)
+data['Distance'], data['RA'], data['DEC'] = utils.cartesian_to_sky(data['RSDPosition'])
+# Apply selection function
+mask = mask_radial(data['Distance']) & mask_angular(data['RA'], data['DEC'])
+data = data[mask]
 
 # Distance to redshift relation
 from mockfactory.make_survey import DistanceToRedshift

@@ -256,7 +256,7 @@ class BaseGaussianMock(BaseClass):
                     rslab, delta_slab = islabs[:2]
                     rslab = _transform_rslab(rslab, self.boxsize)
                     rnorm = np.sum((r + o)**2 for r,o in zip(rslab,offset))**0.5
-                    delta_slab[...].flat = bias(delta_slab[...].flat, rnorm.flatten())
+                    delta_slab[...].flat = bias(delta_slab.flatten(), rnorm.flatten())
             else:
                 mesh_delta_r *= bias
         if lognormal_transform:
@@ -290,22 +290,24 @@ class BaseGaussianMock(BaseClass):
 
         def cartesian_to_sky(*position):
             dist = sum(pos**2 for pos in position)**0.5
-            ra = np.arctan2(position[1], position[0]) % 2.*np.pi
+            ra = np.arctan2(position[1], position[0]) % (2.*np.pi)
             dec = np.arcsin(position[2]/dist)
             conversion = np.pi/180.
             return dist, ra/conversion, dec/conversion
 
+        offset = self.boxcenter - self.boxsize/2.
+
         for rslab, slab in zip(self.nbar.slabs.x,self.nbar.slabs):
             rslab = _transform_rslab(rslab, self.boxsize)
-            dist,ra,dec = cartesian_to_sky(r.flatten() for r in rslab)
+            dist,ra,dec = cartesian_to_sky(*[(r + o).flatten() for r,o in zip(rslab, offset)])
             slab[...].flat = nbar(dist, ra, dec)
         if interlaced:
             nbar2 = self.nbar.copy()
             #shifted = pm.affine.shift(0.5)
-            offset = 0.5*cellsize
+            offset += 0.5*cellsize
             for rslab, slab in zip(nbar2.slabs.x, nbar2.slabs):
                 rslab = _transform_rslab(rslab, self.boxsize)
-                dist,ra,dec = cartesian_to_sky((r + o).flatten() for r,o in zip(rslab, offset))
+                dist,ra,dec = cartesian_to_sky(*[(r + o).flatten() for r,o in zip(rslab, offset)])
                 slab[...].flat = nbar(dist, ra, dec)
             c1 = self.nbar.r2c()
             c2 = nbar2.r2c()
@@ -330,8 +332,8 @@ class BaseGaussianMock(BaseClass):
         noise = self.pm.generate_whitenoise(seed, type='real')
         # noise has amplitude of 1
         # multiply by expected density
-        dv = np.prod(self.pm.boxsize/self.pm.nmesh)
-        self.mesh_delta_r += noise*self.nbar*dv
+        vol_per_cell = np.prod(self.boxsize/self.nmesh)
+        self.mesh_delta_r += noise/(self.nbar*vol_per_cell)**0.5
 
     def readout(self, positions, field='delta', resampler='nnb', compensate=False):
         """
@@ -420,7 +422,7 @@ class BaseGaussianMock(BaseClass):
 
         ntotal = int(number.csum() + 0.5)
         if self.mpicomm.rank == 0:
-            self.log_info('Poisson sampling done, total number of objects is {:d}'.format(ntotal))
+            self.log_info('Poisson sampling done, total number of objects is {:d}.'.format(ntotal))
 
         # create uniform grid of particles, one per grid point, in BoxSize coordinates
         positions, ids = self.pm.generate_uniform_particle_grid(shift=0, return_id=True)

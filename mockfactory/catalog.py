@@ -27,6 +27,13 @@ def vectorize_columns(func):
     return wrapper
 
 
+def _get_shape(size, itemshape):
+    # join size and itemshape to get total shape
+    if np.ndim(itemshape) == 0:
+        return (size, itemshape)
+    return (size,) + tuple(itemshape)
+
+
 def _dict_to_array(data, struct=True):
     """
     Return dict as *numpy* array.
@@ -482,29 +489,29 @@ class BaseCatalog(BaseClass):
         sizes = [0] + np.cumsum(sizes[:1]).tolist()
         return sizes[self.mpicomm.rank] + np.arange(len(self))
 
-    def zeros(self, dtype='f8'):
+    def zeros(self, itemshape=(), dtype='f8'):
         """Return array of size :attr:`size` filled with zero."""
-        return np.zeros(len(self),dtype=dtype)
+        return np.zeros(_get_shape(len(self), itemshape), dtype=dtype)
 
-    def ones(self, dtype='f8'):
+    def ones(self, itemshape=(), dtype='f8'):
         """Return array of size :attr:`size` filled with one."""
-        return np.ones(len(self),dtype=dtype)
+        return np.ones(_get_shape(len(self), itemshape), dtype=dtype)
 
-    def full(self, fill_value, dtype='f8'):
+    def full(self, fill_value, itemshape=(), dtype='f8'):
         """Return array of size :attr:`size` filled with ``fill_value``."""
-        return np.full(len(self),fill_value,dtype=dtype)
+        return np.full(_get_shape(len(self), itemshape), fill_value, dtype=dtype)
 
-    def falses(self):
+    def falses(self, itemshape=()):
         """Return array of size :attr:`size` filled with ``False``."""
-        return self.zeros(dtype=np.bool_)
+        return self.zeros(itemshape=itemshape, dtype=np.bool_)
 
-    def trues(self):
+    def trues(self, itemshape=()):
         """Return array of size :attr:`size` filled with ``True``."""
-        return self.ones(dtype=np.bool_)
+        return self.ones(itemshape=itemshape, dtype=np.bool_)
 
-    def nans(self):
+    def nans(self, itemshape=()):
         """Return array of size :attr:`size` filled with :attr:`numpy.nan`."""
-        return self.ones()*np.nan
+        return self.ones(itemshape=itemshape)*np.nan
 
     def get(self, column, *args, **kwargs):
         """Return catalog (local) column ``column`` if exists, else return provided default."""

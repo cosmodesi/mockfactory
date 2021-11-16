@@ -167,7 +167,7 @@ class EuclideanIsometry(BaseClass):
             shift = [shift if ax == axis else 0. for ax in range(3)]
         shift = _make_array(shift, 3)
         if frame == 'current':
-            shift = np.tensordot(shift, self._rotation, axes=((1,),(1,)))
+            shift = np.tensordot(shift, self._rotation, axes=((-1,),(1,)))
         elif frame != 'origin':
             raise EuclideanIsometryError('center must be "origin" or "current"')
         self._translation += shift
@@ -196,11 +196,17 @@ class EuclideanIsometry(BaseClass):
     def concatenate(cls, *others):
         """Return isometry corresponding to the successive input isometries."""
         if not others: return cls()
-        new = cls(others[0])
-        for other in others[1:]:
+        new = cls()
+        for other in others:
             new._rotation = other._rotation.dot(new._rotation)
-            new._translation += other._translation
+            new._translation = np.tensordot(new._translation, other._rotation, axes=((-1,),(1,))) + other._translation
+            #new._translation += other._translation
         return new
+
+    def extend(self, other):
+        """Add ``other`` isometry to ``self``."""
+        new = self.concatenate(self, other)
+        self.__dict__.update(new.__dict__)
 
     def __radd__(self, other):
         """Operation corresponding to ``other + self``."""
@@ -215,7 +221,7 @@ class EuclideanIsometry(BaseClass):
 
     def __add__(self, other):
         """Addition of two isometries instances is defined as concatenation."""
-        return self.concatenate(self,other)
+        return self.concatenate(self, other)
 
 
 def box_to_cutsky(boxsize, dmax):
@@ -281,7 +287,8 @@ def cutsky_to_box(drange, rarange, decrange, return_isometry=False):
         to apply to the initial positions.
     """
     rarange = utils.wrap_angle(rarange, degree=True)
-    if rarange[1] < rarange[0]: rarange[0] -= 360.
+    # if e.g. rarange = (300, 40), we want to point to the middle of |-60, 40]
+    if rarange[0] > rarange[1]: rarange[0] -= 360
     deltara = abs(rarange[1]-rarange[0])/2.*np.pi/180.
     deltadec = abs(decrange[1]-decrange[0])/2.*np.pi/180.
     boxsize = np.empty(3, dtype='f8')
@@ -506,7 +513,7 @@ class ParticleCatalog(BaseCatalog):
             If ``None``, use local line of sight.
         """
         if los is None:
-            los = self.position/self.distance()
+            los = self.position/self.distance()[:,None]
         else:
             los = _get_los(los)
         rsd = utils.vector_projection(self.velocity, los)
@@ -515,7 +522,7 @@ class ParticleCatalog(BaseCatalog):
             rsd *= f(self.distance())
         else:
             rsd *= f
-        return position + rsd
+        return self.position + rsd
 
 
 class CutskyCatalog(ParticleCatalog):
@@ -714,9 +721,157 @@ class BoxCatalog(ParticleCatalog):
             new[col] = np.concatenate(data[col], axis=0)
         return new
 
-    def cutsky(self, drange, rarange, decrange, external_margin=None, internal_margin=None, noutput=1):
+    def isometry_for_cutsky(self, drange, rarange, decrange, external_margin=None, internal_margin=None, noutput=1):
         """
-        Cut box to sky geometry.
+        Return operations (isometry, radial mask and angular mask) to cut box to sky geometry.
+
+        Parameters
+        ----------
+        drange : tuple, array
+            Distance range (dmin, dmax).
+
+        rarange : tuple, array
+            RA range.
+
+        decrange : tuple, array
+            Dec range.
+
+        external_margin : float, tuple, list, default=None
+            Margin to apply on box edges to avoid spurious large scale correlations
+            when no periodic boundary conditions are applied.
+            If ``None``, set to ``internal_margin`` and maximize margin.
+
+        internal_margin : float, tuple, list, default=None
+            Margin between subboxes to reduce correlation between output catalogs.
+            If ``None``, set to ``external_margin`` and maximize margin.
+
+        noutput : int, default=1
+            Number of output sky-cuts.
+            If ``1``, one :class:`EuclideanIsometry` is output.
+            Else, if ``None``, maximum number of disjoint sky-cuts.
+            Else, return this number of :class:`EuclideanIsometry`.
+
+        Returns
+        -------
+        isometries : EuclideanIsometry or list of EuclideanIsometry instances
+            Isometries to apply to current instance to move it (using :meth:`isometry`) to the desired sky location.
+            If ``noutput`` is 1, only one :class:`EuclideanIsometry` instance, else a list of such instances.
+
+        mask_radial : UniformRadialMask
+            Radial mask (function of distance) to apply to the shifted catalog.
+
+        mask_angular : UniformAngularMask
+            Angular mask (function of RA, Dec) to apply to the shifted catalog.
+        """
+        if np.ndim(external_margin) == 0:
+            external_margin = [external_margin]*3
+        if np.ndim(internal_margin) == 0:
+            internal_margin = [internal_margin]*3
+        boxsize, origin_isometry = cutsky_to_box(drange, rarange, decrange, return_isometry=True)
+        mask_radial = UniformRadialMask(zrange=drange)
+        mask_angular = UniformAngularMask(rarange=rarange, decrange=decrange)
+        if noutput == 1:
+            em = np.array([0. if m is None else m for m in external_margin])
+            factor = (self.boxsize - 2.*em) / boxsize
+            if not np.all(factor > 1.):
+                raise ValueError('boxsize {} with margin {} is too small for input survey geometry which requires {}'.format(self.boxsize, external_margin, boxsize))
+            isometry = EuclideanIsometry()
+            isometry.translation(-self.boxcenter)
+            isometry += origin_isometry
+            return isometry, mask_radial, mask_angular
+
+        centers = []
+        for iaxis in range(3):
+            # boxsize * nboxes + internal_margin * (nboxes - 1) + 2 * external_margin = self.boxsize
+            em = external_margin[iaxis] or 0.
+            im = internal_margin[iaxis] or 0.
+            nboxes = int((self.boxsize[iaxis] - 2.*em + im)/(boxsize[iaxis] + im))
+            if external_margin[iaxis] is None and internal_margin[iaxis] is None:
+                tm = self.boxsize[iaxis] - boxsize[iaxis] * nboxes
+                em = im = tm / (nboxes + 1.)
+            if external_margin[iaxis] is None: em = im
+            if internal_margin[iaxis] is None: im = em
+            if (em < 0) or (im < 0):
+                raise ValueError('margins must be > 0')
+            if (em > 0.) or (im > 0.):
+                # extend margins to occupy full volume (same rescaling factor assumed for internal and external)
+                rescale_margin = (self.boxsize[iaxis] - boxsize[iaxis] * nboxes)/(im * (nboxes - 1) + 2 * em)
+                assert rescale_margin >= 1.
+                im = rescale_margin * im
+                em = rescale_margin * em
+            low = em + (boxsize[iaxis] + im) * np.arange(nboxes)
+            high = low + boxsize[iaxis]
+            center = (low + high)/2. - self.boxsize[iaxis]/2. + self.boxcenter[iaxis]
+            centers.append(center)
+        nmax = np.prod([len(center) for center in centers])
+        if noutput is not None and nmax < noutput:
+            raise ValueError('can only cut {:d} catalogs from box, not noutput = {:d}'.format(nmax, noutput))
+        isometries = []
+        for center in itertools.product(*centers):
+            if noutput is not None and len(isometries) >= noutput: break
+            isometry = EuclideanIsometry()
+            isometry.translation(-np.array(center))
+            isometry += origin_isometry
+            isometries.append(isometry)
+
+        return isometries, mask_radial, mask_angular
+
+    def cutsky_from_isometry(self, isometry, mask_radial=None, mask_angular=None, dradec=('Distance', 'RA', 'DEC')):
+        """
+        Cut box to sky geometry, starting from distance, RA, and Dec ranges.
+        Typically called with outputs of :meth:`isometry_for_cutsky`.
+
+        Parameters
+        ----------
+        isometries : EuclideanIsometry or list of EuclideanIsometry instances
+            Isometries to apply to current instance to move it (using :meth:`isometry`) to the desired sky location.
+            If a single :class:`EuclideanIsometry` instance, a single catalog is returned.
+
+        mask_radial : UniformRadialMask, default=None
+            Radial mask (function of distance) to apply to the shifted catalog.
+            If not provided, no radial mask is applied.
+
+        mask_angular : UniformAngularMask, default=None
+            Angular mask (function of RA, Dec) to apply to the shifted catalog.
+            If not provided, no angular mask is applied.
+
+        dradec : tuple or list of strings
+            Names of columns to store distance, RA and Dec in output catalog.
+            If ``None``, columns distance, RA and Dec are not added to output catalog.
+
+        Returns
+        -------
+        catalog : CutskyCatalog or list of CutskyCatalog
+            One catalog if a single :class:`EuclideanIsometry` instance provided, else a list of such catalogs.
+        """
+        islist = isinstance(isometry, (tuple, list))
+        if islist:
+            return [self.cutsky_from_isometry(isom, mask_radial=mask_radial, mask_angular=mask_angular) for isom in isometry]
+
+        catalog = self.deepcopy()
+        catalog = CutskyCatalog(data=catalog.data, position=catalog._position, velocity=catalog._velocity, vectors=catalog.vectors,
+                                translational_invariants=catalog._translational_invariants, attrs=catalog.attrs)
+        catalog.isometry(isometry)
+        dist, ra, dec = utils.cartesian_to_sky(catalog.position, degree=True, wrap=False)
+        if dradec is not None:
+            for name, array in zip(dradec, [dist, ra, dec]):
+                catalog[name] = array
+
+        if mask_radial is not None:
+            mask = mask_radial(dist)
+            if mask_angular is not None:
+                mask &= mask_angular(ra, dec)
+            catalog = catalog[mask]
+        elif mask_angular is not None:
+            mask = mask_angular(ra, dec)
+            catalog = catalog[mask]
+        return catalog
+
+
+    def cutsky(self, drange, rarange, decrange, external_margin=None, internal_margin=None, noutput=1, mask_radial=True, mask_angular=True, dradec=('Distance', 'RA', 'DEC')):
+        """
+        Cut box to sky geometry, starting from distance, RA, and Dec ranges.
+        Basically a shortcut to :meth:`isometry_for_cutsky` and :meth:`cutsky_from_isometry`.
 
         Parameters
         ----------
@@ -744,71 +899,28 @@ class BoxCatalog(ParticleCatalog):
             Else, if ``None``, cut maximum number of disjoint catalogs.
             Else, return this number of catalogs.
 
+        mask_radial : UniformRadialMask, default=None
+            Whether to apply radial mask.
+
+        mask_angular : UniformAngularMask, default=None
+            Whether to apply angular mask.
+
+        dradec : tuple or list of strings
+            Names of columns to store distance, RA and Dec in output catalog.
+            If ``None``, columns distance, RA and Dec are not added to output catalog.
+
         Returns
         -------
-        catalog : CutskyCatalog
+        catalog : CutskyCatalog or list of CutskyCatalog
+            One catalog if a single :class:`EuclideanIsometry` instance provided, else a list of such catalogs.
         """
-        if np.ndim(external_margin) == 0:
-            external_margin = [external_margin]*3
-        if np.ndim(internal_margin) == 0:
-            internal_margin = [internal_margin]*3
-        boxsize, isometry = cutsky_to_box(drange, rarange, decrange, return_isometry=True)
-        boxes = []
-        if noutput == 1:
-            em = np.array([0. if m is None else m for m in external_margin])
-            factor = (self.boxsize - 2.*em) / boxsize
-            if not np.all(factor > 1.):
-                raise ValueError('boxsize {} with margin {} is too small for input survey geometry which requires {}'.format(self.boxsize, external_margin, boxsize))
-            box = self.subbox()
-            box.recenter()
-            boxes.append(box)
-        else:
-            ranges = []
-            for iaxis in range(3):
-                # boxsize * nboxes + internal_margin * (nboxes - 1) + 2 * external_margin = self.boxsize
-                em = external_margin[iaxis] or 0.
-                im = internal_margin[iaxis] or 0.
-                nboxes = int((self.boxsize[iaxis] - 2.*em + im)/(boxsize[iaxis] + im))
-                if external_margin[iaxis] is None and internal_margin[iaxis] is None:
-                    tm = self.boxsize[iaxis] - boxsize[iaxis] * nboxes
-                    em = im = tm / (nboxes + 1.)
-                if external_margin[iaxis] is None: em = im
-                if internal_margin[iaxis] is None: im = em
-                if (em < 0) or (im < 0):
-                    raise ValueError('margins must be > 0')
-                if (em > 0.) or (im > 0.):
-                    # extend margins to occupy full volume (same rescaling factor assumed for internal and external)
-                    rescale_margin = (self.boxsize[iaxis] - boxsize[iaxis] * nboxes)/(im * (nboxes - 1) + 2 * em)
-                    assert rescale_margin >= 1.
-                    im = rescale_margin * im
-                    em = rescale_margin * em
-                tmp1 = em/self.boxsize[iaxis] + (boxsize[iaxis] + im) * np.arange(nboxes)/self.boxsize[iaxis]
-                tmp2 = tmp1 + boxsize[iaxis]/self.boxsize[iaxis]
-                ranges.append(list(zip(tmp1, tmp2))) # in boxsize_unit
-            nmax = np.prod([len(r) for r in ranges])
-            if noutput is not None and nmax < noutput:
-                raise ValueError('can only cut {:d} catalogs from box, not noutput = {:d}'.format(nmax, noutput))
-            ioutput = 0
-            for ranges in itertools.product(*ranges):
-                if noutput is not None and ioutput >= noutput: break
-                box = self.subbox(ranges=ranges, boxsize_unit=True)
-                box.recenter()
-                boxes.append(box)
-                ioutput += 1
-
-        toret = []
-        for box in boxes:
-            catalog = CutskyCatalog(data=box.data, position=self._position, velocity=self._velocity, vectors=self.vectors, translational_invariants=self._translational_invariants, attrs=self.attrs)
-            catalog.isometry(isometry)
-            dist, ra, dec = utils.cartesian_to_sky(catalog.position, degree=True, wrap=False)
-            mask_radial = UniformRadialMask(zrange=drange)
-            mask_angular = UniformAngularMask(rarange=rarange, decrange=decrange)
-            mask = mask_radial(dist) & mask_angular(ra, dec)
-            catalog = catalog[mask]
-            toret.append(catalog)
-        if noutput == 1:
-            toret = toret[0]
-        return toret
+        result = self.isometry_for_cutsky(drange, rarange, decrange,
+                                          external_margin=external_margin, internal_margin=internal_margin,
+                                          noutput=noutput)
+        isometry = result[0]
+        mask_radial = result[1] if mask_radial else None
+        mask_angular = result[2] if mask_angular else None
+        return self.cutsky_from_isometry(isometry, mask_radial=mask_radial, mask_angular=mask_angular)
 
 
 class RandomBoxCatalog(BoxCatalog):
@@ -960,7 +1072,7 @@ class BaseMask(BaseClass):
         return prob >= rng.uniform(low=0., high=1.)
 
 
-class MaskCollection(dict,BaseMask):
+class MaskCollection(BaseMask, dict):
     """
     Dictionary of masks.
     Useful to apply chunkwise selection functions.
@@ -1256,7 +1368,7 @@ class TabulatedRadialMask(BaseRadialMask):
         """
         if zedges is None:
             zedges = (self.z[:-1] + self.z[1:])/2.
-            zedges = np.concatenate([self.z[0]],zedges,[self.z[-1]])
+            zedges = np.concatenate([[self.z[0]],zedges,[self.z[-1]]], axis=0)
         dedges = distance_self(zedges)
         volume_self = dedges[1:]**3-dedges[:-1]**3
         dedges = distance_target(zedges)
@@ -1291,7 +1403,7 @@ class BaseAngularMask(BaseMask):
         """
         if rarange is not None:
             rarange = utils.wrap_angle(rarange, degree=True)
-            if rarange[1] < rarange[0]: rarange[0] -= 360.
+            # if e.g. rarange = (300, 40), we want to select RA > 300 or RA < 40
             self.rarange = tuple(rarange)
         else:
             self.rarange = (0., 360.)
@@ -1301,6 +1413,15 @@ class BaseAngularMask(BaseMask):
             self.decrange = (-90., 90.)
         self.mpicomm = mpicomm
         self.mpiroot = mpiroot
+
+    def _mask_ranges(self, ra, dec):
+        # input ra assumed in [0., 360.] and dec in [-90., 90.]
+        if self.rarange[0] <= self.rarange[-1]:
+            mask = (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
+        else:
+            mask = (ra >= self.rarange[0]) | (ra <= self.rarange[-1])
+        mask &= (dec >= self.decrange[0]) & (dec <= self.decrange[-1])
+        return mask
 
     def sample(self, size, seed=None):
         """
@@ -1322,9 +1443,12 @@ class BaseAngularMask(BaseMask):
         """
         def sample(size, seed=None):
             rng = MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
-            ra = rng.uniform(low=self.rarange[0], high=self.rarange[1])
+            rarange = list(self.rarange)
+            # if e.g. rarange = (300, 40), we want to generate RA > -60 and RA < 40
+            if rarange[0] > rarange[1]: rarange[0] -= 360
+            ra = rng.uniform(low=rarange[0], high=rarange[1]) % 360.
             urange = np.sin(np.asarray(self.decrange)*np.pi/180.)
-            dec = np.arcsin(rng.uniform(low=urange[0], high=urange[1]))/(np.pi/180.) % 360.
+            dec = np.arcsin(rng.uniform(low=urange[0], high=urange[1]))/(np.pi/180.)
             mask = self(ra, dec)
             return ra[mask], dec[mask]
 
@@ -1355,8 +1479,7 @@ class UniformAngularMask(BaseAngularMask):
         """Uniform probability within :attr:`rarange` and :attr:`decrange`."""
         ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
         prob = np.clip(self.nbar, 0., 1.)*np.ones_like(ra)
-        mask = (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
-        mask &= (dec >= self.decrange[0]) & (dec <= self.decrange[-1])
+        mask = self._mask_ranges(ra, dec)
         prob[~mask] = 0
         return prob
 
@@ -1412,8 +1535,7 @@ class MangleAngularMask(BaseAngularMask):
         ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
         ids, prob = self.nbar.polyid_and_weight(ra, dec)
         mask = ids != -1
-        mask &= (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
-        mask &= (dec >= self.decrange[0]) & (dec <= self.decrange[-1])
+        mask = self._mask_ranges(ra, dec)
         prob[~mask] = 0.
         return prob
 
@@ -1474,7 +1596,6 @@ class HealpixAngularMask(BaseAngularMask):
         ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
         theta, phi = (-dec+90.)*np.pi/180., ra*np.pi/180.
         prob = self.nbar[healpy.ang2pix(self.nside,theta,phi,nest=self.nest,lonlat=False)]
-        mask = (ra >= self.rarange[0]) & (ra <= self.rarange[-1])
-        mask &= (dec >= self.decrange[0]) & (dec <= self.decrange[-1])
+        mask = self._mask_ranges(ra, dec)
         prob[~mask] = 0.
         return prob
