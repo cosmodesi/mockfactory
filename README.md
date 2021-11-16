@@ -82,7 +82,7 @@ python -m pip install git+https://github.com/adematti/mockfactory
 
 First:
 ```
-git clone https://github.com/adematti/pycorr.git
+git clone https://github.com/adematti/mockfactory.git
 ```
 To install the code::
 ```
