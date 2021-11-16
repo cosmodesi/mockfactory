@@ -59,7 +59,7 @@ def test_pm():
     pm = ParticleMesh(BoxSize=[2.]*3, Nmesh=[2]*3, dtype='f8')
     mesh = pm.create(type='real')
     positions = np.array([1.8]*3)[None,:]
-    mesh.paint(positions, resampler='cic')
+    pm.paint(positions, resampler='cic', out=mesh)
     print(mesh.value[:])
     values = mesh.readout(positions, resampler='nnb')
     print(values)
@@ -68,6 +68,12 @@ def test_pm():
         print('y', rslab[1])
         print('z', rslab[2])
         print('value', slab)
+
+    pm = ParticleMesh(BoxSize=[1.]*3, Nmesh=[10]*3, dtype='f8')
+    mesh = pm.create(type='real')
+    positions = np.array([-0.2]*3)[None,:]
+    pm.paint(positions, resampler='cic', out=mesh)
+    print(mesh.value[:])
 
 
 def test_readout():

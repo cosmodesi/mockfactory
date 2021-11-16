@@ -1,6 +1,6 @@
 """
 Utilities to cut survey mocks from boxes.
-A Python analogous of Martin White's make_survey code.
+A Python analogous of Cameron K. McBride https://github.com/cmcbride/make_survey.
 """
 
 import os
