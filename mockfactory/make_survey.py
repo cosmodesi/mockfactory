@@ -867,7 +867,6 @@ class BoxCatalog(ParticleCatalog):
             catalog = catalog[mask]
         return catalog
 
-
     def cutsky(self, drange, rarange, decrange, external_margin=None, internal_margin=None, noutput=1, mask_radial=True, mask_angular=True, dradec=('Distance', 'RA', 'DEC')):
         """
         Cut box to sky geometry, starting from distance, RA, and Dec ranges.

@@ -106,8 +106,8 @@ def test_eulerian():
     mock.set_real_delta_field(bias=bias)
     #mock.set_rsd(f=f, los='z')
     mock.set_rsd(f=f)
-    #mock.set_analytic_selection_function(nbar=1e4)
-    mock.set_real_white_noise(seed=42)
+    mock.set_analytic_selection_function(nbar=1e-3)
+    #mock.set_real_white_noise(seed=42)
     result = FFTPower(mock.mesh_delta_r, los=los, mode='2d', poles=ells, dk=0.01, kmin=0.)
     plot_power_spectrum(result, model=kaiser)
 
@@ -151,7 +151,6 @@ def test_lagrangian():
     for catalog in [data, randoms]:
         catalog['NZ'] = catalog['Weight']*nbar
         catalog['WEIGHT_FKP'] = np.ones(catalog.size,dtype='f8')
-
 
     fkp = FKPCatalog(data, randoms, nbar='NZ')
     mesh = fkp.to_mesh(position='Position', fkp_weight='WEIGHT_FKP', comp_weight='Weight', nbar='NZ', BoxSize=1000, Nmesh=100, resampler='tsc', interlaced=True)
