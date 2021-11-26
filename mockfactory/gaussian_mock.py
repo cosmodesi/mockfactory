@@ -265,7 +265,7 @@ class BaseGaussianMock(BaseClass):
             mesh_delta_r[:] -= 1.
         self.mesh_delta_r = mesh_delta_r
 
-    def set_analytic_selection_function(self, nbar, interlaced=False):
+    def set_analytic_selection_function(self, nbar, interlacing=False):
         """
         Set mesh mean density :attr:`nbar` with analytic selection function.
 
@@ -299,24 +299,32 @@ class BaseGaussianMock(BaseClass):
 
         for rslab, slab in zip(self.nbar.slabs.x,self.nbar.slabs):
             rslab = _transform_rslab(rslab, self.boxsize)
-            dist,ra,dec = cartesian_to_sky(*[(r + o).flatten() for r,o in zip(rslab, offset)])
+            dist,ra,dec = cartesian_to_sky(*[(r + o).ravel() for r,o in zip(rslab, offset)])
             slab[...].flat = nbar(dist, ra, dec)
-        if interlaced:
-            nbar2 = self.nbar.copy()
-            #shifted = pm.affine.shift(0.5)
-            offset += 0.5*cellsize
-            for rslab, slab in zip(nbar2.slabs.x, nbar2.slabs):
-                rslab = _transform_rslab(rslab, self.boxsize)
-                dist,ra,dec = cartesian_to_sky(*[(r + o).flatten() for r,o in zip(rslab, offset)])
-                slab[...].flat = nbar(dist, ra, dec)
-            c1 = self.nbar.r2c()
-            c2 = nbar2.r2c()
-            # and then combine
-            for k, s1, s2 in zip(c1.slabs.x, c1.slabs, c2.slabs):
-                kc = sum(k[i] * cellsize[i] for i in range(self.nbar.ndim))
-                s1[...] = s1[...] * 0.5 + s2[...] * 0.5 * np.exp(0.5 * 1j * kc)
-            # FFT back to real-space
-            c1.c2r(out=self.nbar)
+        if interlacing:
+            interlacing = int(interlacing)
+            if interlacing == 1:
+                if self.mpicomm.rank == 0:
+                    self.log_warning('Provided interlacing is {}; setting it to 2.'.format(interlacing))
+                interlacing = 2
+            shifts = np.arange(interlacing)*1./interlacing
+            # remove 0 shift, already computed
+            shifts = shifts[1:]
+            self.nbar = self.nbar.r2c()
+            for shift in shifts:
+                # paint to two shifted meshes
+                nbar_shifted = self.pm.create(type='real')
+                offset -= 0.5*cellsize # shift nbar by 0.5*cellsize
+                for rslab, slab in zip(nbar_shifted.slabs.x, nbar_shifted.slabs):
+                    rslab = _transform_rslab(rslab, self.boxsize)
+                    dist,ra,dec = cartesian_to_sky(*[(r + o).ravel() for r,o in zip(rslab, offset)])
+                    slab[...].flat = nbar(dist, ra, dec)
+                nbar_shifted = nbar_shifted.r2c()
+                for k, s1, s2 in zip(self.nbar.slabs.x, self.nbar.slabs, nbar_shifted.slabs):
+                    kc = sum(k[i] * cellsize[i] for i in range(3))
+                    s1[...] = s1[...] + s2[...] * np.exp(shift * 1j * kc)
+            self.nbar = self.nbar.c2r()
+            self.nbar[:] /= interlacing
         self.attrs['norm'] = (self.nbar**2).csum()*dv
 
     def set_real_white_noise(self, seed=None):

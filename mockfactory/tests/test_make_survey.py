@@ -261,6 +261,8 @@ def test_save():
         for ii in range(10):
             test = ParticleCatalog.load_fits(fn)
             assert np.all(test.position == ref.position)
+        test['Position'] += 10
+        assert np.allclose(test['Position'], ref.position + 10)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         #tmp_dir = 'tmp'
@@ -284,7 +286,7 @@ def test_rotation_matrix():
 
 
 if __name__ == '__main__':
-    
+
     setup_logging()
     test_remap()
     test_isometry()

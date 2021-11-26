@@ -5,6 +5,7 @@ from cosmoprimo.fiducial import DESI
 from nbodykit.lab import FFTPower, UniformCatalog, FKPCatalog, ConvolvedFFTPower
 
 from mockfactory import EulerianLinearMock, LagrangianLinearMock, utils, setup_logging
+from mockfactory.make_survey import RandomBoxCatalog
 
 seed = 42
 boxsize = 500*np.ones(3, dtype='f8')
@@ -107,6 +108,8 @@ def test_eulerian():
     #mock.set_rsd(f=f, los='z')
     mock.set_rsd(f=f)
     mock.set_analytic_selection_function(nbar=1e-3)
+    #def selection_function_callable(dist, ra, dec): return 1e-3
+    #mock.set_analytic_selection_function(nbar=selection_function_callable, interlacing=True)
     #mock.set_real_white_noise(seed=42)
     result = FFTPower(mock.mesh_delta_r, los=los, mode='2d', poles=ells, dk=0.01, kmin=0.)
     plot_power_spectrum(result, model=kaiser)
@@ -120,14 +123,22 @@ def test_eulerian():
     mock.set_rsd(f=lambda d: f*np.ones_like(d))
 
     data = UniformCatalog(nbar, boxsize, seed=seed)
-    randoms = UniformCatalog(nbar, boxsize, seed=seed+1)
+    #randoms = UniformCatalog(nbar, boxsize, seed=seed+1)
+    #for catalog in [data, randoms]:
+    #    catalog['Position'] += mock.boxcenter - mock.boxsize/2.
+    #    catalog['NZ'] = catalog['Weight']*nbar
+    #    catalog['WEIGHT_FKP'] = np.ones(catalog.size,dtype='f8')
+    data = RandomBoxCatalog(nbar=nbar, boxsize=boxsize, boxcenter=boxcenter, seed=44)
+    randoms = RandomBoxCatalog(nbar=4.*nbar, boxsize=boxsize, boxcenter=boxcenter, seed=45)
+    data['Weight'] = mock.readout(data['Position'], field='delta', resampler='cic', compensate=True) + 1.
     for catalog in [data, randoms]:
-        catalog['Position'] += mock.boxcenter - mock.boxsize/2.
-        catalog['NZ'] = catalog['Weight']*nbar
+        catalog['NZ'] = nbar*catalog.ones()
         catalog['WEIGHT_FKP'] = np.ones(catalog.size,dtype='f8')
+
     data['Weight'] = mock.readout(data['Position'], field='delta', resampler='cic', compensate=True) + 1.
 
-    fkp = FKPCatalog(data, randoms, nbar='NZ')
+    #fkp = FKPCatalog(data, randoms, nbar='NZ')
+    fkp = FKPCatalog(data.to_nbodykit(), randoms.to_nbodykit(), nbar='NZ')
     mesh = fkp.to_mesh(position='Position', fkp_weight='WEIGHT_FKP', comp_weight='Weight', nbar='NZ', BoxSize=1000, Nmesh=100, resampler='cic', interlaced=True)
     result = ConvolvedFFTPower(mesh, poles=ells, dk=0.01)
     plot_power_spectrum(result, model=kaiser)

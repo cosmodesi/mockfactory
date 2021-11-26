@@ -526,11 +526,15 @@ class BaseCatalog(BaseClass):
                 raise SyntaxError('Too many arguments!')
             has_default = True
             default = kwargs['default']
+        if column in self.data:
+            return self.data[column]
+        # if not in data, try in _source
         if getattr(self, '_source', None) is not None and column in self._source.columns:
             self.data[column] = self._source.get(column)
-        if column not in self.data and has_default:
+            return self.data[column]
+        if has_default:
             return default
-        return self.data[column]
+        raise KeyError('Column {} does not exist'.format(column))
 
     def set(self, column, item):
         """Set column of name ``column``."""
@@ -674,7 +678,7 @@ class BaseCatalog(BaseClass):
     def __setitem__(self, name, item):
         """Set catalog column ``name`` if string, else set slice ``name`` of all columns to ``item``."""
         if isinstance(name,str):
-            return self.set(name,item)
+            return self.set(name, item)
         for col in self.data:
             self[col][name] = item
 
@@ -729,7 +733,7 @@ class BaseCatalog(BaseClass):
             columns = [other.gget(column,root=new.mpiroot) for other in others]
             if new.is_mpi_root():
                 new[column] = np.concatenate(columns,axis=0)
-            new[column] = mpi.scatter_array(new[column] if new.is_mpi_root() else None,root=new.mpiroot,mpicomm=new.mpicomm)
+            new[column] = mpi.scatter_array(new[column] if new.is_mpi_root() else None, root=new.mpiroot, mpicomm=new.mpicomm)
         return new
 
     def extend(self, other):
@@ -748,13 +752,13 @@ class BaseCatalog(BaseClass):
         assert self.mpicomm == other.mpicomm
         toret = True
         for col in self_columns:
-            self_value = self.gget(col,mpiroot=self.mpiroot)
-            other_value = other.gget(col,mpiroot=self.mpiroot)
+            self_value = self.gget(col, mpiroot=self.mpiroot)
+            other_value = other.gget(col, mpiroot=self.mpiroot)
             if self.is_mpi_root():
                 if not np.all(self_value == other_value):
                     toret = False
                     break
-        return self.mpicomm.bcast(toret,root=self.mpiroot)
+        return self.mpicomm.bcast(toret, root=self.mpiroot)
 
     @classmethod
     @CurrentMPIComm.enable
@@ -782,7 +786,7 @@ class BaseCatalog(BaseClass):
         """
         source = FitsFile(filename, ext=ext, mpiroot=mpiroot, mpicomm=mpicomm)
         source.read()
-        new = cls(attrs={'fitshdr':source.attrs})
+        new = cls(attrs={'fitshdr': source.attrs})
         new._source = source
         return new
 
