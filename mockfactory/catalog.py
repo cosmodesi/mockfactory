@@ -557,7 +557,7 @@ class BaseCatalog(BaseClass):
         sl = slice(*args)
         new = self.copy()
         for col in self.columns():
-            self_value = self.gget(col,mpiroot=self.mpiroot)
+            self_value = self.gget(col, mpiroot=self.mpiroot)
             new[col] = mpi.scatter_array(self_value if self.is_mpi_root() else None,mpiroot=self.mpiroot,mpicomm=self.mpicomm)
         return new
 
@@ -665,6 +665,8 @@ class BaseCatalog(BaseClass):
         """Create class from state."""
         new = cls.__new__(cls)
         new.__setstate__(state)
+        new.mpicomm = mpicomm
+        new.mpiroot = mpiroot
         return new
 
     def __getitem__(self, name):
@@ -730,7 +732,7 @@ class BaseCatalog(BaseClass):
                 raise ValueError('Cannot extend samples as columns do not match: {} != {}.'.format(other_columns,new_columns))
 
         for column in new_columns:
-            columns = [other.gget(column,root=new.mpiroot) for other in others]
+            columns = [other.gget(column, mpiroot=new.mpiroot) for other in others]
             if new.is_mpi_root():
                 new[column] = np.concatenate(columns, axis=0)
             new[column] = mpi.scatter_array(new[column] if new.is_mpi_root() else None, root=new.mpiroot, mpicomm=new.mpicomm)
@@ -786,7 +788,7 @@ class BaseCatalog(BaseClass):
         """
         source = FitsFile(filename, ext=ext, mpiroot=mpiroot, mpicomm=mpicomm)
         source.read()
-        new = cls(attrs={'fitshdr': source.attrs})
+        new = cls(attrs={'fitshdr': source.attrs}, mpiroot=mpiroot, mpicomm=mpicomm)
         new._source = source
         return new
 
@@ -821,7 +823,7 @@ class BaseCatalog(BaseClass):
         """
         source = HDF5File(filename, group=group, mpiroot=mpiroot, mpicomm=mpicomm)
         source.read()
-        new = cls(attrs=source.attrs)
+        new = cls(attrs=source.attrs, mpiroot=mpiroot, mpicomm=mpicomm)
         new._source = source
         return new
 
@@ -881,7 +883,7 @@ class BaseCatalog(BaseClass):
             self.log_info('Saving to {}.'.format(filename))
             utils.mkdir(os.path.dirname(filename))
         state = self.__getstate__()
-        state['data'] = {name: self.gget(name) for name in self.columns()}
+        state['data'] = {name: self.gget(name, mpiroot=self.mpiroot) for name in self.columns()}
         if self.is_mpi_root():
             np.save(filename, state, allow_pickle=True)
 

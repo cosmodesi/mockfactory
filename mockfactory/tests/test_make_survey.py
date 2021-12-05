@@ -251,6 +251,8 @@ def test_save():
         test = RandomBoxCatalog.load(fn)
         assert np.all(test.boxsize == ref.boxsize)
         assert np.all(test.position == ref.position)
+        test = RandomBoxCatalog.concatenate(test, test)
+        assert test.gsize == ref.gsize*2
 
     from nbodykit.lab import FITSCatalog
     with tempfile.TemporaryDirectory() as tmp_dir:
