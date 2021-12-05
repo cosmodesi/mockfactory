@@ -700,7 +700,7 @@ class BaseCatalog(BaseClass):
         return '{}(size={:d}, columns={})'.format(self.__class__.__name__,self.gsize,self.columns())
 
     @classmethod
-    def concatenate(cls, *others):
+    def concatenate(cls, *others, keep_order=True):
         """
         Concatenate catalogs together.
 
@@ -708,6 +708,10 @@ class BaseCatalog(BaseClass):
         ----------
         others : list
             List of :class:`BaseCatalog` instances.
+
+        keep_order : bool, default=False
+            Whether to keep row order, which requires costly MPI-gather/scatter operations.
+            If ``False``, rows on each MPI process will be added to those of the same MPI process.
 
         Returns
         -------
@@ -732,15 +736,18 @@ class BaseCatalog(BaseClass):
                 raise ValueError('Cannot extend samples as columns do not match: {} != {}.'.format(other_columns,new_columns))
 
         for column in new_columns:
-            columns = [other.gget(column, mpiroot=new.mpiroot) for other in others]
-            if new.is_mpi_root():
-                new[column] = np.concatenate(columns, axis=0)
-            new[column] = mpi.scatter_array(new[column] if new.is_mpi_root() else None, root=new.mpiroot, mpicomm=new.mpicomm)
+            if keep_order:
+                columns = [other.gget(column, mpiroot=new.mpiroot) for other in others]
+                if new.is_mpi_root():
+                    new[column] = np.concatenate(columns, axis=0)
+                new[column] = mpi.scatter_array(new[column] if new.is_mpi_root() else None, root=new.mpiroot, mpicomm=new.mpicomm)
+            else:
+                new[column] = np.concatenate([other.get(column) for other in others], axis=0)
         return new
 
-    def extend(self, other):
+    def extend(self, other, **kwargs):
         """Extend catalog with ``other``."""
-        new = self.concatenate(self,other)
+        new = self.concatenate(self, other, **kwargs)
         self.__dict__.update(new.__dict__)
 
     def __eq__(self, other):
