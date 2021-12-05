@@ -96,12 +96,14 @@ def gather_array(data, root=0, mpicomm=None):
     Parameters
     ----------
     data : array_like
-        The data on each rank to gather
-    mpicomm : MPI communicator
-        The MPI communicator
-    root : int, or Ellipsis
+        The data on each rank to gather.
+
+    root : int, Ellipsis, default=0
         The rank number to gather the data to. If root is Ellipsis or None,
         broadcast the result to all ranks.
+
+    mpicomm : MPI communicator, default=None
+        The MPI communicator.
 
     Returns
     -------
@@ -224,22 +226,23 @@ def broadcast_array(data, root=0, mpicomm=None):
     Broadcast the input data array across all ranks, assuming `data` is
     initially only on `root` (and `None` on other ranks).
     This uses ``Scatterv``, which avoids mpi4py pickling, and also
-    avoids the 2 GB mpi4py limit for bytes using a custom datatype
+    avoids the 2 GB mpi4py limit for bytes using a custom datatype.
 
     Parameters
     ----------
     data : array_like or None
-        on `root`, this gives the data to split and scatter
-    mpicomm : MPI communicator
-        the MPI communicator
-    root : int
-        the rank number that initially has the data
-    counts : list of int
-        list of the lengths of data to send to each rank
+        On `root`, this gives the data to broadcast.
+
+    root : int, default=0
+        The rank number that initially has the data.
+
+    mpicomm : MPI communicator, default=None
+        The MPI communicator.
+
     Returns
     -------
     recvbuffer : array_like
-        the chunk of `data` that each rank gets
+        The chunk of `data` that each rank gets.
     """
 
     # check for bad input
@@ -317,18 +320,21 @@ def scatter_array(data, counts=None, root=0, mpicomm=None):
     Parameters
     ----------
     data : array_like or None
-        on `root`, this gives the data to split and scatter
-    mpicomm : MPI communicator
-        the MPI communicator
-    root : int
-        the rank number that initially has the data
+        On `root`, this gives the data to split and scatter.
+
     counts : list of int
-        list of the lengths of data to send to each rank
+        List of the lengths of data to send to each rank.
+
+    root : int, default=0
+        The rank number that initially has the data.
+
+    mpicomm : MPI communicator, default=None
+        The MPI communicator.
 
     Returns
     -------
     recvbuffer : array_like
-        the chunk of `data` that each rank gets
+        The chunk of `data` that each rank gets.
     """
     if counts is not None:
         counts = np.asarray(counts, order='C')

@@ -75,7 +75,6 @@ Strict requirements are:
   - scipy
   - mpi4py
   - pmesh
-  - mpsort
 
 ## Installation
 

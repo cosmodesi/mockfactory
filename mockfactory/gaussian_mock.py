@@ -11,26 +11,27 @@ from . import mpi, utils
 
 
 def _make_array(value, shape, dtype='f8'):
-    # return numpy array filled with value
+    # Return numpy array filled with value
     toret = np.empty(shape, dtype=dtype)
     toret[...] = value
     return toret
 
 
 def _get_los(los):
-    # return line of sight 3-vector
-    if isinstance(los,str):
+    # Return line of sight 3-vector
+    if isinstance(los, str):
         los = 'xyz'.index(los)
     if np.ndim(los) == 0:
         ilos = los
         los = np.zeros(3, dtype='f8')
         los[ilos] = 1.
-    los = np.asarray(los)
-    return los
+    los = np.array(los, dtype='f8')
+    return los/utils.distance(los)
 
 
 def _compensate_mesh(mesh, resampler='nnb'):
-    # compensate resampling by applying window
+    # Compensate particle-mesh assignment by applying window
+    # See https://arxiv.org/abs/astro-ph/0409240.
     p = {'nnb':1,'ngp':1,'cic':2,'tsc':3,'pcs':4}[resampler]
 
     def window(x):
@@ -47,7 +48,8 @@ def _compensate_mesh(mesh, resampler='nnb'):
 
 
 def _transform_rslab(rslab, boxsize):
-    # we do not use the same conventions as pmesh...
+    # We do not use the same conventions as pmesh:
+    # rslab < 0 is sent back to [boxsize/2, boxsize]
     toret = []
     for ii,r in enumerate(rslab):
         mask = r < 0.
@@ -276,8 +278,9 @@ class BaseGaussianMock(BaseClass):
             If a callable, take the distance, right ascension and declination as inputs.
             Else, a float.
 
-        interlaced : bool, default=False
-            ``True`` to apply interlacing correction.
+        interlacing : bool, int, default=2
+            Whether to use interlacing to reduce aliasing when applying selection function on the mesh.
+            If positive int, the interlacing order (minimum: 2).
         """
         cellsize = self.boxsize/self.nmesh
         dv = np.prod(cellsize)

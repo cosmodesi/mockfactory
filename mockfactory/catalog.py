@@ -339,7 +339,7 @@ class BaseCatalog(BaseClass):
             Defaults to ``data.keys()``.
 
         attrs : dict, default=None
-            Other attributes.
+            Dictionary of other attributes.
 
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
@@ -732,7 +732,7 @@ class BaseCatalog(BaseClass):
         for column in new_columns:
             columns = [other.gget(column,root=new.mpiroot) for other in others]
             if new.is_mpi_root():
-                new[column] = np.concatenate(columns,axis=0)
+                new[column] = np.concatenate(columns, axis=0)
             new[column] = mpi.scatter_array(new[column] if new.is_mpi_root() else None, root=new.mpiroot, mpicomm=new.mpicomm)
         return new
 
