@@ -113,7 +113,7 @@ def gather_array(data, root=0, mpicomm=None):
     if root is None: root = Ellipsis
 
     if np.isscalar(data):
-        if root == Ellipsis:
+        if root is Ellipsis:
             return np.array(mpicomm.allgather(data))
         gathered = mpicomm.gather(data, root=root)
         if mpicomm.rank == root:
@@ -171,10 +171,10 @@ def gather_array(data, root=0, mpicomm=None):
         bad_shape = any(s[1:] != shapes[0][1:] for s in shapes[1:])
         bad_dtype = any(dt != dtypes[0] for dt in dtypes[1:])
     else:
-        bad_shape = None; bad_dtype = None
+        bad_shape, bad_dtype = None, None
 
     if root is not Ellipsis:
-        bad_shape, bad_dtype = mpicomm.bcast((bad_shape, bad_dtype),root=root)
+        bad_shape, bad_dtype = mpicomm.bcast((bad_shape, bad_dtype), root=root)
 
     if bad_shape:
         raise ValueError('mismatch between shape[1:] across ranks in gather_array')

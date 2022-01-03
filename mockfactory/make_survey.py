@@ -195,8 +195,8 @@ class EuclideanIsometry(BaseClass):
     @classmethod
     def concatenate(cls, *others):
         """Return isometry corresponding to the successive input isometries."""
-        if not others: return cls()
         new = cls()
+        if not others: return new
         for other in others:
             new._rotation = other._rotation.dot(new._rotation)
             new._translation = np.tensordot(new._translation, other._rotation, axes=((-1,),(1,))) + other._translation

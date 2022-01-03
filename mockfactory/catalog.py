@@ -198,7 +198,7 @@ class FitsFile(BaseFile):
         #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
 
     def get(self, column):
-        return fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(self.start,self.stop))
+        return fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(self.start, self.stop))
         #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
         #if not self.is_mpi_root():
         #    do = self.mpicomm.recv(source=self.mpicomm.rank-1, tag=42)
@@ -721,6 +721,8 @@ class BaseCatalog(BaseClass):
         -------
         :attr:`attrs` of returned catalog contains, for each key, the last value found in ``others`` :attr:`attrs` dictionaries.
         """
+        if not others:
+            raise ValueError('Provide at least one {} instance.'.format(cls.__name__))
         attrs = {}
         for other in others: attrs.update(other.attrs)
         others = [other for other in others if other.columns()]
