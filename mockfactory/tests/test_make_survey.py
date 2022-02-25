@@ -4,7 +4,7 @@ import numpy as np
 
 from mockfactory.remap import Cuboid
 from mockfactory.make_survey import (RandomBoxCatalog, RandomCutskyCatalog, ParticleCatalog, CutskyCatalog,
-                                    EuclideanIsometry, DistanceToRedshift,
+                                    EuclideanIsometry, DistanceToRedshift, RedshiftDensityInterpolator,
                                     rotation_matrix_from_vectors, cutsky_to_box, box_to_cutsky,
                                     MaskCollection, UniformRadialMask, TabulatedRadialMask, UniformAngularMask, HealpixAngularMask)
 
@@ -232,10 +232,28 @@ def test_redshift_array():
     from cosmoprimo.fiducial import DESI
     cosmo = DESI()
     zmax = 10.
-    distance = lambda z: cosmo.comoving_radial_distance(z)
+    distance = cosmo.comoving_radial_distance
     redshift = DistanceToRedshift(distance=distance, zmax=zmax, nz=4096)
     z = np.random.uniform(0., 2., 10000)
     assert np.allclose(redshift(distance(z)), z, atol=1e-6)
+
+
+def test_redshift_density():
+
+    rng = np.random.RandomState(seed=42)
+    z = rng.uniform(1., 2., int(1e6))
+    zbins = np.linspace(0., 2.4, 301)
+    zeval = (zbins[:-1] + zbins[1:])/2.
+    weights = np.ones_like(z)
+    fsky = 0.42
+    from cosmoprimo.fiducial import DESI
+    cosmo = DESI()
+    distance = cosmo.comoving_radial_distance
+    density_ref = RedshiftDensityInterpolator(distance(z), weights=None, bins=cosmo.comoving_radial_distance(zbins), fsky=fsky, radial_distance=None, interp_order=1)
+    density = RedshiftDensityInterpolator(z, weights=2.*weights, bins=zbins, fsky=2.*fsky, radial_distance=distance, interp_order=1)
+    assert np.allclose(density(zeval), density_ref(distance(zeval)), atol=1e-7, rtol=0.1)
+    density = RedshiftDensityInterpolator(z, weights=2.*weights, bins=None, fsky=2.*fsky, radial_distance=distance, interp_order=1)
+    assert np.all((density.z >= z.min()) & (density.z <= z.max() + density.z[-1] - density.z[-2]))
 
 
 def test_save():
@@ -299,4 +317,5 @@ if __name__ == '__main__':
     test_cutsky()
     test_masks()
     test_redshift_array()
+    test_redshift_density()
     test_rotation_matrix()

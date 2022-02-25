@@ -326,7 +326,7 @@ class DistanceToRedshift(BaseClass):
             Number of points for redshift <-> distance mapping.
 
         interp_order : int, default=3
-            Interpolation order, e.g. ``1`` for linear interpolation, ``3`` for cubic splines.
+            Interpolation order, e.g. 1 for linear interpolation, 3 for cubic splines.
         """
         self.distance = distance
         self.zmax = zmax
@@ -334,7 +334,7 @@ class DistanceToRedshift(BaseClass):
         zgrid = np.logspace(-8,np.log10(self.zmax),self.nz)
         self.zgrid = np.concatenate([[0.], zgrid])
         self.rgrid = self.distance(self.zgrid)
-        self.interp = interpolate.UnivariateSpline(self.rgrid,self.zgrid,k=interp_order,s=0)
+        self.interp = interpolate.UnivariateSpline(self.rgrid, self.zgrid, k=interp_order, s=0, ext='raise')
 
     def __call__(self, distance):
         """Return (interpolated) redshift at distance ``distance`` (scalar or array)."""
@@ -355,7 +355,7 @@ class RedshiftDensityInterpolator(BaseClass):
         Parameters
         ----------
         redshifts : array
-            Array of redshifts.
+            Array of redshifts, scattered on all MPI processes.
 
         weights : array, default=None
             Array of weights, same shape as ``redshifts``. Defaults to 1.
@@ -381,39 +381,27 @@ class RedshiftDensityInterpolator(BaseClass):
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
         """
-        def zrange(redshifts):
-            if self.is_mpi_scattered():
-                return mpi.min_array(redshifts,mpicomm=self.mpicomm),mpi.max_array(redshifts,mpicomm=self.mpicomm)
-            else:
-                zrange = None
-                if self.is_mpi_root():
-                    zrange = np.min(redshifts),np.max(redshifts)
-                return self.mpicomm.bcast(zrange,root=self.mpiroot)
+        self.mpicomm = mpicomm
 
-        if bins is None or bins == 'scott':
+        def zrange(redshifts):
+            return mpi.min_array(redshifts, mpicomm=self.mpicomm), mpi.max_array(redshifts, mpicomm=self.mpicomm)
+
+        if bins is None or isinstance(bins, str) and bins == 'scott':
             # scott's rule
-            if self.is_mpi_scatter():
-                var = mpi.var_array(redshifts,aweights=weights,ddof=1,mpicomm=self.mpicomm)
-                gsize = mpi.size_array(redshifts)
-            else:
-                var,gsize = None,None
-                if self.is_mpi_root():
-                    var = np.cov(redshifts,aweights=weights,ddof=1)
-                    gsize = redshifts.size
-                var,gsize = self.mpicomm.bcast((var,gsize),root=self.mpiroot)
+            var = mpi.var_array(redshifts, aweights=weights, ddof=1, mpicomm=self.mpicomm)
+            gsize = mpi.size_array(redshifts)
             sigma = np.sqrt(var)
-            dz = sigma * (24. * np.sqrt(np.pi) / gsize) ** (1. / 3)
-            zrange = zrange(redshifts)
+            dx = sigma * (24. * np.sqrt(np.pi) / gsize) ** (1. / 3)
+            minval, maxval = zrange(redshifts)
             nbins = np.ceil((maxval - minval) * 1. / dx)
             nbins = max(1, nbins)
-            edges = minval + dx * np.arange(nbins + 1)
+            bins = minval + dx * np.arange(nbins + 1)
 
-        if np.ndim(bins) == 0:
-            bins = np.linspace(*zrange(redshifts),num=bins+1,endpoint=True)
+        elif np.ndim(bins) == 0:
+            bins = np.linspace(*zrange(redshifts), num=bins+1, endpoint=True)
 
-        counts = np.histogram(redshifts,weights=weights,bins=bins)
-        if self.is_mpi_scattered():
-            counts = mpicomm.allreduce(counts,op=mpi.MPI.SUM)
+        counts = np.histogram(redshifts,weights=weights,bins=bins)[0]
+        counts = self.mpicomm.allreduce(counts, op=mpi.MPI.SUM)
 
         if radial_distance is not None:
             dbins = radial_distance(bins)
@@ -421,8 +409,8 @@ class RedshiftDensityInterpolator(BaseClass):
             dbins = bins
         dvol = fsky*4./3.*np.pi*(dbins[1:]**3 - dbins[:-1]**3)
         self.z = (bins[:-1] + bins[1:])/2.
-        self.density = counts/dvol
-        self.spline = interpolate.UnivariateSpline(self.z,self.density,k=interp_order,s=0)
+        self.value = counts/dvol
+        self.spline = interpolate.UnivariateSpline(self.z, self.value, k=interp_order, s=0, ext='zeros')
 
     def __call__(self, z):
         """Return density at redshift ``z`` (scalar or array)."""

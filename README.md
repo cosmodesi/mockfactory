@@ -67,7 +67,7 @@ remapped_randoms = randoms.remap(*basis)
 
 Example notebooks are provided in directory nb/.
 
-# Requirements
+## Requirements
 
 Strict requirements are:
 

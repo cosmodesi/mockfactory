@@ -7,6 +7,7 @@ from nbodykit.lab import FFTPower, UniformCatalog, FKPCatalog, ConvolvedFFTPower
 from mockfactory import EulerianLinearMock, LagrangianLinearMock, utils, setup_logging
 from mockfactory.make_survey import RandomBoxCatalog
 
+
 seed = 42
 boxsize = 500*np.ones(3, dtype='f8')
 los = np.array([0,0,1], dtype='f8')
@@ -43,7 +44,7 @@ def plot_power_spectrum(result, model=None):
     if model is not None:
         k = np.linspace(poles['k'].min()+1e-5,poles['k'].max(),100)
         model = model(k)
-        for ill,color in enumerate(colors):
+        for ill, color in enumerate(colors):
             plt.plot(k, k*model[ill], color=color, linestyle=':')
 
     # format the axes
@@ -106,7 +107,7 @@ def test_eulerian():
     mock = EulerianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
     mock.set_real_delta_field(bias=bias)
     #mock.set_rsd(f=f, los='z')
-    mock.set_rsd(f=f)
+    mock.set_rsd(f=f, los=los)
     mock.set_analytic_selection_function(nbar=1e-3)
     #def selection_function_callable(dist, ra, dec): return 1e-3
     #mock.set_analytic_selection_function(nbar=selection_function_callable, interlacing=True)
@@ -122,20 +123,12 @@ def test_eulerian():
     # just checking everything runs
     mock.set_rsd(f=lambda d: f*np.ones_like(d))
 
-    data = UniformCatalog(nbar, boxsize, seed=seed)
-    #randoms = UniformCatalog(nbar, boxsize, seed=seed+1)
-    #for catalog in [data, randoms]:
-    #    catalog['Position'] += mock.boxcenter - mock.boxsize/2.
-    #    catalog['NZ'] = catalog['Weight']*nbar
-    #    catalog['WEIGHT_FKP'] = np.ones(catalog.size,dtype='f8')
     data = RandomBoxCatalog(nbar=nbar, boxsize=boxsize, boxcenter=boxcenter, seed=44)
     randoms = RandomBoxCatalog(nbar=4.*nbar, boxsize=boxsize, boxcenter=boxcenter, seed=45)
     data['Weight'] = mock.readout(data['Position'], field='delta', resampler='cic', compensate=True) + 1.
     for catalog in [data, randoms]:
         catalog['NZ'] = nbar*catalog.ones()
         catalog['WEIGHT_FKP'] = np.ones(catalog.size,dtype='f8')
-
-    data['Weight'] = mock.readout(data['Position'], field='delta', resampler='cic', compensate=True) + 1.
 
     #fkp = FKPCatalog(data, randoms, nbar='NZ')
     fkp = FKPCatalog(data.to_nbodykit(), randoms.to_nbodykit(), nbar='NZ')
@@ -151,7 +144,7 @@ def test_lagrangian():
     mock.set_real_delta_field(bias=bias-1.)
     mock.set_analytic_selection_function(nbar=nbar)
     def nbar_callable(dist, ra, dec): return nbar
-    mock.set_analytic_selection_function(nbar=nbar_callable, interlaced=True)
+    mock.set_analytic_selection_function(nbar=nbar_callable, interlacing=True)
     mock.poisson_sample(seed=seed, resampler='cic', compensate=True)
     #mock.set_rsd(f=f, los=los)
     mock.set_rsd(f=f)
@@ -243,5 +236,5 @@ if __name__ == '__main__':
     #test_pm()
     #test_readout()
     test_eulerian()
-    test_lagrangian()
-    test_mpi()
+    #test_lagrangian()
+    #test_mpi()

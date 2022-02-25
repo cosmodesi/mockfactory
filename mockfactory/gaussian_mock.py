@@ -51,10 +51,10 @@ def _transform_rslab(rslab, boxsize):
     # We do not use the same conventions as pmesh:
     # rslab < 0 is sent back to [boxsize/2, boxsize]
     toret = []
-    for ii,r in enumerate(rslab):
-        mask = r < 0.
-        r[mask] += boxsize[ii]
-        toret.append(r)
+    for ii, rr in enumerate(rslab):
+        mask = rr < 0.
+        rr[mask] += boxsize[ii]
+        toret.append(rr)
     return toret
 
 
@@ -207,7 +207,7 @@ class BaseGaussianMock(BaseClass):
 
         mesh_delta_k = self.pm.generate_whitenoise(self.attrs['seed'], type='untransposedcomplex', unitary=self.attrs['unitary_amplitude'])
         if self.mpicomm.rank == 0:
-            self.log_info('White noise generated')
+            self.log_info('White noise generated.')
 
         if self.attrs['inverted_phase']: mesh_delta_k[...] *= -1
         # volume factor needed for normalization
@@ -218,21 +218,17 @@ class BaseGaussianMock(BaseClass):
         for kslab,delta_slab in zip(mesh_delta_k.slabs.x,mesh_delta_k.slabs):
             # the square of the norm of k on the mesh
             k2 = sum(kk**2 for kk in kslab)
-            mask_zero = k2 == 0.
-            # avoid dividing by zero, set a value that is non-zero and likeliy to be in power interpolation range
-            k2[mask_zero] = k2.flat[1]**2
-            k = (k2**0.5).flatten()
+            k = (k2**0.5).ravel()
+            mask_nonzero = k != 0.
+            power = np.zeros_like(k)
             if los is not None:
-                mu = sum(kk*ll for kk, ll in zip(kslab, los)).flatten()/k
-                power = self.power(k, mu)
+                mu = sum(kk*ll for kk, ll in zip(kslab, los)).ravel()/k
+                power[mask_nonzero] = self.power(k[mask_nonzero], mu[mask_nonzero])
             else:
-                power = self.power(k)
+                power[mask_nonzero] = self.power(k[mask_nonzero])
 
             # multiply complex field by sqrt of power
             delta_slab[...].flat *= (power*norm)**0.5
-
-            # set k == 0 to zero (zero config-space mean)
-            delta_slab[mask_zero] = 0.
         self.mesh_delta_k = mesh_delta_k
 
     def set_real_delta_field(self, bias=None, lognormal_transform=False):
