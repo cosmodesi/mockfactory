@@ -345,17 +345,28 @@ class RedshiftDensityInterpolator(BaseClass):
     """
     Class that computes and interpolates a redshift density histogram :math:`n(z)` from an array of redshift and optionally weights.
     Adapted from: https://github.com/bccp/nbodykit/blob/master/nbodykit/algorithms/zhist.py
+
+    Attributes
+    ----------
+    z : array
+        Tabulated redshift array.
+
+    nbar : array
+        Tabulated density array.
+
+    spline : sp.interpolate.UnivariateSpline
+        Spline interpolator.
     """
 
     @CurrentMPIComm.enable
-    def __init__(self, redshifts, weights=None, bins=None, fsky=1., radial_distance=None, interp_order=1, mpicomm=None):
+    def __init__(self, z, weights=None, bins=None, fsky=1., radial_distance=None, interp_order=1, mpicomm=None, mpiroot=None):
         r"""
         Initialize :class:`RedshiftDensityInterpolator`.
 
         Parameters
         ----------
-        redshifts : array
-            Array of redshifts, scattered on all MPI processes.
+        z : array
+            Array of redshifts.
 
         weights : array, default=None
             Array of weights, same shape as ``redshifts``. Defaults to 1.
@@ -380,27 +391,37 @@ class RedshiftDensityInterpolator(BaseClass):
 
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
+
+        mpiroot : int, default=None
+            If ``None``, input z and weights are assumed to be scattered across all ranks.
+            Else the MPI rank where input z and weights are gathered.
         """
         self.mpicomm = mpicomm
 
-        def zrange(redshifts):
-            return mpi.min_array(redshifts, mpicomm=self.mpicomm), mpi.max_array(redshifts, mpicomm=self.mpicomm)
+        if mpiroot is not None:
+            if not self.mpicomm.bcast(z is None, root=mpiroot):
+                z = mpi.scatter_array(z, mpicomm=self.mpicomm, root=mpiroot)
+            if not self.mpicomm.bcast(weights is None, root=mpiroot):
+                weights = mpi.scatter_array(weights, mpicomm=self.mpicomm, root=mpiroot)
+
+        def zrange(z):
+            return mpi.min_array(z, mpicomm=self.mpicomm), mpi.max_array(z, mpicomm=self.mpicomm)
 
         if bins is None or isinstance(bins, str) and bins == 'scott':
             # scott's rule
-            var = mpi.var_array(redshifts, aweights=weights, ddof=1, mpicomm=self.mpicomm)
-            gsize = mpi.size_array(redshifts)
+            var = mpi.var_array(z, aweights=weights, ddof=1, mpicomm=self.mpicomm)
+            size = mpi.size_array(z)
             sigma = np.sqrt(var)
-            dx = sigma * (24. * np.sqrt(np.pi) / gsize) ** (1. / 3)
-            minval, maxval = zrange(redshifts)
+            dx = sigma * (24. * np.sqrt(np.pi) / size) ** (1. / 3)
+            minval, maxval = zrange(z)
             nbins = np.ceil((maxval - minval) * 1. / dx)
             nbins = max(1, nbins)
             bins = minval + dx * np.arange(nbins + 1)
 
         elif np.ndim(bins) == 0:
-            bins = np.linspace(*zrange(redshifts), num=bins+1, endpoint=True)
+            bins = np.linspace(*zrange(z), num=bins+1, endpoint=True)
 
-        counts = np.histogram(redshifts,weights=weights,bins=bins)[0]
+        counts = np.histogram(z, weights=weights, bins=bins)[0]
         counts = self.mpicomm.allreduce(counts, op=mpi.MPI.SUM)
 
         if radial_distance is not None:
@@ -409,8 +430,8 @@ class RedshiftDensityInterpolator(BaseClass):
             dbins = bins
         dvol = fsky*4./3.*np.pi*(dbins[1:]**3 - dbins[:-1]**3)
         self.z = (bins[:-1] + bins[1:])/2.
-        self.value = counts/dvol
-        self.spline = interpolate.UnivariateSpline(self.z, self.value, k=interp_order, s=0, ext='zeros')
+        self.nbar = counts/dvol
+        self.spline = interpolate.UnivariateSpline(self.z, self.nbar, k=interp_order, s=0, ext='zeros')
 
     def __call__(self, z):
         """Return density at redshift ``z`` (scalar or array)."""
@@ -1013,7 +1034,7 @@ class BaseMask(BaseClass):
     Subclasses should at least implement :meth:`prob`.
     """
     @CurrentMPIComm.enable
-    def __init__(self, mpicomm=None, mpiroot=0):
+    def __init__(self, mpicomm=None):
         """
         Initialize :class:`BaseRadialMask`.
 
@@ -1024,12 +1045,9 @@ class BaseMask(BaseClass):
 
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
-
-        mpiroot : int, default=0
-            The rank number to use as master.
         """
         self.mpicomm = mpicomm
-        self.mpiroot = mpiroot
+        self.mpiroot = 0
 
     def is_mpi_root(self):
         """Whether current rank is root."""
@@ -1099,7 +1117,7 @@ class BaseRadialMask(BaseMask):
     Subclasses should at least implement :meth:`prob`.
     """
     @CurrentMPIComm.enable
-    def __init__(self, zrange=None, mpicomm=None, mpiroot=0):
+    def __init__(self, zrange=None, mpicomm=None):
         """
         Initialize :class:`BaseRadialMask`.
 
@@ -1110,13 +1128,10 @@ class BaseRadialMask(BaseMask):
 
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
-
-        mpiroot : int, default=0
-            The rank number to use as master.
         """
         self.zrange = tuple(zrange) if zrange is not None else (0., np.inf)
         self.mpicomm = mpicomm
-        self.mpiroot = mpiroot
+        self.mpiroot = 0
 
     def sample(self, size, distance, seed=None):
         """
@@ -1188,7 +1203,7 @@ class TabulatedRadialMask(BaseRadialMask):
     r"""Tabulated :math:`n(z)` selection."""
 
     @CurrentMPIComm.enable
-    def __init__(self, z, nbar=None, zrange=None, filename=None, norm=None, mpicomm=None, mpiroot=0):
+    def __init__(self, z, nbar=None, zrange=None, filename=None, norm=None, mpicomm=None):
         """
         Initialize :class:`TabulatedRadialMask`.
 
@@ -1213,10 +1228,9 @@ class TabulatedRadialMask(BaseRadialMask):
 
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
-
-        mpiroot : int, default=0
-            The rank number to use as master.
         """
+        self.mpicomm = mpicomm
+        self.mpiroot = 0
         if filename is not None:
             z, nbar = None, None
             if self.is_mpi_root():
@@ -1224,12 +1238,13 @@ class TabulatedRadialMask(BaseRadialMask):
                 z, nbar = np.loadtxt(filename, unpack=True)
             z = mpi.broadcast_array(z, mpicomm=self.mpicomm, root=self.mpiroot)
             nbar = mpi.broadcast_array(nbar, mpicomm=self.mpicomm, root=self.mpiroot)
-        self.z, self.nbar = np.asarray(z), np.asarray(nbar)
+        self.z = mpi.broadcast_array(np.asarray(z), mpicomm=self.mpicomm, root=self.mpiroot)
+        self.nbar = mpi.broadcast_array(np.asarray(nbar), mpicomm=self.mpicomm, root=self.mpiroot)
         if not np.all(self.nbar >= 0.):
             raise ValueError('Provided nbar should be all positive.')
         zmin, zmax = self.z[0], self.z[-1]
         if zrange is None: zrange = zmin, zmax
-        super(TabulatedRadialMask, self).__init__(zrange=zrange, mpicomm=mpicomm, mpiroot=mpiroot)
+        super(TabulatedRadialMask, self).__init__(zrange=zrange, mpicomm=mpicomm)
         if not ((zmin <= self.zrange[0]) & (zmax >= self.zrange[1])):
             raise ValueError('Redshift range is {:.2f} - {:.2f} but the limiting range is {:.2f} - {:.2f}.'.format(zmin,zmax,self.zrange[0],self.zrange[1]))
         self.prepare(norm=norm)
@@ -1266,7 +1281,7 @@ class TabulatedRadialMask(BaseRadialMask):
         prob[~mask] = 0.
         return prob
 
-    def integral(self, z=None, weights=None, normalize_weights=True):
+    def integral(self, z=None, weights=None, normalize_weights=True, mpiroot=None):
         """
         Return integral of :meth:`prob`, i.e. the fraction of redshifts that will be selected.
 
@@ -1282,15 +1297,24 @@ class TabulatedRadialMask(BaseRadialMask):
         normalize_weights : bool, default=True
             Whether to normalize input ``weights``.
 
+        mpiroot : int, default=None
+            If ``None``, input z and weights are assumed to be scattered across all ranks.
+            Else the MPI rank where input z and weights are gathered.
+
         Returns
         -------
         integral : float
             Integral of :meth:`prob`.
         """
+        if mpiroot is not None:
+            if not self.mpicomm.bcast(z is None, root=mpiroot):
+                z = mpi.scatter_array(z, mpicomm=self.mpicomm, root=mpiroot)
+            if not self.mpicomm.bcast(weights is None, root=mpiroot):
+                weights = mpi.scatter_array(weights, mpicomm=self.mpicomm, root=mpiroot)
         if z is None and weights is None:
             return self.interp.integrate(self.zrange[0], self.zrange[1])
         if weights is not None and z is None:
-            raise ValueError('Provide z when giving w')
+            raise ValueError('Provide z when giving weights')
         if weights is None:
             weights = 1.
             if normalize_weights:
@@ -1299,7 +1323,7 @@ class TabulatedRadialMask(BaseRadialMask):
             weights = weights/mpi.sum_array(weights, mpicomm=mpicomm)
         return mpi.sum_array(self.prob(z)*weights, mpicomm=self.mpicomm)
 
-    def normalize(self, target, z=None, weights=None):
+    def normalize(self, target, z=None, weights=None, mpiroot=None):
         """
         Normalize :attr:`nbar`.
 
@@ -1314,9 +1338,19 @@ class TabulatedRadialMask(BaseRadialMask):
 
         weights : array, default=None
             If ``z`` is provided, associate weights (default to 1.).
+
+        mpiroot : int, default=None
+            If ``None``, input z and weights are assumed to be scattered across all ranks.
+            Else the MPI rank where input z and weights are gathered.
         """
         if not ((target >= 0) & (target <= 1.)):
             raise ValueError('Input norm should be in (0, 1)')
+
+        if mpiroot is not None:
+            if not self.mpicomm.bcast(z is None, root=mpiroot):
+                z = mpi.scatter_array(z, mpicomm=self.mpicomm, root=mpiroot)
+            if not self.mpicomm.bcast(weights is None, root=mpiroot):
+                weights = mpi.scatter_array(weights, mpicomm=self.mpicomm, root=mpiroot)
 
         if weights is not None:
             weights = weights/mpi.sum_array(weights, mpicomm=mpicomm)
@@ -1331,7 +1365,7 @@ class TabulatedRadialMask(BaseRadialMask):
         norm = self.mpicomm.bcast(norm, root=self.mpiroot)
 
         self.prepare(norm=norm)
-        error = self.integral(z, weights, normalize_weights=False) - target
+        error = self.integral(z, weights, normalize_weights=False, mpiroot=None) - target
         if self.is_mpi_root():
             self.log_info('Norm is: {:.12g}.'.format(self.norm))
             self.log_info('Expected error: {:.5g}.'.format(error))
@@ -1384,9 +1418,6 @@ class BaseAngularMask(BaseMask):
 
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
-
-        mpiroot : int, default=0
-            The rank number to use as master.
         """
         if rarange is not None:
             rarange = utils.wrap_angle(rarange, degree=True)
@@ -1399,7 +1430,7 @@ class BaseAngularMask(BaseMask):
         else:
             self.decrange = (-90., 90.)
         self.mpicomm = mpicomm
-        self.mpiroot = mpiroot
+        self.mpiroot = 0
 
     def _mask_ranges(self, ra, dec):
         # input ra assumed in [0., 360.] and dec in [-90., 90.]
@@ -1500,7 +1531,7 @@ class MangleAngularMask(BaseAngularMask):
                 self.log_info('Loading Mangle geometry file: {}.'.format(filename))
             self.nbar = pymangle.Mangle(filename)
         else:
-            self.nbar = np.asarray(nbar)
+            self.nbar = mpi.broadcast_array(np.asarray(nbar), mpicomm=self.mpicomm, root=self.mpiroot)
 
     def prob(self, ra, dec):
         """
@@ -1557,9 +1588,8 @@ class HealpixAngularMask(BaseAngularMask):
         if filename is not None:
             if self.is_mpi_root():
                 self.log_info('Loading healpy geometry file: {}.'.format(filename))
-            self.nbar = healpy.fitsfunc.read_map(filename, nest=nest, **kwargs)
-        else:
-            self.nbar = np.asarray(nbar)
+            nbar = healpy.fitsfunc.read_map(filename, nest=nest, **kwargs)
+        self.nbar = mpi.broadcast_array(np.asarray(nbar), mpicomm=self.mpicomm, root=0)
         self.nside = healpy.npix2nside(self.nbar.size)
         self.nest = nest
 

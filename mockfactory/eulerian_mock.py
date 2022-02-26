@@ -83,7 +83,7 @@ class EulerianLinearMock(BaseGaussianMock):
                     for rslab, slab in zip(mesh_delta_rsd.slabs.x,mesh_delta_rsd.slabs):
                         # reslab in [0, boxsize]
                         rslab = _transform_rslab(rslab, self.boxsize)
-                        rgrid = [r + o for r,o in zip(rslab, offset)]
+                        rgrid = [r + o for r, o in zip(rslab, offset)]
                         r2 = np.sum(rr**2 for rr in rgrid)
                         slab[...] *= rgrid[i]*rgrid[j]/r2
                     factor = 1. + (i != j)

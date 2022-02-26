@@ -642,7 +642,7 @@ class MPIRandomState(object):
 class MPIPool(object):
     """
     A processing pool that distributes tasks using MPI.
-    With this pool class, the master process distributes tasks to worker
+    With this pool class, the root process distributes tasks to worker
     processes using an MPI communicator.
 
     This implementation is inspired by @juliohm in `this module
@@ -667,18 +667,18 @@ class MPIPool(object):
         """
         self.mpicomm = mpicomm
 
-        self.master = 0
+        self.mpiroot = 0
         self.rank = self.mpicomm.Get_rank()
 
         #atexit.register(lambda: MPIPool.close(self))
 
-        #if not self.is_master():
+        #if not self.is_mpiroot():
         #    # workers branch here and wait for work
         #    self.wait()
         #    sys.exit(0)
 
         self.workers = set(range(self.mpicomm.size))
-        self.workers.discard(self.master)
+        self.workers.discard(self.mpiroot)
         self.size = self.mpicomm.Get_size() - 1
         self.check_tasks = check_tasks
 
@@ -689,16 +689,16 @@ class MPIPool(object):
 
     def wait(self):
         """
-        Tell the workers to wait and listen for the master process. This is
+        Tell the workers to wait and listen for the root process. This is
         called automatically when using :meth:`MPIPool.map` and doesn't need to
         be called by the user.
         """
-        if self.is_master():
+        if self.is_mpi_root():
             return
 
         status = MPI.Status()
         while True:
-            task = self.mpicomm.recv(source=self.master, tag=MPI.ANY_TAG, status=status)
+            task = self.mpicomm.recv(source=self.mpiroot, tag=MPI.ANY_TAG, status=status)
 
             if task is None:
                 # Worker told to quit work
@@ -706,7 +706,7 @@ class MPIPool(object):
 
             result = self.function(task)
             # Worker is sending answer with tag
-            self.mpicomm.ssend(result, self.master, status.tag)
+            self.mpicomm.ssend(result, self.mpiroot, status.tag)
 
     def map(self, function, tasks):
         """
@@ -731,9 +731,9 @@ class MPIPool(object):
             A list of results from the output of each ``function`` call.
         """
 
-        # If not the master just wait for instructions.
+        # If not the root just wait for instructions.
         self.function = function
-        #if not self.is_master():
+        #if not self.is_mpi_root():
         #    self.wait()
         #    return
         results = None
@@ -742,12 +742,12 @@ class MPIPool(object):
         # check
         if self.check_tasks:
             alltasks = self.mpicomm.allgather(tasks)
-            tasks = np.array(alltasks[self.master])
+            tasks = np.array(alltasks[self.mpiroot])
             for t in alltasks:
                 if t is not None and not np.all(np.array(t) == tasks):
                     raise ValueError('Something fishy: not the same input tasks on all ranks')
 
-        if self.is_master():
+        if self.is_mpi_root():
 
             workerset = self.workers.copy()
             tasklist = [(tid, arg) for tid, arg in enumerate(tasks)]
@@ -774,7 +774,7 @@ class MPIPool(object):
                 worker = status.source
                 taskid = status.tag
 
-                # "Master received from worker %s with tag %s"
+                # "root received from worker %s with tag %s"
 
                 workerset.add(worker)
                 results[taskid] = result
@@ -784,7 +784,7 @@ class MPIPool(object):
             self.wait()
 
         self.mpicomm.Barrier()
-        return self.mpicomm.bcast(results,root=self.master)
+        return self.mpicomm.bcast(results,root=self.mpiroot)
 
     def close(self):
         """Tell all the workers to quit."""
@@ -794,19 +794,19 @@ class MPIPool(object):
         for worker in self.workers:
             self.mpicomm.send(None, worker, 0)
 
-    def is_master(self):
+    def is_mpi_root(self):
         """
-        Is the current process the master process?
-        Master is responsible for distributing the tasks to the other available ranks.
+        Is the current process the root process?
+        root is responsible for distributing the tasks to the other available ranks.
         """
-        return self.rank == self.master
+        return self.rank == self.mpiroot
 
     def is_worker(self):
         """
         Is the current process a valid worker?
-        Workers wait for instructions from the master.
+        Workers wait for instructions from root.
         """
-        return self.rank != self.master
+        return self.rank != self.mpiroot
 
     def __enter__(self):
         return self
@@ -822,7 +822,7 @@ class MPIPool(object):
         self.mpicomm.Barrier()
 
         if self.is_root():
-            self.logger.debug('Master is finished; terminating')
+            self.logger.debug('root is finished; terminating')
 
         self.close()
 
@@ -952,7 +952,7 @@ def _reduce_array(data, npop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
 @CurrentMPIComm.enable
 def size_array(data, mpicomm=None):
     """Return global size of ``data`` array."""
-    return mpicomm.allreduce(data.size,op=MPI.SUM)
+    return mpicomm.allreduce(data.size, op=MPI.SUM)
 
 
 @CurrentMPIComm.enable

@@ -90,14 +90,14 @@ def test_randoms():
     assert np.all((catalog['RA'] >= rarange[0]) & (catalog['RA'] <= rarange[1]))
     assert np.all((catalog['DEC'] >= decrange[0]) & (catalog['DEC'] <= decrange[1]))
     assert np.all(catalog['Distance'] == 1.)
-    assert catalog.gsize == 1000
+    assert catalog.csize == 1000
 
     drange = [1000.,2000.]
     catalog = RandomCutskyCatalog(size=1000, rarange=rarange, decrange=decrange, drange=drange)
     assert np.all((catalog['RA'] >= rarange[0]) & (catalog['RA'] <= rarange[1]))
     assert np.all((catalog['DEC'] >= decrange[0]) & (catalog['DEC'] <= decrange[1]))
     assert np.all((catalog['Distance'] >= drange[0]) & (catalog['Distance'] <= drange[1]))
-    assert catalog.gsize == 1000
+    assert catalog.csize == 1000
 
 
 def test_isometry():
@@ -148,7 +148,7 @@ def test_cutsky():
     assert np.allclose(abs(decrange2[1]-decrange2[0]),abs(decrange[1]-decrange[0]),rtol=1e-7,atol=1e-7)
     catalog = RandomBoxCatalog(boxsize=boxsize*1.1,size=10000,boxcenter=10000.,seed=42)
     cutsky = catalog.cutsky(drange=drange,rarange=rarange,decrange=decrange)
-    assert cutsky.gsize
+    assert cutsky.csize
     rarange = utils.wrap_angle(rarange, degree=True)
     if rarange[1] < rarange[0]: rarange[0] -= 360.
     assert np.all((cutsky['Distance'] >= drange[0]) & (cutsky['Distance'] <= drange[1]) & \
@@ -158,12 +158,12 @@ def test_cutsky():
     assert np.all((dist >= drange[0]) & (dist <= drange[1]) & (ra >= rarange[0]) & (ra < rarange[1]) & (dec >= decrange[0]) & (dec <= decrange[1]))
 
     catalog = RandomBoxCatalog(boxsize=boxsize*2.1,size=10000,boxcenter=10000.,seed=42)
-    gsize = catalog.cutsky(drange=drange,rarange=rarange,decrange=decrange,noutput=1).gsize
+    gsize = catalog.cutsky(drange=drange,rarange=rarange,decrange=decrange,noutput=1).csize
     cutsky = catalog.cutsky(drange=drange,rarange=rarange,decrange=decrange,noutput=None)
     assert isinstance(cutsky, list)
     assert len(cutsky) == 8
     for catalog in cutsky:
-        assert abs(catalog.gsize / gsize - 1) < 3./gsize**0.5 # 3 sigmas
+        assert abs(catalog.csize / gsize - 1) < 3./gsize**0.5 # 3 sigmas
     catalog['Velocity'] = catalog.zeros(3, dtype='f8')
     assert np.allclose(catalog.position, catalog.rsd_position(f=1., los=None))
 
@@ -261,7 +261,7 @@ def test_save():
     size = 10
     ref = RandomBoxCatalog(boxsize=100., size=size, boxcenter=10000., seed=42)
     mpicomm = ref.mpicomm
-    assert ref.gsize == size
+    assert ref.csize == size
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.npy'), root=0)
@@ -270,9 +270,9 @@ def test_save():
         assert np.all(test.boxsize == ref.boxsize)
         assert np.all(test.position == ref.position)
         test = RandomBoxCatalog.concatenate(test, test)
-        assert test.gsize == ref.gsize*2
+        assert test.csize == ref.csize*2
         test = RandomBoxCatalog.concatenate(test, test, keep_order=False)
-        assert test.gsize == ref.gsize*4
+        assert test.csize == ref.csize*4
 
     from nbodykit.lab import FITSCatalog
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -310,6 +310,7 @@ def test_rotation_matrix():
 if __name__ == '__main__':
 
     setup_logging()
+
     test_remap()
     test_isometry()
     test_randoms()

@@ -155,6 +155,7 @@ class BaseGaussianMock(BaseClass):
         """
         self.power = power
         self.mpicomm = mpicomm
+        self.mpiroot = 0
         # set the seed randomly if it is None
         if seed is None: seed = mpi.bcast_seed(size=None)
         self.attrs = {}
@@ -183,6 +184,10 @@ class BaseGaussianMock(BaseClass):
         self.attrs['los'] = los
         self.set_complex_delta_field()
 
+    def is_mpi_root(self):
+        """Whether current rank is root."""
+        return self.mpicomm.rank == self.mpiroot
+
     @property
     def boxsize(self):
         """Box size."""
@@ -206,7 +211,7 @@ class BaseGaussianMock(BaseClass):
         """Set :attr:`mesh_delta_k`; the end-user does not neet to call this method."""
 
         mesh_delta_k = self.pm.generate_whitenoise(self.attrs['seed'], type='untransposedcomplex', unitary=self.attrs['unitary_amplitude'])
-        if self.mpicomm.rank == 0:
+        if self.is_mpi_root():
             self.log_info('White noise generated.')
 
         if self.attrs['inverted_phase']: mesh_delta_k[...] *= -1
@@ -303,7 +308,7 @@ class BaseGaussianMock(BaseClass):
         if interlacing:
             interlacing = int(interlacing)
             if interlacing == 1:
-                if self.mpicomm.rank == 0:
+                if self.is_mpi_root():
                     self.log_warning('Provided interlacing is {}; setting it to 2.'.format(interlacing))
                 interlacing = 2
             shifts = np.arange(interlacing)*1./interlacing
@@ -428,7 +433,7 @@ class BaseGaussianMock(BaseClass):
         number.unravel(number_ravel)
 
         ntotal = int(number.csum() + 0.5)
-        if self.mpicomm.rank == 0:
+        if self.is_mpi_root():
             self.log_info('Poisson sampling done, total number of objects is {:d}.'.format(ntotal))
 
         # create uniform grid of particles, one per grid point, in BoxSize coordinates
@@ -442,7 +447,7 @@ class BaseGaussianMock(BaseClass):
         positions = positions.repeat(number_per_cell, axis=0)
         ids = ids.repeat(number_per_cell, axis=0)
 
-        if self.mpicomm.rank == 0:
+        if self.is_mpi_root():
             self.log_info('Catalog produced. Assigning in cell shift.')
 
         positions = mpsort.sort(positions, orderby=ids, comm=self.mpicomm)

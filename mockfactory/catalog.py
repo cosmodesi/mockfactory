@@ -36,7 +36,7 @@ def _get_shape(size, itemshape):
 
 def _dict_to_array(data, struct=True):
     """
-    Return dict as *numpy* array.
+    Return dict as numpy array.
 
     Parameters
     ----------
@@ -45,7 +45,7 @@ def _dict_to_array(data, struct=True):
 
     struct : bool, default=True
         Whether to return structured array, with columns accessible through e.g. ``array['Position']``.
-        If ``False``, *numpy* will attempt to cast types of different columns.
+        If ``False``, numpy will attempt to cast types of different columns.
 
     Returns
     -------
@@ -66,7 +66,7 @@ class BaseFile(BaseClass):
     File handlers should extend this class, by (at least) implementing :meth:`read`, :meth:`get` and :meth:`write`.
     """
     @CurrentMPIComm.enable
-    def __init__(self, filename, attrs=None, mpicomm=None, mpiroot=0):
+    def __init__(self, filename, attrs=None, mpicomm=None):
         """
         Initialize :class:`BaseFile`.
 
@@ -81,24 +81,21 @@ class BaseFile(BaseClass):
 
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
-
-        mpiroot : int, default=0
-            The rank number to use as master.
         """
         self.filename = filename
         self.attrs = attrs or {}
         self.mpicomm = mpicomm
-        self.mpiroot = mpiroot
+        self.mpiroot = 0
 
     @property
     def start(self):
         """Start of the data local chunk."""
-        return self.mpicomm.rank * self.gsize // self.mpicomm.size
+        return self.mpicomm.rank * self.csize // self.mpicomm.size
 
     @property
     def stop(self):
         """End of the data local chunk."""
-        return (self.mpicomm.rank + 1) * self.gsize // self.mpicomm.size
+        return (self.mpicomm.rank + 1) * self.csize // self.mpicomm.size
 
     @property
     def size(self):
@@ -111,7 +108,7 @@ class BaseFile(BaseClass):
 
     def read(self):
         """
-        Set :attr:`gsize`, :attr:`columns` and update attr:`attrs`.
+        Set :attr:`csize`, :attr:`columns` and update attr:`attrs`.
         To be implemented in your file handler.
         """
         raise NotImplementedError('Implement method "read" in your "{}"-inherited file handler'.format(self.__class__.___name__))
@@ -188,12 +185,12 @@ class FitsFile(BaseFile):
                 # make sure we crash if data is wrong or missing
                 if not file.has_data() or file.get_exttype() == 'IMAGE_HDU':
                     raise ValueError('{} extension {} is not a readable binary table'.format(msg, self.ext))
-                self.gsize = file.get_nrows()
+                self.csize = file.get_nrows()
                 self.columns = file.get_rec_dtype()[0].names
                 header = file.read_header()
                 self.attrs.update(dict(header))
                 header.clean()
-                state = {name: getattr(self, name) for name in ['filename','gsize','columns','ext','attrs']}
+                state = {name: getattr(self, name) for name in ['filename','csize','columns','ext','attrs']}
         self.__dict__.update(self.mpicomm.bcast(state if self.is_mpi_root() else None, root=self.mpiroot))
         #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
 
@@ -262,11 +259,11 @@ class HDF5File(BaseFile):
                 grp = file[self.group]
                 self.attrs.update(dict(grp.attrs))
                 self.columns = list(grp.keys())
-                self.gsize = grp[self.columns[0]].shape[0]
+                self.csize = grp[self.columns[0]].shape[0]
                 for name in self.columns:
-                    if grp[name].shape[0] != self.gsize:
-                        raise ValueError('Column {} has different length (expected {:d}, found {:d})'.format(name, self.gsize, grp[name].shape[0]))
-                state = {name: getattr(self, name) for name in ['filename','gsize','columns','attrs']}
+                    if grp[name].shape[0] != self.csize:
+                        raise ValueError('Column {} has different length (expected {:d}, found {:d})'.format(name, self.csize, grp[name].shape[0]))
+                state = {name: getattr(self, name) for name in ['filename','csize','columns','attrs']}
         self.__dict__.update(self.mpicomm.bcast(state if self.is_mpi_root() else None, root=self.mpiroot))
         #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
 
@@ -295,13 +292,13 @@ class HDF5File(BaseFile):
             with h5py.File(self.filename, 'w', driver=driver, **kwargs) as file:
                 csizes = np.cumsum([0] + self.mpicomm.allgather(self.size))
                 start, stop = csizes[self.mpicomm.rank], csizes[self.mpicomm.rank+1]
-                gsize = csizes[-1]
+                csize = csizes[-1]
                 grp = file
                 if self.group != '/':
                     grp = file.create_group(self.group)
                 grp.attrs.update(self.attrs)
                 for name in data:
-                    dset = grp.create_dataset(name, shape=(gsize,)+data[name].shape[1:], dtype=data[name].dtype)
+                    dset = grp.create_dataset(name, shape=(csize,)+data[name].shape[1:], dtype=data[name].dtype)
                     dset[start:stop] = self[name]
         else:
             first = True
@@ -325,7 +322,7 @@ class BaseCatalog(BaseClass):
     """Base class that represents a catalog, as a dictionary of columns stored as arrays."""
 
     @CurrentMPIComm.enable
-    def __init__(self, data=None, columns=None, attrs=None, mpicomm=None, mpiroot=0):
+    def __init__(self, data=None, columns=None, attrs=None, mpicomm=None):
         """
         Initialize :class:`BaseCatalog`.
 
@@ -343,9 +340,6 @@ class BaseCatalog(BaseClass):
 
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
-
-        mpiroot : int, default=0
-            The rank number to use as master.
         """
         self.data = {}
         if columns is None:
@@ -355,7 +349,7 @@ class BaseCatalog(BaseClass):
                 self[name] = data[name]
         self.attrs = attrs or {}
         self.mpicomm = mpicomm
-        self.mpiroot = mpiroot
+        self.mpiroot = 0
 
     def is_mpi_root(self):
         """Whether current rank is root."""
@@ -380,7 +374,7 @@ class BaseCatalog(BaseClass):
         """
         if columns is None: columns = catalog.columns
         data = {col: catalog[col].compute() for col in columns}
-        return cls(data, mpicomm=catalog.comm, mpiroot=0, attrs=catalog.attrs)
+        return cls(data, mpicomm=catalog.comm, attrs=catalog.attrs)
 
     def to_nbodykit(self, columns=None):
         """
@@ -417,7 +411,7 @@ class BaseCatalog(BaseClass):
         return len(self)
 
     @property
-    def gsize(self):
+    def csize(self):
         """Return catalog global size, i.e. sum of size in each process."""
         return self.mpicomm.allreduce(len(self))
 
@@ -483,7 +477,7 @@ class BaseCatalog(BaseClass):
         """Iterate on catalog columns."""
         return iter(self.data)
 
-    def gindices(self):
+    def cindices(self):
         """Row numbers in the global catalog."""
         sizes = self.mpicomm.allgather(len(self))
         sizes = [0] + np.cumsum(sizes[:1]).tolist()
@@ -540,7 +534,7 @@ class BaseCatalog(BaseClass):
         """Set column of name ``column``."""
         self.data[column] = item
 
-    def gget(self, column, mpiroot=None):
+    def cget(self, column, mpiroot=None):
         """
         Return on process rank ``root`` catalog global column ``column`` if exists, else return provided default.
         If ``mpiroot`` is ``None`` or ``Ellipsis`` return result on all processes.
@@ -548,17 +542,17 @@ class BaseCatalog(BaseClass):
         if mpiroot is None: mpiroot = Ellipsis
         return mpi.gather_array(self[column], mpicomm=self.mpicomm, root=mpiroot)
 
-    def gslice(self, *args):
+    def cslice(self, *args):
         """
         Perform global slicing of catalog,
-        e.g. ``catalog.gslice(0,100,1)`` will return a new catalog of global size ``100``.
+        e.g. ``catalog.cslice(0,100,1)`` will return a new catalog of global size ``100``.
         Same reference to :attr:`attrs`.
         """
         sl = slice(*args)
         new = self.copy()
         for col in self.columns():
-            self_value = self.gget(col, mpiroot=self.mpiroot)
-            new[col] = mpi.scatter_array(self_value if self.is_mpi_root() else None,mpiroot=self.mpiroot,mpicomm=self.mpicomm)
+            self_value = self.cget(col, mpiroot=self.mpiroot)
+            new[col] = mpi.scatter_array(self_value if self.is_mpi_root() else None, mpicomm=self.mpicomm, root=self.mpiroot)
         return new
 
     def to_array(self, columns=None, struct=True):
@@ -585,23 +579,24 @@ class BaseCatalog(BaseClass):
 
     @classmethod
     @CurrentMPIComm.enable
-    def from_array(cls, array, columns=None, mpicomm=None, mpiroot=0, **kwargs):
+    def from_array(cls, array, columns=None, mpicomm=None, mpiroot=None, **kwargs):
         """
         Build :class:`BaseCatalog` from input ``array``.
 
         Parameters
         ----------
+        array : array, dict
+            Input array to turn into catalog.
+
         columns : list
             List of columns to read from array.
 
-        mpiroot : int, default=0
-            Rank of process where input array lives.
-
-        mpistate : string, mpi.CurrentMPIState
-            MPI state of the input array: 'scattered', 'gathered', 'broadcast'?
-
         mpicomm : MPI communicator, default=None
             MPI communicator.
+
+        mpiroot : int, default=None
+            If ``None``, input array is assumed to be scattered across all ranks.
+            Else the MPI rank where input array is gathered.
 
         kwargs : dict
             Other arguments for :meth:`__init__`.
@@ -611,17 +606,31 @@ class BaseCatalog(BaseClass):
         catalog : BaseCatalog
         """
         isstruct = None
-        if mpicomm.rank == mpiroot:
-            isstruct = array.dtype.names is not None
-            if isstruct:
-                if columns is None: columns = array.dtype.names
-        isstruct = mpicomm.bcast(isstruct,root=mpiroot)
-        columns = mpicomm.bcast(columns,root=mpiroot)
-        new = cls(data=dict.fromkeys(columns),mpiroot=mpiroot,mpicomm=mpicomm,**kwargs)
-        if isstruct:
-            new.data = {col:array[col] for col in columns}
-        else:
-            new.data = {col:arr for col,arr in zip(columns,array)}
+        if mpicomm.rank == mpiroot or mpiroot is None:
+            isstruct = isdict = not hasattr(data, 'dtype')
+            if isdict:
+                if columns is None: columns = list(array.keys())
+            else:
+                isstruct = array.dtype.names is not None
+                if isstruct and columns is None: columns = array.dtype.names
+        if mpiroot is not None:
+            isstruct = mpicomm.bcast(isstruct, root=mpiroot)
+            columns = mpicomm.bcast(columns, root=mpiroot)
+        columns = list(columns)
+        new = cls(data=dict.fromkeys(columns), mpicomm=mpicomm, **kwargs)
+
+        def get(column):
+            value = None
+            if mpicomm.rank == mpiroot or mpiroot is None:
+                if isstruct:
+                    value = array[column]
+                else:
+                    value = columns.index(column)
+            if mpiroot is not None:
+                return mpi.scatter_array(value, mpicomm=mpicomm, root=mpiroot)
+            return value
+
+        new.data = {column: get(column) for column in columns}
         return new
 
     def copy(self, columns=None):
@@ -648,7 +657,7 @@ class BaseCatalog(BaseClass):
 
     def __getstate__(self):
         """Return this class state dictionary."""
-        data = {str(name):col for name,col in self.data.items()}
+        data = {str(name): col for name, col in self.data.items()}
         state = {'data':data}
         for name in self._attrs:
             if hasattr(self, name):
@@ -661,12 +670,12 @@ class BaseCatalog(BaseClass):
 
     @classmethod
     @CurrentMPIComm.enable
-    def from_state(cls, state, mpiroot=0, mpicomm=None):
+    def from_state(cls, state, mpicomm=None):
         """Create class from state."""
         new = cls.__new__(cls)
         new.__setstate__(state)
         new.mpicomm = mpicomm
-        new.mpiroot = mpiroot
+        new.mpiroot = 0
         return new
 
     def __getitem__(self, name):
@@ -697,7 +706,7 @@ class BaseCatalog(BaseClass):
 
     def __repr__(self):
         """Return string representation of catalog, including global size and columns."""
-        return '{}(size={:d}, columns={})'.format(self.__class__.__name__,self.gsize,self.columns())
+        return '{}(size={:d}, columns={})'.format(self.__class__.__name__, self.csize, self.columns())
 
     @classmethod
     def concatenate(cls, *others, keep_order=True):
@@ -739,7 +748,7 @@ class BaseCatalog(BaseClass):
 
         for column in new_columns:
             if keep_order:
-                columns = [other.gget(column, mpiroot=new.mpiroot) for other in others]
+                columns = [other.cget(column, mpiroot=new.mpiroot) for other in others]
                 if new.is_mpi_root():
                     new[column] = np.concatenate(columns, axis=0)
                 new[column] = mpi.scatter_array(new[column] if new.is_mpi_root() else None, root=new.mpiroot, mpicomm=new.mpicomm)
@@ -763,8 +772,8 @@ class BaseCatalog(BaseClass):
         assert self.mpicomm == other.mpicomm
         toret = True
         for col in self_columns:
-            self_value = self.gget(col, mpiroot=self.mpiroot)
-            other_value = other.gget(col, mpiroot=self.mpiroot)
+            self_value = self.cget(col, mpiroot=self.mpiroot)
+            other_value = other.cget(col, mpiroot=self.mpiroot)
             if self.is_mpi_root():
                 if not np.all(self_value == other_value):
                     toret = False
@@ -773,7 +782,7 @@ class BaseCatalog(BaseClass):
 
     @classmethod
     @CurrentMPIComm.enable
-    def load_fits(cls, filename, ext=None, mpiroot=0, mpicomm=None):
+    def load_fits(cls, filename, ext=None,  mpicomm=None):
         """
         Load catalog in FITS binary format from disk.
 
@@ -785,9 +794,6 @@ class BaseCatalog(BaseClass):
         ext : int, default=None
             FITS extension. Defaults to first extension with data.
 
-        mpiroot : int, default=0
-            Rank of process where input array lives.
-
         mpicomm : MPI communicator, default=None
             The MPI communicator.
 
@@ -795,20 +801,20 @@ class BaseCatalog(BaseClass):
         -------
         catalog : BaseCatalog
         """
-        source = FitsFile(filename, ext=ext, mpiroot=mpiroot, mpicomm=mpicomm)
+        source = FitsFile(filename, ext=ext, mpicomm=mpicomm)
         source.read()
-        new = cls(attrs={'fitshdr': source.attrs}, mpiroot=mpiroot, mpicomm=mpicomm)
+        new = cls(attrs={'fitshdr': source.attrs}, mpicomm=mpicomm)
         new._source = source
         return new
 
     def save_fits(self, filename):
         """Save catalog to ``filename`` as *fits* file."""
-        source = FitsFile(filename, ext=1, mpiroot=self.mpiroot, mpicomm=self.mpicomm)
+        source = FitsFile(filename, ext=1, mpicomm=self.mpicomm)
         source.write({name: self[name] for name in self.columns()})
 
     @classmethod
     @CurrentMPIComm.enable
-    def load_hdf5(cls, filename, group='/', mpiroot=0, mpicomm=None):
+    def load_hdf5(cls, filename, group='/', mpicomm=None):
         """
         Load catalog in HDF5 binary format from disk.
 
@@ -820,9 +826,6 @@ class BaseCatalog(BaseClass):
         group : string, default='/'
             HDF5 group where columns are located.
 
-        mpiroot : int, default=0
-            Rank of process where input array lives.
-
         mpicomm : MPI communicator, default=None
             The MPI communicator.
 
@@ -830,9 +833,9 @@ class BaseCatalog(BaseClass):
         -------
         catalog : BaseCatalog
         """
-        source = HDF5File(filename, group=group, mpiroot=mpiroot, mpicomm=mpicomm)
+        source = HDF5File(filename, group=group, mpicomm=mpicomm)
         source.read()
-        new = cls(attrs=source.attrs, mpiroot=mpiroot, mpicomm=mpicomm)
+        new = cls(attrs=source.attrs, mpicomm=mpicomm)
         new._source = source
         return new
 
@@ -848,12 +851,12 @@ class BaseCatalog(BaseClass):
         group : string, default='/'
             HDF5 group where columns are located.
         """
-        source = HDF5File(filename, group=group, mpiroot=self.mpiroot, mpicomm=self.mpicomm)
+        source = HDF5File(filename, group=group, mpicomm=self.mpicomm)
         source.write({name: self[name] for name in self.columns()})
 
     @classmethod
     @CurrentMPIComm.enable
-    def load(cls, filename, columns=None, mpiroot=0, mpicomm=None):
+    def load(cls, filename, columns=None, mpicomm=None):
         """
         Load catalog in *npy* binary format from disk.
 
@@ -862,9 +865,6 @@ class BaseCatalog(BaseClass):
         columns : list, default=None
             List of column names to read. Defaults to all columns.
 
-        mpiroot : int, default=0
-            Rank of process where input array lives.
-
         mpicomm : MPI communicator, default=None
             The MPI communicator.
 
@@ -872,6 +872,7 @@ class BaseCatalog(BaseClass):
         -------
         catalog : BaseCatalog
         """
+        mpiroot = 0
         if mpicomm.rank == mpiroot:
             cls.log_info('Loading {}.'.format(filename))
             state = np.load(filename, allow_pickle=True)[()]
@@ -884,7 +885,7 @@ class BaseCatalog(BaseClass):
         state['data'] = {}
         for name in columns:
             state['data'][name] = mpi.scatter_array(data[name] if mpicomm.rank == mpiroot else None, mpicomm=mpicomm, root=mpiroot)
-        return cls.from_state(state, mpicomm=mpicomm, mpiroot=mpiroot)
+        return cls.from_state(state, mpicomm=mpicomm)
 
     def save(self, filename):
         """Save catalog to ``filename`` as *npy* file."""
@@ -892,32 +893,32 @@ class BaseCatalog(BaseClass):
             self.log_info('Saving to {}.'.format(filename))
             utils.mkdir(os.path.dirname(filename))
         state = self.__getstate__()
-        state['data'] = {name: self.gget(name, mpiroot=self.mpiroot) for name in self.columns()}
+        state['data'] = {name: self.cget(name, mpiroot=self.mpiroot) for name in self.columns()}
         if self.is_mpi_root():
             np.save(filename, state, allow_pickle=True)
 
     @vectorize_columns
-    def sum(self, column, axis=0):
+    def csum(self, column, axis=0):
         """Return global sum of column(s) ``column``."""
         return mpi.sum_array(self[column],axis=axis,mpicomm=self.mpicomm)
 
     @vectorize_columns
-    def average(self, column, weights=None, axis=0):
+    def caverage(self, column, weights=None, axis=0):
         """Return global average of column(s) ``column``, with weights ``weights`` (defaults to ``1``)."""
         return mpi.average_array(self[column],weights=weights,axis=axis,mpicomm=self.mpicomm)
 
     @vectorize_columns
-    def mean(self, column, axis=0):
+    def cmean(self, column, axis=0):
         """Return global mean of column(s) ``column``."""
-        return self.average(column,axis=axis)
+        return self.caverage(column,axis=axis)
 
     @vectorize_columns
-    def minimum(self, column, axis=0):
+    def cmin(self, column, axis=0):
         """Return global minimum of column(s) ``column``."""
         return mpi.min_array(self[column],axis=axis,mpicomm=self.mpicomm)
 
     @vectorize_columns
-    def maximum(self, column, axis=0):
+    def cmax(self, column, axis=0):
         """Return global maximum of column(s) ``column``."""
         return mpi.max_array(self[column],axis=axis,mpicomm=self.mpicomm)
 
