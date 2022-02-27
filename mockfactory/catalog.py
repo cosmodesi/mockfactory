@@ -65,67 +65,165 @@ class BaseFile(BaseClass):
     Base class to read/write a file from/to disk.
     File handlers should extend this class, by (at least) implementing :meth:`read`, :meth:`get` and :meth:`write`.
     """
+    _want_array = None
+
     @CurrentMPIComm.enable
-    def __init__(self, filename, attrs=None, mpicomm=None):
+    def __init__(self, filename, attrs=None, mode='', mpicomm=None):
         """
         Initialize :class:`BaseFile`.
 
         Parameters
         ----------
-        filename : string
-            File name.
+        filename : string, list of strings
+            File name(s).
 
         attrs : dict, default=None
             File attributes. Will be complemented by those read from disk.
             These will eventually be written to disk.
 
+        mode : string, default=''
+            If 'r', read file header (necessary for further reading of file columns).
+
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
         """
-        self.filename = filename
+        mode = mode.lower()
+        allowed_modes = ['r', 'w', 'rw', '']
+        if mode not in allowed_modes:
+            raise ValueError('mode must be one of {}'.format(allowed_modes))
+        if not isinstance(filename, (list, tuple)):
+            filename = [filename]
+        self.filenames = list(filename)
         self.attrs = attrs or {}
         self.mpicomm = mpicomm
         self.mpiroot = 0
+        if 'r' in mode:
+            self._read_header()
 
-    @property
-    def start(self):
-        """Start of the data local chunk."""
-        return self.mpicomm.rank * self.csize // self.mpicomm.size
+    def __enter__(self):
+        return self
 
-    @property
-    def stop(self):
-        """End of the data local chunk."""
-        return (self.mpicomm.rank + 1) * self.csize // self.mpicomm.size
-
-    @property
-    def size(self):
-        """Size of local data chunk."""
-        return self.stop - self.start
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        pass
 
     def is_mpi_root(self):
         """Whether current rank is root."""
         return self.mpicomm.rank == self.mpiroot
 
-    def read(self):
+    def _read_header(self):
+        if self.is_mpi_root():
+            basenames = ['size', 'columns', 'attrs']
+            self.csizes = []; self.columns = None; names = None
+            for filename in self.filenames:
+                self.log_info('Loading {}.'.format(filename))
+                di = self._read_file_header(filename)
+                self.csizes.append(di['size'])
+                if self.columns is None:
+                    self.columns = list(di['columns'])
+                elif not set(di['columns']).issubset(self.columns):
+                    raise ValueError('{} does not contain columns {}'.format(filename, set(di['columns']) - set(self.columns)))
+                self.attrs = {**di.get('attrs', {}), **self.attrs}
+                if names is None:
+                    names = [name for name in di if name not in basenames]
+                for name in names: # typically extension name
+                    setattr(self, name, di[name])
+            state = {name: getattr(self, name) for name in ['csizes'] + basenames[1:] + names}
+        self.__dict__.update(self.mpicomm.bcast(state if self.is_mpi_root() else None, root=self.mpiroot))
+        #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
+        self.csize = sum(self.csizes)
+        self.start = self.mpicomm.rank * self.csize // self.mpicomm.size
+        self.stop = (self.mpicomm.rank + 1) * self.csize // self.mpicomm.size
+        self.size = self.stop - self.start
+
+    def read(self, column):
+        """Read column of name ``column``."""
+        if not hasattr(self, 'csizes'):
+            self._read_header()
+        cumsizes = np.cumsum(self.csizes)
+        ifile_start = np.searchsorted(cumsizes, self.start, side='left') # cumsizes[i-1] < self.start <= cumsizes[i]
+        ifile_stop = np.searchsorted(cumsizes, self.stop, side='left')
+        toret = []
+        for ifile in range(ifile_start, ifile_stop+1):
+            cumstart = 0 if ifile == 0 else cumsizes[ifile - 1]
+            rows = slice(max(self.start - cumstart, 0), min(self.stop - cumstart, self.csizes[ifile]))
+            toret.append(self._read_file_slice(self.filenames[ifile], column, rows=rows))
+        return np.concatenate(toret, axis=0)
+
+    def write(self, data, mpiroot=None):
         """
-        Set :attr:`csize`, :attr:`columns` and update attr:`attrs`.
+        Write input data to file(s).
+
+        Parameters
+        ----------
+        data : array, dict
+            Data to write.
+
+        mpiroot : int, default=None
+            If ``None``, input array is assumed to be scattered across all ranks.
+            Else the MPI rank where input array is gathered.
+        """
+        isdict = None
+        if self.mpicomm.rank == mpiroot or mpiroot is None:
+            isdict = isinstance(data, dict)
+        if mpiroot is not None:
+            isdict = self.mpicomm.bcast(isdict, root=mpiroot)
+            if isdict:
+                columns = self.mpicomm.bcast(list(data.keys()) if self.mpicomm.rank == mpiroot else None, root=mpiroot)
+                data = {name: mpi.scatter_array(data[name] if self.mpicomm.rank == mpiroot else None, mpicomm=self.mpicomm, root=self.mpiroot) for name in colums}
+            else:
+                data = mpi.scatter_array(data, mpicomm=self.mpicomm, root=self.mpiroot)
+        if isdict:
+            for name in data: size = len(data[name]); break
+        else:
+            size = len(data)
+        sizes = self.mpicomm.allgather(size)
+        cumsizes = np.cumsum(sizes)
+        csize = cumsizes[-1]
+        nfiles = len(self.filenames)
+        mpicomm = self.mpicomm # store current communicator
+        for ifile, filename in enumerate(self.filenames):
+            if self.is_mpi_root():
+                self.log_info('Saving to {}.'.format(filename))
+                utils.mkdir(os.path.dirname(filename))
+        for ifile, filename in enumerate(self.filenames):
+            start, stop = ifile * csize // nfiles, (ifile + 1) * csize // nfiles
+            irank_start = np.searchsorted(cumsizes, start, side='left') # cumsizes[i-1] < self.start <= cumsizes[i]
+            irank_stop = np.searchsorted(cumsizes, stop, side='left')
+            rows = slice(0, 0)
+            has_rows = irank_start <= self.mpicomm.rank <= irank_stop
+            if irank_start <= self.mpicomm.rank <= irank_stop:
+                cumstart = 0 if mpicomm.rank == 0 else cumsizes[mpicomm.rank - 1]
+                rows = slice(max(start - cumstart, 0), min(stop - cumstart, sizes[mpicomm.rank]))
+            #self.mpicomm = mpicomm.Split(has_rows, 0)
+            #if not has_rows: continue
+            if isdict:
+                tmp = {name: data[name][rows] for name in data}
+                if self._want_array:
+                    tmp = _dict_to_array(tmp)
+            else:
+                tmp = data[sl]
+                if not self._want_array:
+                    tmp = {name: tmp[name] for name in tmp.dtype.names}
+            self._write_file_slice(filename, tmp)
+        self.mpicomm = mpicomm
+
+    def _read_file_header(self, filename):
+        """Return a dictionary of 'size', 'columns' at least for input ``filename``."""
+        raise NotImplementedError('Implement method "_read_file" in your "{}"-inherited file handler'.format(self.__class__.___name__))
+
+    def _read_file_slice(self, filename, column, rows):
+        """
+        Read rows ``rows`` of column ``column`` from file ``filename``.
         To be implemented in your file handler.
         """
-        raise NotImplementedError('Implement method "read" in your "{}"-inherited file handler'.format(self.__class__.___name__))
+        raise NotImplementedError('Implement method "_read_file_slice" in your "{}"-inherited file handler'.format(self.__class__.___name__))
 
-    def get(self, column):
+    def _write_file_slice(self, filename, data):
         """
-        Read column from file.
+        Write ``data`` (``np.ndarray`` or ``dict``) to file ``filename``.
         To be implemented in your file handler.
         """
-        raise NotImplementedError('Implement method "get" in your "{}"-inherited file handler'.format(self.__class__.___name__))
-
-    def write(self, data):
-         """
-         Write ``data`` (structured array or dict) to file.
-         To be implemented in your file handler.
-         """
-         raise NotImplementedError('Implement method "write" in your "{}"-inherited file handler'.format(self.__class__.___name__))
+        raise NotImplementedError('Implement method "_write_file_slice" in your "{}"-inherited file handler'.format(self.__class__.___name__))
 
 
 try: import fitsio
@@ -142,6 +240,9 @@ class FitsFile(BaseFile):
     We have tried making sure processes read the file one after the other, but that does not solve the issue.
     A similar issue happens with nbodykit - though at a lower frequency.
     """
+    _extensions = ['fits']
+    _want_array = True
+
     def __init__(self, filename, ext=None, **kwargs):
         """
         Initialize :class:`FitsFile`.
@@ -162,40 +263,30 @@ class FitsFile(BaseFile):
         self.ext = ext
         super(FitsFile, self).__init__(filename=filename, **kwargs)
 
-    def read(self):
+    def _read_file_header(self, filename):
         # Taken from https://github.com/bccp/nbodykit/blob/master/nbodykit/io/fits.py
-        if self.is_mpi_root():
-            self.log_info('Loading {}.'.format(self.filename))
-            msg = 'Input FITS file {}'.format(self.filename)
-            with fitsio.FITS(self.filename) as file:
+        with fitsio.FITS(filename) as file:
+            if getattr(self, 'ext') is None:
+                for i, hdu in enumerate(file):
+                    if hdu.has_data():
+                        self.ext = i
+                        break
                 if self.ext is None:
-                    for i, hdu in enumerate(file):
-                        if hdu.has_data():
-                            self.ext = i
-                            break
-                    if self.ext is None:
-                        raise IOError('{} has no binary table to read'.format(msg))
-                else:
-                    if isinstance(self.ext, str):
-                        if self.ext not in file:
-                            raise IOError('{} does not contain extension with name {}'.format(msg, self.ext))
-                    elif self.ext >= len(file):
-                        raise IOError('{} extension {} is not valid'.format(msg, self.ext))
-                file = file[self.ext]
-                # make sure we crash if data is wrong or missing
-                if not file.has_data() or file.get_exttype() == 'IMAGE_HDU':
-                    raise ValueError('{} extension {} is not a readable binary table'.format(msg, self.ext))
-                self.csize = file.get_nrows()
-                self.columns = file.get_rec_dtype()[0].names
-                header = file.read_header()
-                self.attrs.update(dict(header))
-                header.clean()
-                state = {name: getattr(self, name) for name in ['filename','csize','columns','ext','attrs']}
-        self.__dict__.update(self.mpicomm.bcast(state if self.is_mpi_root() else None, root=self.mpiroot))
-        #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
+                    raise IOError('{} has no binary table to read'.format(filename))
+            else:
+                if isinstance(self.ext, str):
+                    if self.ext not in file:
+                        raise IOError('{} does not contain extension with name {}'.format(filename, self.ext))
+                elif self.ext >= len(file):
+                    raise IOError('{} extension {} is not valid'.format(filename, self.ext))
+            file = file[self.ext]
+            # make sure we crash if data is wrong or missing
+            if not file.has_data() or file.get_exttype() == 'IMAGE_HDU':
+                raise IOError('{} extension {} is not a readable binary table'.format(filename, self.ext))
+            return {'size': file.get_nrows(), 'columns':file.get_rec_dtype()[0].names, 'attrs': dict(file.read_header()), 'ext':self.ext}
 
-    def get(self, column):
-        return fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(self.start, self.stop))
+    def _read_file_slice(self, filename, column, rows):
+        return fitsio.read(filename, ext=self.ext, columns=column, rows=range(rows.start, rows.stop))
         #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
         #if not self.is_mpi_root():
         #    do = self.mpicomm.recv(source=self.mpicomm.rank-1, tag=42)
@@ -204,16 +295,10 @@ class FitsFile(BaseFile):
         #    self.mpicomm.send(True, dest=self.mpicomm.rank+1, tag=42)
         #return toret
 
-    def write(self, data):
-        """Possible to change fitsio to write by chunks?."""
+    def _write_file_slice(self, filename, data):
+        data = mpi.gather_array(data, mpicomm=self.mpicomm, root=self.mpiroot)
         if self.is_mpi_root():
-            self.log_info('Saving to {}.'.format(self.filename))
-            utils.mkdir(os.path.dirname(self.filename))
-        if not isinstance(data, np.ndarray):
-            data = _dict_to_array(data)
-        array = mpi.gather_array(data, mpicomm=self.mpicomm, root=self.mpiroot)
-        if self.is_mpi_root():
-            fitsio.write(self.filename, array, header=self.attrs.get('fitshdr',None), clobber=True)
+            fitsio.write(filename, data, header=self.attrs.get('fitshdr',None), clobber=True)
 
 
 try: import h5py
@@ -230,6 +315,9 @@ class HDF5File(BaseFile):
     We have tried making sure processes read the file one after the other, but that does not solve the issue.
     A similar issue happens with nbodykit - though at a lower frequency.
     """
+    _extensions = ['hdf', 'h4', 'hdf4', 'he2', 'h5', 'hdf5', 'he5', 'h5py']
+    _want_array = False
+
     def __init__(self, filename, group='/', **kwargs):
         """
         Initialize :class:`HDF5File`.
@@ -252,60 +340,50 @@ class HDF5File(BaseFile):
             self.group = '/'
         super(HDF5File, self).__init__(filename=filename, **kwargs)
 
-    def read(self):
-        if self.is_mpi_root():
-            self.log_info('Loading {}.'.format(self.filename))
-            with h5py.File(self.filename, 'r') as file:
-                grp = file[self.group]
-                self.attrs.update(dict(grp.attrs))
-                self.columns = list(grp.keys())
-                self.csize = grp[self.columns[0]].shape[0]
-                for name in self.columns:
-                    if grp[name].shape[0] != self.csize:
-                        raise ValueError('Column {} has different length (expected {:d}, found {:d})'.format(name, self.csize, grp[name].shape[0]))
-                state = {name: getattr(self, name) for name in ['filename','csize','columns','attrs']}
-        self.__dict__.update(self.mpicomm.bcast(state if self.is_mpi_root() else None, root=self.mpiroot))
-        #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
-
-    def get(self, column):
-        #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
-        with h5py.File(self.filename, 'r') as file:
+    def _read_file_header(self, filename):
+        with h5py.File(filename, 'r') as file:
             grp = file[self.group]
-            toret = grp[column][self.start:self.stop]
-        return toret
+            columns = list(grp.keys())
+            size = grp[columns[0]].shape[0]
+            for name in columns:
+                if grp[name].shape[0] != size:
+                    raise IOError('Column {} has different length (expected {:d}, found {:d})'.format(name, size, grp[name].shape[0]))
+            return {'size': size, 'columns':columns, 'attrs': dict(grp.attrs)}
 
-    def write(self, data):
-        if self.is_mpi_root():
-            self.log_info('Saving to {}.'.format(self.filename))
-            utils.mkdir(os.path.dirname(self.filename))
-        if isinstance(data, np.ndarray):
-            data = {name: data[name] for name in data.dtype.names}
+    def _read_file_slice(self, filename, column, rows):
+        #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
+        with h5py.File(filename, 'r') as file:
+            grp = file[self.group]
+            return grp[column][rows]
+
+    def _write_file_slice(self, filename, data):
+        for name in data: size = len(data[name]); break
         driver = 'mpio'
         kwargs = {'comm': self.mpicomm}
         import h5py
         try:
-            h5py.File(self.filename, 'w', driver=driver, **kwargs)
+            h5py.File(filename, 'w', driver=driver, **kwargs)
         except ValueError:
             driver = None
             kwargs = {}
         if driver == 'mpio':
-            with h5py.File(self.filename, 'w', driver=driver, **kwargs) as file:
-                csizes = np.cumsum([0] + self.mpicomm.allgather(self.size))
-                start, stop = csizes[self.mpicomm.rank], csizes[self.mpicomm.rank+1]
-                csize = csizes[-1]
+            with h5py.File(filename, 'w', driver=driver, **kwargs) as file:
+                cumsizes = np.cumsum([0] + self.mpicomm.allgather(size))
+                start, stop = cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank+1]
+                csize = cumsizes[-1]
                 grp = file
                 if self.group != '/':
                     grp = file.create_group(self.group)
                 grp.attrs.update(self.attrs)
                 for name in data:
                     dset = grp.create_dataset(name, shape=(csize,)+data[name].shape[1:], dtype=data[name].dtype)
-                    dset[start:stop] = self[name]
+                    dset[start:stop] = data[name]
         else:
             first = True
             for name in data:
                 array = mpi.gather_array(data[name], mpicomm=self.mpicomm, root=self.mpiroot)
                 if self.is_mpi_root():
-                    with h5py.File(self.filename, 'w', driver=driver, **kwargs) as file:
+                    with h5py.File(filename, 'w', driver=driver, **kwargs) as file:
                         grp = file
                         if first:
                             if self.group != '/':
@@ -313,6 +391,33 @@ class HDF5File(BaseFile):
                             grp.attrs.update(self.attrs)
                         dset = grp.create_dataset(name, data=array)
                 first = False
+
+
+class BinaryFile(BaseFile):
+    """
+    Class to read/write a HDF5 file from/to disk.
+    """
+    _extensions = ['npy', 'bin']
+    _want_array = True
+
+    def _read_file_header(self, filename):
+        array = np.load(filename, mmap_mode='r', allow_pickle=False, fix_imports=False)
+        return {'size': len(array), 'columns':array.dtype.names, 'attrs': {}}
+
+    def _read_file_slice(self, filename, column, rows):
+        #self.mpicomm.Barrier() # necessary to avoid blocking due to file not found
+        return np.load(filename, mmap_mode='r', allow_pickle=False, fix_imports=False)[column][rows]
+
+    def _write_file_slice(self, filename, data):
+        data = mpi.gather_array(data, mpicomm=self.mpicomm, root=self.mpiroot)
+        if self.is_mpi_root():
+            np.save(filename, data)
+        # Maybe what is below actually works...
+        #cumsizes = np.cumsum([0] + self.mpicomm.allgather(len(data)))
+        #start, stop = cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank+1]
+        #fp = np.memmap(filename, dtype=data.dtype, mode='w+', shape=cumsizes[-1])
+        #fp[start:stop] = data
+        #fp.flush()
 
 
 class BaseCatalog(BaseClass):
@@ -524,7 +629,7 @@ class BaseCatalog(BaseClass):
             return self.data[column]
         # if not in data, try in _source
         if getattr(self, '_source', None) is not None and column in self._source.columns:
-            self.data[column] = self._source.get(column)
+            self.data[column] = self._source.read(column)
             return self.data[column]
         if has_default:
             return default
@@ -801,8 +906,7 @@ class BaseCatalog(BaseClass):
         -------
         catalog : BaseCatalog
         """
-        source = FitsFile(filename, ext=ext, mpicomm=mpicomm)
-        source.read()
+        source = FitsFile(filename, ext=ext, mode='r', mpicomm=mpicomm)
         new = cls(attrs={'fitshdr': source.attrs}, mpicomm=mpicomm)
         new._source = source
         return new
@@ -833,8 +937,7 @@ class BaseCatalog(BaseClass):
         -------
         catalog : BaseCatalog
         """
-        source = HDF5File(filename, group=group, mpicomm=mpicomm)
-        source.read()
+        source = HDF5File(filename, group=group, mode='r', mpicomm=mpicomm)
         new = cls(attrs=source.attrs, mpicomm=mpicomm)
         new._source = source
         return new
@@ -856,7 +959,7 @@ class BaseCatalog(BaseClass):
 
     @classmethod
     @CurrentMPIComm.enable
-    def load(cls, filename, columns=None, mpicomm=None):
+    def load_binary(cls, filename, mpicomm=None):
         """
         Load catalog in *npy* binary format from disk.
 
@@ -872,14 +975,47 @@ class BaseCatalog(BaseClass):
         -------
         catalog : BaseCatalog
         """
+        source = BinaryFile(filename, mode='r', mpicomm=mpicomm)
+        new = cls(attrs=source.attrs, mpicomm=mpicomm)
+        new._source = source
+        return new
+
+    def save_binary(self, filename):
+        """
+        Save catalog to disk in *npy* binary format.
+
+        Parameters
+        ----------
+        filename : string
+            File name where to save catalog.
+        """
+        source = BinaryFile(filename, mpicomm=self.mpicomm)
+        source.write({name: self[name] for name in self.columns()})
+
+    @classmethod
+    @CurrentMPIComm.enable
+    def load(cls, filename, mpicomm=None):
+        """
+        Load catalog in *npy* binary format from disk.
+
+        Parameters
+        ----------
+        mpicomm : MPI communicator, default=None
+            The MPI communicator.
+
+        Returns
+        -------
+        catalog : BaseCatalog
+        """
         mpiroot = 0
         if mpicomm.rank == mpiroot:
             cls.log_info('Loading {}.'.format(filename))
             state = np.load(filename, allow_pickle=True)[()]
             data = state.pop('data')
-            if columns is None: columns = list(data.keys())
+            columns = list(data.keys())
         else:
             state = None
+            columns = None
         state = mpicomm.bcast(state, root=mpiroot)
         columns = mpicomm.bcast(columns, root=mpiroot)
         state['data'] = {}

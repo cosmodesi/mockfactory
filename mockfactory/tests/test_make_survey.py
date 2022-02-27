@@ -258,7 +258,7 @@ def test_redshift_density():
 
 def test_save():
 
-    size = 10
+    size = 1000
     ref = RandomBoxCatalog(boxsize=100., size=size, boxcenter=10000., seed=42)
     mpicomm = ref.mpicomm
     assert ref.csize == size
@@ -274,17 +274,22 @@ def test_save():
         test = RandomBoxCatalog.concatenate(test, test, keep_order=False)
         assert test.csize == ref.csize*4
 
-    from nbodykit.lab import FITSCatalog
     with tempfile.TemporaryDirectory() as tmp_dir:
         #tmp_dir = 'tmp'
         fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.fits'), root=0)
         ref.save_fits(fn)
+        #from nbodykit.lab import FITSCatalog
         #catalog = FITSCatalog(fn)['Position'][:10].compute()
         for ii in range(10):
             test = ParticleCatalog.load_fits(fn)
             assert np.all(test.position == ref.position)
         test['Position'] += 10
         assert np.allclose(test['Position'], ref.position + 10)
+
+        fns = [mpicomm.bcast(os.path.join(tmp_dir, 'tmp{:d}.fits'.format(i)), root=0) for i in range(4)]
+        ref.save_fits(fns)
+        test = ParticleCatalog.load_fits(fns)
+        assert np.all(test.position == ref.position)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         #tmp_dir = 'tmp'
@@ -310,6 +315,8 @@ def test_rotation_matrix():
 if __name__ == '__main__':
 
     setup_logging()
+    test_save()
+    exit()
 
     test_remap()
     test_isometry()
