@@ -14,7 +14,6 @@ los = np.array([0,0,1], dtype='f8')
 nmesh = 100*np.ones(3, dtype='i8')
 boxcenter = 40000.*los
 ells = (0, 2)
-redshift = 1.0
 f = 0.8
 bias = 2.0
 nbar = 4e-3
@@ -165,8 +164,8 @@ def test_lagrangian():
     from nbodykit.lab import LogNormalCatalog
     from nbodykit import cosmology
     cosmo = cosmology.Planck15
-    data = LogNormalCatalog(power, bias=bias, cosmo=cosmo, redshift=redshift, nbar=nbar, BoxSize=boxsize, Nmesh=nmesh, seed=seed, unitary_amplitude=True)
-    fref = cosmo.scale_independent_growth_rate(redshift)
+    data = LogNormalCatalog(power, bias=bias, cosmo=cosmo, redshift=z, nbar=nbar, BoxSize=boxsize, Nmesh=nmesh, seed=seed, unitary_amplitude=True)
+    fref = cosmo.scale_independent_growth_rate(z)
     data['Displacement'] = data['VelocityOffset']/fref
     data['Position'] += mock.boxcenter - mock.boxsize/2.
     #data['Position'] -= data['Displacement']
@@ -211,7 +210,7 @@ def test_mpi():
         return data
 
     data = run_eulerian()
-    positions, weights = data.gget('Position'), data.gget('Weight')
+    positions, weights = data.cget('Position'), data.cget('Weight')
 
     if data.is_mpi_root():
         data = run_eulerian(mpicomm=MPI.COMM_SELF)
@@ -221,7 +220,7 @@ def test_mpi():
         assert np.allclose(weights, ref_weights)
 
     data = run_lagrangian()
-    positions = data.gget('Position')
+    positions = data.cget('Position')
 
     if data.is_mpi_root():
         data = run_lagrangian(mpicomm=MPI.COMM_SELF)
@@ -236,5 +235,5 @@ if __name__ == '__main__':
     #test_pm()
     #test_readout()
     test_eulerian()
-    #test_lagrangian()
-    #test_mpi()
+    test_lagrangian()
+    test_mpi()
