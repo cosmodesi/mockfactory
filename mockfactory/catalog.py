@@ -395,7 +395,7 @@ class HDF5File(BaseFile):
 
 class BinaryFile(BaseFile):
     """
-    Class to read/write a HDF5 file from/to disk.
+    Class to read/write a binary file from/to disk.
     """
     _extensions = ['npy', 'bin']
     _want_array = True
@@ -504,9 +504,8 @@ class BaseCatalog(BaseClass):
         """Return catalog (local) length (``0`` if no column)."""
         keys = list(self.data.keys())
         if not keys:
-            source = getattr(self, '_source', None)
-            if source is not None:
-                return source.size
+            if self.has_source is not None:
+                return self._source.size
             return 0
         return len(self[keys[0]])
 
@@ -612,6 +611,10 @@ class BaseCatalog(BaseClass):
         """Return array of size :attr:`size` filled with :attr:`numpy.nan`."""
         return self.ones(itemshape=itemshape)*np.nan
 
+    @property
+    def has_source(self):
+        return getattr(self, '_source', None) is not None
+
     def get(self, column, *args, **kwargs):
         """Return catalog (local) column ``column`` if exists, else return provided default."""
         has_default = False
@@ -628,7 +631,7 @@ class BaseCatalog(BaseClass):
         if column in self.data:
             return self.data[column]
         # if not in data, try in _source
-        if getattr(self, '_source', None) is not None and column in self._source.columns:
+        if self.has_source and column in self._source.columns:
             self.data[column] = self._source.read(column)
             return self.data[column]
         if has_default:
@@ -693,8 +696,9 @@ class BaseCatalog(BaseClass):
         array : array, dict
             Input array to turn into catalog.
 
-        columns : list
+        columns : list, default=None
             List of columns to read from array.
+            If ``None``, inferred from ``array``.
 
         mpicomm : MPI communicator, default=None
             MPI communicator.
@@ -742,7 +746,8 @@ class BaseCatalog(BaseClass):
         """Return copy, including column names ``columns`` (defaults to all columns)."""
         new = super(BaseCatalog,self).__copy__()
         if columns is None: columns = self.columns()
-        new.data = {col:self[col] if col in self else None for col in columns}
+        new.data = {col: self[col] if col in self else None for col in columns}
+        if new.has_source: new._source = self._source.copy()
         import copy
         for name in new._attrs:
             if hasattr(self, name):
@@ -785,17 +790,17 @@ class BaseCatalog(BaseClass):
 
     def __getitem__(self, name):
         """Get catalog column ``name`` if string, else return copy with local slice."""
-        if isinstance(name,str):
+        if isinstance(name, str):
             return self.get(name)
         new = self.copy()
-        new.data = {col:self[col][name] for col in self.data}
+        new.data = {col: self[col][name] for col in self.columns()}
         return new
 
     def __setitem__(self, name, item):
         """Set catalog column ``name`` if string, else set slice ``name`` of all columns to ``item``."""
         if isinstance(name,str):
             return self.set(name, item)
-        for col in self.data:
+        for col in self.columns():
             self[col][name] = item
 
     def __delitem__(self, name):
@@ -803,9 +808,8 @@ class BaseCatalog(BaseClass):
         try:
             del self.data[name]
         except KeyError as exc:
-            source = getattr(self, '_source', None)
-            if source is not None:
-                source.columns.remove(name)
+            if self.has_source is not None:
+                self._source.columns.remove(name)
             else:
                 raise KeyError('Column {} not found') from exc
 
