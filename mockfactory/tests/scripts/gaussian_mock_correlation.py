@@ -26,6 +26,7 @@ def main():
     los = 'x'
     pklin = DESI().get_fourier().pk_interpolator().to_1d(z=1)
 
+    # unitary_amplitude forces amplitude to 1
     mock = EulerianLinearMock(pklin, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
     mock.set_real_delta_field(bias=bias)
     mock.set_rsd(f=f, los=los)

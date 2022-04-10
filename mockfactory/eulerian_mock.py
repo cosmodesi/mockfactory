@@ -1,9 +1,6 @@
-import logging
-
 import numpy as np
 
 from .gaussian_mock import BaseGaussianMock, _transform_rslab, _get_los
-from . import utils
 
 
 class EulerianLinearMock(BaseGaussianMock):

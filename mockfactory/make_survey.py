@@ -2,10 +2,6 @@
 Utilities to cut survey mocks from boxes.
 A Python analogous of Cameron K. McBride https://github.com/cmcbride/make_survey.
 """
-
-import os
-import logging
-import functools
 import itertools
 
 import numpy as np
@@ -13,7 +9,7 @@ from scipy import interpolate, optimize
 
 from . import mpi, utils
 from .mpi import CurrentMPIComm, MPIRandomState
-from .catalog import BaseCatalog, BaseFile, FitsFile, HDF5File
+from .catalog import BaseCatalog
 from .utils import BaseClass
 
 

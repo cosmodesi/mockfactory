@@ -11,6 +11,9 @@ from numpy.core.numeric import normalize_axis_tuple
 from mpi4py import MPI
 
 
+COMM_WORLD = MPI.COMM_WORLD
+
+
 class CurrentMPIComm(object):
     """Class to faciliate getting and setting the current MPI communicator."""
     logger = logging.getLogger('CurrentMPIComm')
@@ -520,7 +523,7 @@ def front_pad_array(array, front, mpicomm=None):
 
 class MPIRandomState(object):
     """
-    A Random number generator that is invariant against number of ranks,
+    A random number generator that is invariant against number of ranks,
     when the total size of random number requested is kept the same.
     The algorithm here assumes the random number generator from numpy
     produces uncorrelated results when the seeds are sampled from a single
@@ -611,6 +614,7 @@ class MPIRandomState(object):
         """
         seeds = self._serial_rng.randint(0, high=0xffffffff, size=self.nchunks)
 
+        if np.ndim(itemshape) == 0: itemshape = (itemshape, )
         padded_r, running_args = self._prepare_args_and_result(args, itemshape, dtype)
 
         running_r = padded_r
@@ -625,8 +629,7 @@ class MPIRandomState(object):
             args = tuple([a if np.ndim(a) == 0 else a[:nreq] for a in running_args])
 
             # generate nreq random items from the sampler
-            chunk = sampler(rng, args=args,
-                size=(nreq,) + tuple(itemshape))
+            chunk = sampler(rng, args=args, size=(nreq,) + tuple(itemshape))
 
             running_r[:nreq] = chunk
 
@@ -640,7 +643,7 @@ class MPIRandomState(object):
 
 
 @CurrentMPIComm.enable
-def send_array(data, dest, tag=0, mpicomm=None):
+def send_array(data, dest, tag=0, blocking=True, mpicomm=None):
     """
     Send input array ``data`` to process ``dest``.
 
@@ -655,14 +658,33 @@ def send_array(data, dest, tag=0, mpicomm=None):
     tag : int, default=0
         Message identifier.
 
+    blocking : bool, default=False
+        Blocking?
+
     mpicomm : MPI communicator, default=None
         Communicator. Defaults to current communicator.
     """
     if not data.flags['C_CONTIGUOUS']:
         data = np.ascontiguousarray(data)
-    shape_and_dtype = (data.shape, data.dtype)
-    mpicomm.send(shape_and_dtype,dest=dest,tag=tag)
-    mpicomm.Send(data,dest=dest,tag=tag)
+    shape, dtype = data.shape, data.dtype
+
+    fail = False
+    if dtype.char == 'V':
+        fail = any(dtype[name] == 'O' for name in dtype.names)
+    else:
+        fail = dtype == 'O'
+    if fail:
+        raise ValueError('"object" data type not supported in send_array; please specify specific data type')
+
+    duplicity = np.product(np.array(shape[1:], 'intp'))
+    itemsize = duplicity * dtype.itemsize
+    dt = MPI.BYTE.Create_contiguous(itemsize)
+    dt.Commit()
+
+    if blocking: send, Send = mpicomm.send, mpicomm.Send
+    else: send, Send = mpicomm.isend, mpicomm.Isend
+    send((shape, dtype), dest=dest, tag=tag)
+    Send([data, dt], dest=dest, tag=tag)
 
 
 @CurrentMPIComm.enable
@@ -685,9 +707,15 @@ def recv_array(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, mpicomm=None):
     -------
     data : array
     """
-    shape, dtype = mpicomm.recv(source=source,tag=tag)
-    data = np.empty(shape, dtype=dtype)
-    mpicomm.Recv(data,source=source,tag=tag)
+    shape, dtype = mpicomm.recv(source=source, tag=tag)
+    data = np.zeros(shape, dtype=dtype)
+
+    duplicity = np.product(np.array(shape[1:], 'intp'))
+    itemsize = duplicity * dtype.itemsize
+    dt = MPI.BYTE.Create_contiguous(itemsize)
+    dt.Commit()
+
+    mpicomm.Recv([data, dt], source=source, tag=tag)
     return data
 
 

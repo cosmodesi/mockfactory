@@ -2,9 +2,6 @@ import logging
 
 import numpy as np
 
-from pmesh.pm import RealField, ComplexField, ParticleMesh
-import mpsort
-
 from .mpi import MPIRandomState, CurrentMPIComm
 from .utils import BaseClass
 from . import mpi, utils
@@ -177,6 +174,7 @@ class BaseGaussianMock(BaseClass):
                 raise ValueError('nmesh (or cellsize) must be specified')
 
         self.boxcenter = boxcenter
+        from pmesh.pm import ParticleMesh
         self.pm = ParticleMesh(BoxSize=_make_array(boxsize, 3, dtype='f8'), Nmesh=_make_array(nmesh, 3, dtype='i8'), dtype=self.dtype, comm=self.mpicomm)
 
         if los is not None:

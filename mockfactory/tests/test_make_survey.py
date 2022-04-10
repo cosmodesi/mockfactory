@@ -1,6 +1,7 @@
 import os
 import time
 import tempfile
+
 import numpy as np
 
 from mockfactory.remap import Cuboid
@@ -214,13 +215,13 @@ def test_masks():
         else:
             assert np.all((ra >= rarange[0]) | (ra <= rarange[1]))
 
+    healpy = False
     try:
         import healpy
-        HAVE_HEALPY = True
     except ImportError:
-        HAVE_HEALPY = False
+        pass
 
-    if HAVE_HEALPY:
+    if healpy:
         from mockfactory.make_survey import HealpixAngularMask
         nbar = np.zeros(healpy.nside2npix(256), dtype='f8')
         selection = HealpixAngularMask(nbar)
@@ -255,6 +256,19 @@ def test_redshift_density():
     assert np.allclose(density(zeval), density_ref(distance(zeval)), atol=1e-7, rtol=0.1)
     density = RedshiftDensityInterpolator(z, weights=2.*weights, bins=None, fsky=2.*fsky, radial_distance=distance, interp_order=1)
     assert np.all((density.z >= z.min()) & (density.z <= z.max() + density.z[-1] - density.z[-2]))
+
+
+
+def test_rotation_matrix():
+
+    def norm(v):
+        return np.sqrt(np.dot(v,v))
+
+    a = [1819.25599061, 340.48034526, 2.1809526]
+    b = [0., 0., 1.]
+    rot = rotation_matrix_from_vectors(a, b)
+    rot = rotation_matrix_from_vectors(a, a)
+    assert np.allclose(rot, np.eye(3))
 
 
 def test_save():
@@ -301,83 +315,6 @@ def test_save():
             assert np.all(test.position == ref.position)
 
 
-class MemoryMonitor(object):
-    """
-    Class that monitors memory usage and clock, useful to check for memory leaks.
-
-    >>> with MemoryMonitor() as mem:
-            '''do something'''
-            mem()
-            '''do something else'''
-    """
-    def __init__(self, pid=None):
-        """
-        Initalize :class:`MemoryMonitor` and register current memory usage.
-
-        Parameters
-        ----------
-        pid : int, default=None
-            Process identifier. If ``None``, use the identifier of the current process.
-        """
-        import psutil
-        self.proc = psutil.Process(os.getpid() if pid is None else pid)
-        self.mem = self.proc.memory_info().rss / 1e6
-        self.time = time.time()
-        msg = 'using {:.3f} [Mb]'.format(self.mem)
-        print(msg, flush=True)
-
-    def __enter__(self):
-        """Enter context."""
-        return self
-
-    def __call__(self, log=None):
-        """Update memory usage."""
-        mem = self.proc.memory_info().rss / 1e6
-        t = time.time()
-        msg = 'using {:.3f} [Mb] (increase of {:.3f} [Mb]) after {:.3f} [s]'.format(mem,mem-self.mem,t-self.time)
-        if log:
-            msg = '[{}] {}'.format(log, msg)
-        print(msg, flush=True)
-        self.mem = mem
-        self.time = t
-
-    def __exit__(self, exc_type, exc_value, exc_traceback):
-        """Exit context."""
-        self()
-
-
-def test_memory():
-
-    with MemoryMonitor() as mem:
-
-        catalog = RandomBoxCatalog(boxsize=1., size=int(1e7), seed=42)
-        catalog['Position2'] = catalog['Position'].copy()
-        mem('randoms')
-        fn = os.path.join('_tests', 'tmp.fits')
-        catalog.save_fits(fn)
-        catalog.mpicomm.Barrier()
-        mem('save')
-        del catalog
-        mem('free')
-        catalog = ParticleCatalog.load_fits(fn)
-        mem('load')
-        catalog['Position']
-        catalog['Position2']
-        mem('load2')
-
-
-def test_rotation_matrix():
-
-    def norm(v):
-        return np.sqrt(np.dot(v,v))
-
-    a = [1819.25599061, 340.48034526, 2.1809526]
-    b = [0., 0., 1.]
-    rot = rotation_matrix_from_vectors(a, b)
-    rot = rotation_matrix_from_vectors(a, a)
-    assert np.allclose(rot, np.eye(3))
-
-
 if __name__ == '__main__':
 
     setup_logging()
@@ -385,9 +322,9 @@ if __name__ == '__main__':
     test_remap()
     test_isometry()
     test_randoms()
-    test_save()
     test_cutsky()
     test_masks()
     test_redshift_array()
     test_redshift_density()
     test_rotation_matrix()
+    test_save()

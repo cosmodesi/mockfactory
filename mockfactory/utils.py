@@ -18,20 +18,21 @@ def exception_handler(exc_type, exc_value, exc_traceback, mpicomm=None):
     # Do not print traceback if the exception has been handled and logged
     _logger_name = 'Exception'
     log = logging.getLogger(_logger_name)
-    line = '='*100
+    line = '=' * 100
     #log.critical(line[len(_logger_name) + 5:] + '\n' + ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)) + line)
     log.critical('\n' + line + '\n' + ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)) + line)
     if exc_type is KeyboardInterrupt:
         log.critical('Interrupted by the user.')
     else:
         log.critical('An error occured.')
-    mpicomm.Abort()
+    if mpicomm.size > 1:
+        mpicomm.Abort()
 
 
 def mkdir(dirname):
     """Try to create ``dirnm`` and catch :class:`OSError`."""
     try:
-        os.makedirs(dirname) # MPI...
+        os.makedirs(dirname)  # MPI...
     except OSError:
         return
 
@@ -59,8 +60,8 @@ def setup_logging(level=logging.INFO, stream=sys.stdout, filename=None, filemode
     """
     # Cannot provide stream and filename kwargs at the same time to logging.basicConfig, so handle different cases
     # Thanks to https://stackoverflow.com/questions/30861524/logging-basicconfig-not-creating-log-file-when-i-run-in-pycharm
-    if isinstance(level,str):
-        level = {'info':logging.INFO,'debug':logging.DEBUG,'warning':logging.WARNING}[level.lower()]
+    if isinstance(level, str):
+        level = {'info': logging.INFO, 'debug': logging.DEBUG, 'warning': logging.WARNING}[level.lower()]
     for handler in logging.root.handlers:
         logging.root.removeHandler(handler)
 
@@ -70,18 +71,18 @@ def setup_logging(level=logging.INFO, stream=sys.stdout, filename=None, filemode
 
         @CurrentMPIComm.enable
         def format(self, record, mpicomm=None):
-            ranksize = '[{:{dig}d}/{:d}]'.format(mpicomm.rank,mpicomm.size,dig=len(str(mpicomm.size)))
+            ranksize = '[{:{dig}d}/{:d}]'.format(mpicomm.rank, mpicomm.size, dig=len(str(mpicomm.size)))
             self._style._fmt = '[%09.2f] ' % (time.time() - t0) + ranksize + ' %(asctime)s %(name)-25s %(levelname)-8s %(message)s'
-            return super(MyFormatter,self).format(record)
+            return super(MyFormatter, self).format(record)
 
     fmt = MyFormatter(datefmt='%m-%d %H:%M ')
     if filename is not None:
         mkdir(os.path.dirname(filename))
-        handler = logging.FileHandler(filename,mode=filemode)
+        handler = logging.FileHandler(filename, mode=filemode)
     else:
         handler = logging.StreamHandler(stream=stream)
     handler.setFormatter(fmt)
-    logging.basicConfig(level=level,handlers=[handler],**kwargs)
+    logging.basicConfig(level=level, handlers=[handler], **kwargs)
     sys.excepthook = exception_handler
 
 
@@ -109,15 +110,15 @@ class BaseMetaClass(type):
             @CurrentMPIComm.enable
             def logger(cls, *args, rank=None, mpicomm=None, **kwargs):
                 if rank is None or mpicomm.rank == rank:
-                    getattr(cls.logger,level)(*args,**kwargs)
+                    getattr(cls.logger, level)(*args, **kwargs)
 
             return logger
 
-        for level in ['debug','info','warning','error','critical']:
+        for level in ['debug', 'info', 'warning', 'error', 'critical']:
             setattr(cls, 'log_{}'.format(level), make_logger(level))
 
 
-class BaseClass(object,metaclass=BaseMetaClass):
+class BaseClass(object, metaclass=BaseMetaClass):
     """
     Base class that implements :meth:`copy`.
     To be used throughout this package.
@@ -176,10 +177,10 @@ def wrap_angle(angle, degree=True):
     angle : array
         Wrapped angle.
     """
-    conversion = np.pi/180. if degree else 1.
-    angle = np.array(angle)*conversion
-    angle %= 2.*np.pi
-    return angle/conversion
+    conversion = np.pi / 180. if degree else 1.
+    angle = np.array(angle) * conversion
+    angle %= 2. * np.pi
+    return angle / conversion
 
 
 def cartesian_to_sky(position, wrap=True, degree=True):
@@ -209,11 +210,11 @@ def cartesian_to_sky(position, wrap=True, degree=True):
         Declination.
     """
     dist = distance(position)
-    ra = np.arctan2(position[:,1], position[:,0])
+    ra = np.arctan2(position[:, 1], position[:, 0])
     ra = wrap_angle(ra, degree=False)
-    dec = np.arcsin(position[:,2]/dist)
-    conversion = np.pi/180. if degree else 1.
-    return dist, ra/conversion, dec/conversion
+    dec = np.arcsin(position[:, 2] / dist)
+    conversion = np.pi / 180. if degree else 1.
+    return dist, ra / conversion, dec / conversion
 
 
 def sky_to_cartesian(dist, ra, dec, degree=True, dtype=None):
@@ -242,13 +243,13 @@ def sky_to_cartesian(dist, ra, dec, degree=True, dtype=None):
     position : array of shape (N, 3)
         Position in cartesian coordinates.
     """
-    conversion = np.pi/180. if degree else 1.
-    position = [None]*3
-    cos_dec = np.cos(dec*conversion)
-    position[0] = cos_dec*np.cos(ra*conversion)
-    position[1] = cos_dec*np.sin(ra*conversion)
-    position[2] = np.sin(dec*conversion)
-    return (dist*np.asarray(position,dtype=dtype)).T
+    conversion = np.pi / 180. if degree else 1.
+    position = [None] * 3
+    cos_dec = np.cos(dec * conversion)
+    position[0] = cos_dec * np.cos(ra * conversion)
+    position[1] = cos_dec * np.sin(ra * conversion)
+    position[2] = np.sin(dec * conversion)
+    return (dist * np.asarray(position, dtype=dtype)).T
 
 
 def radecbox_area(rarange, decrange):
@@ -268,10 +269,10 @@ def radecbox_area(rarange, decrange):
     area : float, ndarray.
         Area (degree^2).
     """
-    decfrac = np.diff(np.rad2deg(np.sin(np.deg2rad(decrange))),axis=0)
-    rafrac = np.diff(rarange,axis=0)
-    area = decfrac*rafrac
-    if np.isscalar(rarange[0]):
+    decfrac = np.diff(np.rad2deg(np.sin(np.deg2rad(decrange))), axis=0)
+    rafrac = np.diff(rarange, axis=0)
+    area = decfrac * rafrac
+    if np.ndim(rarange[0]) == 0:
         return area[0]
     return area
 
@@ -307,3 +308,70 @@ def vector_projection(vector, direction):
     projection = projection[:, None] * direction
 
     return projection
+
+
+def match1d(id1, id2):
+    """
+    Match ``id2`` array to ``id1`` array, such that ``np.all(id1[index1] == id2[index2])``.
+
+    Parameters
+    ----------
+    id1 : array
+        IDs 1, should be unique.
+
+    id2 : array
+        IDs 2, should be unique.
+
+    Returns
+    -------
+    index1 : array
+        Indices of matching ``id1``.
+
+    index2 : array
+        Indices of matching ``id2``.
+
+    Warning
+    -------
+    Makes sense only if ``id1`` and ``id2`` elements are unique.
+
+    References
+    ----------
+    https://www.followthesheep.com/?p=1366
+    """
+    sort1 = np.argsort(id1)
+    sort2 = np.argsort(id2)
+
+    ind1 = id2[sort2].searchsorted(id1[sort1], side='right') > id2[sort2].searchsorted(id1[sort1], side='left')
+    ind2 = id1[sort1].searchsorted(id2[sort2], side='right') > id1[sort1].searchsorted(id2[sort2], side='left')
+
+    return sort1[ind1], sort2[ind2]
+
+
+def match1d_to(id1, id2, return_index=False):
+    """
+    Return indexes where ``id1`` matches ``id2``, such that ``np.all(id1[index1] == id2)``.
+
+    Parameters
+    ----------
+    id1 : array
+        IDs 1, should be unique.
+
+    id2 : array
+        IDs 2.
+
+    return_index : bool, default=False
+        Return indices in ``id2`` corresponding to ``id1[index1]``.
+
+    Returns
+    -------
+    index1 : array
+        Indices of matching ``id1``.
+    """
+    sort1 = np.argsort(id1)
+    ind2 = id1[sort1].searchsorted(id2, side='left')
+    mask = id1[sort1].searchsorted(id2, side='right') > ind2
+    ind2 = ind2[mask]
+    ind1 = sort1[ind2]
+    if return_index:
+        return ind1, np.flatnonzero(mask)
+    return ind1
