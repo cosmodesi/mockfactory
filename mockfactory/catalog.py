@@ -36,7 +36,7 @@ class Slice(BaseClass):
             if stop is None:
                 if step < 0: stop = -1
                 else: raise ValueError('Input slice must be bounded, or provide "size"')
-            if start < 0: start = 0
+            #if start < 0: start = 0
             if step < 0 and stop > start or step > 0 and stop < start:
                 stop = start = 0
             else:
@@ -102,7 +102,7 @@ class Slice(BaseClass):
                 if isplit < nsplits - 1: istop -= 1
                 step = self.idx.step
                 start = step * istart + self.idx.start
-                stop = step * istop + self.idx.start + (-1)**(step < 0)
+                stop = step * istop + self.idx.start + (-1) ** (step < 0)
                 if step < 0 and stop < 0: stop = None
                 idxs.append(slice(start, stop, step))
         return [Slice(idx, copy=False) for idx in idxs]
@@ -178,14 +178,13 @@ class Slice(BaseClass):
             if return_index: idx2 = np.flatnonzero(mask)
         else:
             # I = a i + b
-            # I' = a' I + b' = a' a i + a' b + b'
-            x0 = sl2.idx.step * self.idx.start + sl2.idx.start
+            # I' = a' I + b' = a' a i + a' b + b' ' is self
+            x0 = self.idx.step * sl2.idx.start + self.idx.start
             step = sl2.idx.step * self.idx.step
             min2 = self.idx.step * sl2.min + self.idx.start
             max2 = self.idx.step * sl2.max + self.idx.start
             if self.idx.step < 0: min2, max2 = max2, min2
             imin = (max(self.min, min2) - x0) / step
-            print('INDEX', self.min, min2, sl2.min, sl2.max, self.idx.step * sl2.max + self.idx.start)
             imax = (min(self.max, max2) - x0) / step
             if step < 0:
                 imin, imax = imax, imin
@@ -197,7 +196,6 @@ class Slice(BaseClass):
             else:
                 start = step * istart + x0
                 stop = step * istop + x0 + (-1) ** (step < 0)
-                print(istop - istart + 1)
                 if step < 0 and stop < 0: stop = None
                 idx = slice(start, stop, step)
                 idx2 = self.find(sl2, return_index=True)[1]
@@ -214,14 +212,18 @@ class Slice(BaseClass):
             if stop is not None:
                 idx = idx[idx < stop]
         else:
-            nstart = max(self.idx.start + offset, 0)
+            x0 = self.idx.start + offset
             nstop = (self.idx.stop if self.idx.stop is not None else -1) + offset
-            if self.idx.start + offset < 0 and nstop <= 0:
-                return self.empty()
-            if stop is not None:
-                nstart = min(nstart, stop)
-                nstop = min(nstop, stop)
             nstep = self.idx.step
+            if stop is not None: nstop = min(nstop, stop)
+            if x0 < 0 and nstop <= 0:
+                return self.empty()
+            if nstep < 0:
+                imin = (nstop - 1 - x0) / nstep
+            else:
+                imin = (0 - x0) / nstep
+            istart = math.ceil(imin)
+            nstart = nstep * istart + x0
             if nstep < 0 and nstop < 0: nstop = None
             idx = slice(nstart, nstop, nstep)
         return self.__class__(idx, copy=False)
@@ -581,6 +583,7 @@ class FileStack(BaseClass):
             if local_slice.idx.step < 0:
                 tmp = tmp[::-1]
             new._slices = Slice.snap(*tmp)
+            #print(self.mpicomm.rank, new._slices)
         return new
 
     def concatenate(cls, *others):

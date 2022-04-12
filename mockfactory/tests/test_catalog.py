@@ -161,7 +161,7 @@ def test_io():
                             [np.arange(1, ref.csize//2, 2), slice(ref.csize, 2, -2)],
                             [np.arange(ref.csize//2, 1, -2), slice(ref.csize, 2, -2)]][-2:]:
                 """
-                for sls in [[slice(ref.size-1, None, -1), slice(0, None, 2)]]:
+                for sls in [[slice(ref.size - 1, None, -1), slice(0, None, 2)]]:
                     if not isinstance(sls, list): sls = [sls]
                     test = Catalog.read(tfn)
                     test['RA']
