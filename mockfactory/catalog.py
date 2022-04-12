@@ -28,18 +28,20 @@ class Slice(BaseClass):
                 start, stop, step = sl.indices(size)
             else:
                 start, stop, step = sl.start, sl.stop, sl.step
-                if step is None: step = 1
-                if step == 0: raise ValueError('Zero step')
-                if start is None:
-                    if step > 0: start = 0
-                    else: raise ValueError('Input slice must be bounded, or provide "size"')
-                if stop is None:
-                    if step < 0: stop = -1
-                    else: raise ValueError('Input slice must be bounded, or provide "size"')
-                if start < 0: start = 0
-                if step < 0 and stop > start or step > 0 and stop < start: stop = start
-            stop = (stop - start + (-1) ** (step > 0)) // step * step + start + (-1) ** (step < 0)
-            if stop < 0: stop = None
+            if step is None: step = 1
+            if step == 0: raise ValueError('Zero step')
+            if start is None:
+                if step > 0: start = 0
+                else: raise ValueError('Input slice must be bounded, or provide "size"')
+            if stop is None:
+                if step < 0: stop = -1
+                else: raise ValueError('Input slice must be bounded, or provide "size"')
+            if start < 0: start = 0
+            if step < 0 and stop > start or step > 0 and stop < start:
+                stop = start = 0
+            else:
+                stop = (stop - start + (-1) ** (step > 0)) // step * step + start + (-1) ** (step < 0)
+                if stop < 0: stop = None
             sl = slice(start, stop, step)
         else:
             sl = np.array(sl, copy=copy)
@@ -63,26 +65,29 @@ class Slice(BaseClass):
         from operator import itemgetter
         from collections import deque
         if self.is_array:
-            diff = np.diff(self.idx)
-            diff = np.insert(diff, 0, diff[0])
-            # This is a bit inefficient in the sense that for [0, 1, 2, 3, 5, 6, 8, 10, 12]
-            # we will obtain (0, 4, 1), (5, 6, 1), (6, 7, 1), (8, 13, 2)
-            for k, g in groupby(zip(self.idx, diff), lambda x: x[1]):
-                ind = map(itemgetter(0), g)
-                start = stop = next(ind)
-                try:
-                    second = stop = next(ind)
-                except StopIteration:
-                    yield slice(start, start + 1, 1)
-                    continue
-                step = second - start
-                try:
-                    stop = deque(ind, maxlen=1).pop()
-                except IndexError:
-                    pass
-                stop = stop + (-1) ** (step < 0)
-                if stop < 0: stop = None
-                yield slice(start, stop, step)
+            if self.idx.size <= 1:
+                yield slice(self.idx.flat[0], self.idx.flat[0] + 1, 1)
+            else:
+                diff = np.diff(self.idx)
+                diff = np.insert(diff, 0, diff[0])
+                # This is a bit inefficient in the sense that for [0, 1, 2, 3, 5, 6, 8, 10, 12]
+                # we will obtain (0, 4, 1), (5, 6, 1), (6, 7, 1), (8, 13, 2)
+                for k, g in groupby(zip(self.idx, diff), lambda x: x[1]):
+                    ind = map(itemgetter(0), g)
+                    start = stop = next(ind)
+                    try:
+                        second = stop = next(ind)
+                    except StopIteration:
+                        yield slice(start, start + 1, 1)
+                        continue
+                    step = second - start
+                    try:
+                        stop = deque(ind, maxlen=1).pop()
+                    except IndexError:
+                        pass
+                    stop = stop + (-1) ** (step < 0)
+                    if stop < 0: stop = None
+                    yield slice(start, stop, step)
         else:
             yield self.idx
 
@@ -92,14 +97,14 @@ class Slice(BaseClass):
         else:
             idxs = []
             for isplit in range(nsplits):
-                start = isplit * self.size // nsplits
-                stop = (isplit + 1) * self.size // nsplits
-                if self.idx.step < 0:
-                    start, stop = -start, -stop
-                start += self.idx.start
-                stop += self.idx.start
-                if stop < 0: stop = None
-                idxs.append(slice(start, stop, self.idx.step))
+                istart = isplit * (self.size - 1)// nsplits
+                istop = (isplit + 1) * (self.size - 1) // nsplits
+                if isplit < nsplits - 1: istop -= 1
+                step = self.idx.step
+                start = step * istart + self.idx.start
+                stop = step * istop + self.idx.start + (-1)**(step < 0)
+                if step < 0 and stop < 0: stop = None
+                idxs.append(slice(start, stop, step))
         return [Slice(idx, copy=False) for idx in idxs]
 
     def find(self, *args, return_index=False):
@@ -144,8 +149,8 @@ class Slice(BaseClass):
                     if step < 0 and stop < 0: stop = None
                     idx = slice(start, stop, step)
                     # indices in sl2
-                    start = (step1 * (x0 + step * imin) - delta) // step2
-                    stop = (step1 * (x0 + step * imax) - delta) // step2 + 1
+                    start = (step1 * (x0 + step * istart) - delta) // step2
+                    stop = (step1 * (x0 + step * istop) - delta) // step2 + 1
                     step = step1 * step // step2  # always positive
                     idx2 = slice(start, stop, step)
 
@@ -158,12 +163,19 @@ class Slice(BaseClass):
     def empty(cls):
         return cls(slice(0, 0, 1))
 
-    def slice(self, *args):
-        sl2 = self.__class__(*args)
+    def __repr__(self):
         if self.is_array:
-            idx = self.idx[sl2.idx]
-        elif sl2.is_array:
-            idx = sl2.idx[self.idx]
+            return '{}({})'.format(self.__class__.__name__, self.idx)
+        return '{}({}, {}, {})'.format(self.__class__.__name__, self.idx.start, self.idx.stop, self.idx.step)
+
+    def slice(self, *args, return_index=False):
+        sl2 = self.__class__(*args)
+        if self.is_array or sl2.is_array:
+            idx2 = sl2.to_array()
+            mask = (idx2 >= 0) & (idx2 < self.size)
+            idx = self.to_array()[idx2[mask]]
+            # indices in idx2
+            if return_index: idx2 = np.flatnonzero(mask)
         else:
             # I = a i + b
             # I' = a' I + b' = a' a i + a' b + b'
@@ -173,34 +185,45 @@ class Slice(BaseClass):
             max2 = self.idx.step * sl2.max + self.idx.start
             if self.idx.step < 0: min2, max2 = max2, min2
             imin = (max(self.min, min2) - x0) / step
+            print('INDEX', self.min, min2, sl2.min, sl2.max, self.idx.step * sl2.max + self.idx.start)
             imax = (min(self.max, max2) - x0) / step
             if step < 0:
                 imin, imax = imax, imin
             istart = math.ceil(imin)
             istop = math.floor(imax)
             if istop < istart:
-                return self.empty()
-            start = step * istart + x0
-            stop = step * istop + x0 + (-1) ** (step < 0)
-            if step < 0 and stop < 0: stop = None
-            idx = slice(start, stop, step)
-        return self.__class__(idx, copy=False)
+                idx = slice(0, 0, 1)
+                idx2 = slice(0, 0, 1)
+            else:
+                start = step * istart + x0
+                stop = step * istop + x0 + (-1) ** (step < 0)
+                print(istop - istart + 1)
+                if step < 0 and stop < 0: stop = None
+                idx = slice(start, stop, step)
+                idx2 = self.find(sl2, return_index=True)[1]
 
-    def shift(self, offset=0, size=None):
+        idx = self.__class__(idx, copy=False)
+        if return_index:
+            return idx, self.__class__(idx2, copy=False)
+        return idx
+
+    def shift(self, offset=0, stop=None):
         if self.is_array:
             idx = self.idx + offset
             idx = idx[idx >= 0]
-            if size is not None:
-                idx = idx[idx < size]
+            if stop is not None:
+                idx = idx[idx < stop]
         else:
-            start = max(self.idx.start + offset, 0)
-            stop = self.idx.stop + offset
-            if size is not None:
-                start = min(start, size)
-                stop = min(stop, size)
-            step = self.idx.step
-            if step < 0 and stop < 0: stop = None
-            idx = slice(start, stop, step)
+            nstart = max(self.idx.start + offset, 0)
+            nstop = (self.idx.stop if self.idx.stop is not None else -1) + offset
+            if self.idx.start + offset < 0 and nstop <= 0:
+                return self.empty()
+            if stop is not None:
+                nstart = min(nstart, stop)
+                nstop = min(nstop, stop)
+            nstep = self.idx.step
+            if nstep < 0 and nstop < 0: nstop = None
+            idx = slice(nstart, nstop, nstep)
         return self.__class__(idx, copy=False)
 
     def __len__(self):
@@ -229,17 +252,30 @@ class Slice(BaseClass):
             return self.idx.step * (self.size - 1) + self.idx.start
         return self.idx.start
 
+    def __eq__(self, other):
+        try:
+            other = Slice(other)
+        except ValueError:
+            return False
+        if self.is_array and other.is_array:
+            return other.idx.size == self.idx.size and np.all(other.idx == self.idx)
+        if (not self.is_array) and (not other.is_array):
+            return other.idx == self.idx
+        return False
+
     @classmethod
     def snap(cls, *others):
         others = [Slice(other) for other in others]
         if any(other.is_array for other in others):
             return [Slice(np.concatenate([other.to_array() for other in others], axis=0))]
         if not others:
-            return [Slice(0, 0, 0)]
+            return [Slice(0, 0, 1)]
         slices = [others[0].idx]
-        for other in others:
-            if other.idx.step == slices[-1].idx.step and other.idx.start == slices[-1].idx.stop:
-                slices[-1] = slice(slices[-1].idx.start, other.idx.stop, slices[-1].idx.step)
+        for other in others[1:]:
+            if other.idx.step == slices[-1].step and other.idx.start == slices[-1].stop + other.idx.step + (-1) ** (other.idx.step > 0):
+                slices[-1] = slice(slices[-1].start, other.idx.stop, slices[-1].step)
+            else:
+                slices.append(other.idx)
         return [Slice(sl) for sl in slices]
 
     @CurrentMPIComm.enable
@@ -316,7 +352,7 @@ class MPIScatteredSource(BaseClass):
                     tmp[irank] = [mpi.recv_array(source=irank, tag=nslices + iarray, mpicomm=self.mpicomm) for iarray in range(len(self_slice_in_irank))]
             idx, tmp = _add_list(idx), _add_list(tmp)
             if sli.is_array:
-                toret.append(np.concatenate(tmp)[np.argsort(np.concatenate(idx, axis=0))], axis=0)
+                toret.append(np.concatenate(tmp, axis=0)[np.argsort(np.concatenate(idx, axis=0))])
             else:
                 toret += [tmp[ii] for ii in np.argsort([iidx.start for iidx in idx])]
         return np.concatenate(toret)
@@ -364,22 +400,18 @@ def _select_columns(columns, include=None, exclude=None):
         if not _multiple_columns(include):
             include = [include]
         toret = []
-        for inc in include:
-            inc = toregex(inc)
-            for column in columns:
-                if re.match(inc, str(column)):
-                    toret.append(column)
+        for column in columns:
+            if any(re.match(toregex(inc), column) for inc in include):
+                toret.append(column)
         columns = toret
 
     if exclude is not None:
         if not _multiple_columns(exclude):
             exclude = [exclude]
         toret = []
-        for exc in exclude:
-            exc = toregex(exc)
-            for column in columns:
-                if re.match(exc, str(column)) is None:
-                    toret.append(column)
+        for column in columns:
+            if not any(re.match(toregex(exc), column) for exc in exclude):
+                toret.append(column)
 
     return toret
 
@@ -502,12 +534,13 @@ class FileStack(BaseClass):
                 self._header.update(file.header)
         return self._header
 
-    @property
-    def fileslices(self):
+    def fileslices(self, return_index=False):
         # catalog slices
         cumsizes = np.cumsum([0] + self.filesizes)
         for sli in self.slices:
-            yield [Slice(start, stop, 1).find(sli) for start, stop in zip(cumsizes[:-1], cumsizes[1:])]
+            #print(self.mpicomm.rank, sli, [Slice(start, stop, 1) for start, stop in zip(cumsizes[:-1], cumsizes[1:])], [Slice(start, stop, 1).find(sli) for start, stop in zip(cumsizes[:-1], cumsizes[1:])])
+            yield [Slice(start, stop, 1).find(sli, return_index=return_index) for start, stop in zip(cumsizes[:-1], cumsizes[1:])]
+        #print('')
 
     @property
     def size(self):
@@ -527,30 +560,27 @@ class FileStack(BaseClass):
         new._slices = [sli.slice(sl) for sli in self.slices]
         return new
 
-    def loadbalance(self):
-        new_slice = Slice(self.mpicomm.rank * self.csize // self.mpicomm.csize, (self.mpicomm.rank + 1) * self.csize // self.mpicomm.csize, 1)
-        if self._is_slice_array:
-            cumsizes = np.cumsum([sum(self.mpicomm.allgather(self.size)[:self.mpicomm.rank])] + [sl.size for sl in self.slices])
+    def cslice(self, *args):
+        new = self.copy()
+        global_slice = Slice(*args, size=self.csize)
+        local_slice = global_slice.split(self.mpicomm.size)[self.mpicomm.rank]
+        cumsizes = np.cumsum([sum(self.mpicomm.allgather(self.size)[:self.mpicomm.rank])] + [sl.size for sl in self.slices])
+        if local_slice.is_array or self._is_slice_array:
             slices = [slice(size1, size2, 1) for size1, size2 in zip(cumsizes[:-1], cumsizes[1:])]
             source = MPIScatteredSource(*slices)
-            self._slices = [source.get([sl.to_array() for sl in self._slices], new_slice)]
+            new._slices = [Slice(source.get([sl.to_array() for sl in self._slices], local_slice))]
         else:
             all_slices = _add_list(self.mpicomm.allgather(self.slices))
-            slices = []
+            tmp = []
             cumsize = 0
             for sli in all_slices:
-                sl = sli.slice(new_slice.shift(-cumsize))
-                if sl: slices.append(sl)
-                cumsize += sl.size
-            self._slices = Slice.snap(slices)
-
-    def cslice(self, *args, loadbalance=True):
-        new = self.copy()
-        global_slice = Slice(*args, csize=self.csize)
-        cumsizes = np.cumsum([sum(self.mpicomm.allgather(self.size)[:self.mpicomm.rank])] + [sl.size for sl in self.slices])
-        new._slices = [sli.slice(global_slice.shift(-cumsizes[isli])) for isli, sli in enumerate(self.slices)]
-        if loadbalance:
-            new.loadbalance()
+                self_slice_in_irank = sli.slice(local_slice.shift(-cumsize), return_index=False)
+                print(self.mpicomm.rank, local_slice, local_slice.shift(-cumsize), cumsize, sli, self_slice_in_irank, '\n')
+                if self_slice_in_irank: tmp.append(self_slice_in_irank)
+                cumsize += sli.size
+            if local_slice.idx.step < 0:
+                tmp = tmp[::-1]
+            new._slices = Slice.snap(*tmp)
         return new
 
     def concatenate(cls, *others):
@@ -561,7 +591,7 @@ class FileStack(BaseClass):
                 new_slice = Slice(new.mpicomm.rank * csize // new.mpicomm.csize, (new.mpicomm.rank + 1) * csize // new.mpicomm.csize, 1)
                 source = []
                 for other in others:
-                    cumsizes = np.cumsum([sum(new.mpicomm.allgather(other.size)[:self.mpicomm.rank])] + [sl.size for sl in other.slices])
+                    cumsizes = np.cumsum([sum(new.mpicomm.allgather(other.size)[:new.mpicomm.rank])] + [sl.size for sl in other.slices])
                     slices = [slice(size1, size2, 1) for size1, size2 in zip(cumsizes[:-1], cumsizes[1:])]
                     source.append(MPIScatteredSource(*slices))
                 source = MPIScatteredSource.concatenate(*source)
@@ -572,7 +602,7 @@ class FileStack(BaseClass):
                     slices += _add_list(new.mpicomm.allgather([sl.shift(cumsize) for sl in other.slices]))
                     cumsize += other.csize
                 new._slices = slices if new.mpicomm.rank == 0 else []
-            new.loadbalance()
+                new = new.cslice(0, cumsize, 1)  # to balance load
         return new
 
     def extend(self, other, **kwargs):
@@ -582,10 +612,19 @@ class FileStack(BaseClass):
     def read(self, column):
         """Read column of name ``column``."""
         toret = []
-        for islice, slices in enumerate(self.fileslices):
-            for ifile, rows in enumerate(slices):
-                if rows: toret.append(self.files[ifile].read(column, rows=rows))
-        return np.concatenate(toret, axis=0)
+        for islice, slices in enumerate(self.fileslices(return_index=True)):
+            tmp, idx = [], []
+            for ifile, (rows, iidx) in enumerate(slices):
+                if rows:
+                    tmp.append(self.files[ifile].read(column, rows=rows))
+                    idx.append(iidx.idx)
+            if tmp:
+                if self.slices[islice].is_array:
+                    toret.append(np.concatenate(tmp, axis=0, dtype=tmp[0].dtype)[np.argsort(np.concatenate(idx, axis=0))])
+                else:
+                    toret += [tmp[ii] for ii in np.argsort([iidx.start for iidx in idx])]
+        tmp = np.concatenate(toret, axis=0, dtype=toret[0].dtype)
+        return tmp
 
     def write(self, data, mpiroot=None):
         isdict = None
@@ -610,7 +649,7 @@ class FileStack(BaseClass):
         self._slices = None
         fcumsizes = np.cumsum([0] + self.filesizes)
         cumsizes = np.cumsum([0] + self.mpicomm.allgather(size))
-        for islice, slices in enumerate(self.fileslices):
+        for islice, slices in enumerate(self.fileslices()):
             for ifile, rows in enumerate(slices):
                 rows = rows.shift(fcumsizes[ifile] - cumsizes[self.mpicomm.rank])
                 if isdict:
@@ -720,7 +759,8 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
         else:
             if 'slice' not in self._type_read_rows:
                 rows = [sl.to_array()]
-        return np.concatenate([self._read_rows(column, rows=row) for row in rows], axis=0)
+        tmp = [self._read_rows(column, rows=row) for row in rows]
+        return np.concatenate(tmp, axis=0, dtype=tmp[0].dtype)
 
     def write(self, data, header=None):
         """
@@ -757,7 +797,7 @@ try: import fitsio
 except ImportError: fitsio = None
 
 
-class FITSFile(BaseFile):
+class FitsFile(BaseFile):
     """
     Class to read/write a FITS file from/to disk.
 
@@ -769,7 +809,7 @@ class FITSFile(BaseFile):
     """
     name = 'fits'
     extensions = ['fits']
-    _type_read_rows = ['index']
+    _type_read_rows = ['slice']
     _type_write_data = ['array']
 
     def __init__(self, filename, ext=None, **kwargs):
@@ -790,7 +830,7 @@ class FITSFile(BaseFile):
         if fitsio is None:
             raise ImportError('Install fitsio')
         self.ext = ext
-        super(FITSFile, self).__init__(filename=filename, **kwargs)
+        super(FitsFile, self).__init__(filename=filename, **kwargs)
 
     def _read_header_root(self):
         # Taken from https://github.com/bccp/nbodykit/blob/master/nbodykit/io/fits.py
@@ -815,7 +855,12 @@ class FITSFile(BaseFile):
             return {'csize': file.get_nrows(), 'columns': file.get_rec_dtype()[0].names, 'attrs': dict(file.read_header()), 'ext': self.ext}
 
     def _read_rows(self, column, rows):
-        return fitsio.read(self.filename, ext=self.ext, columns=column, rows=rows)
+        start, stop = rows.start, rows.stop
+        if rows.step < 0:
+            if stop is None: stop = -1
+            start, stop = stop + 1, start + 1
+        toret = fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(start, stop))
+        return toret[::rows.step]
 
     def _write_data(self, data, header):
         data = mpi.gather_array(data, mpicomm=self.mpicomm, root=self.mpiroot)
@@ -877,7 +922,15 @@ class HDF5File(BaseFile):
     def _read_rows(self, column, rows):
         with h5py.File(self.filename, 'r') as file:
             grp = file[self.group]
-            return grp[column][rows]
+            if isinstance(rows, slice):
+                start, stop, step = rows.start, rows.stop, rows.step
+                if step < 0:
+                    if stop is None: stop = -1
+                    start, stop, step = stop + 1, start + 1, abs(step)
+                    return grp[column][start:stop:step][::-1]
+                return grp[column][start:stop:step]
+            rows, inverse = np.unique(rows, return_inverse=True)
+            return grp[column][rows][inverse]
 
     def _write_data(self, data, header):
         driver = 'mpio'
@@ -959,7 +1012,7 @@ class BigFile(BaseFile):
     _type_read_rows = ['slice']
     _type_write_data = ['dict']
 
-    def __init__(self, filename, group='/', **kwargs):
+    def __init__(self, filename, group='/', header=None, exclude=None, **kwargs):
         """
         Initialize :class:`BigFile`.
 
@@ -971,6 +1024,9 @@ class BigFile(BaseFile):
         group : string, default='/'
             BigFile group where columns are located.
 
+        header_blocks : string, list, default=None
+            Header blocks.
+
         kwargs : dict
             Arguments for :class:`BaseFile`.
         """
@@ -980,17 +1036,19 @@ class BigFile(BaseFile):
         if not group or group == '/' * len(group):
             self.group = '/'
         if not self.group.endswith('/'): self.group = self.group + '/'
+        self.header_blocks = header
+        self.exclude = exclude
         super(BigFile, self).__init__(filename=filename, **kwargs)
 
     def _read_header_root(self):
         with bigfile.File(filename=self.filename) as file:
             columns = [block for block in file[self.group].blocks]
-            header = self.header
-            if header is None: header = ['Header', 'header', '.']
-            if not isinstance(header, (tuple, list)): header = [header]
+            header_blocks = self.header_blocks
+            if header_blocks is None: header_blocks = ['Header', 'header', '.']
+            if not isinstance(header_blocks, (tuple, list)): header_blocks = [header_blocks]
             headers = []
-            for h in header:
-                if h in file.blocks and h not in headers: headers.append(h)
+            for header in header_blocks:
+                if header in columns and header not in headers: headers.append(header)
             # Append the dataset itself
             headers.append(self.group.strip('/') + '/.')
 
@@ -1000,12 +1058,14 @@ class BigFile(BaseFile):
                 exclude = headers
 
             columns = _select_columns(columns, exclude=exclude)
-            csize = bigfile.Dataset(file[self.group], columns).csize
+            csize = bigfile.Dataset(file[self.group], columns).size
 
             attrs = {}
             for header in headers:
                 # copy over the attrs
-                for key, value in file[header].attrs.items():
+                fattrs = file[header].attrs
+                for key in fattrs:
+                    value = fattrs[key]
                     # load a JSON representation if str starts with json:://
                     if isinstance(value, str) and value.startswith('json://'):
                         attrs[key] = json.loads(value[7:])  # , cls=JSONDecoder)
@@ -1015,8 +1075,12 @@ class BigFile(BaseFile):
             return {'csize': csize, 'columns': columns, 'attrs': attrs}
 
     def _read_rows(self, column, rows):
-        with bigfile.File(filename=self.filename)[self.dataset] as file:
-            return bigfile.Dataset(file, column)[rows.start:rows.stop][::rows.step]
+        with bigfile.File(filename=self.filename)[self.group] as file:
+            start, stop, step = rows.start, rows.stop, rows.step
+            if step < 0:
+                if stop is None: stop = -1
+                start, stop = stop + 1, start + 1
+            return bigfile.Dataset(file, [column])[column][start:stop][::step]
 
     def _write_data(self, data, header):
         # trim out any default columns; these do not need to be saved as
@@ -1052,8 +1116,8 @@ class BigFile(BaseFile):
                 array = data[column]
                 column = self.group + column
                 # ensure data is only chunked in the first dimension
-                size = self.comm.allreduce(len(array))
-                offset = np.sum(self.comm.allgather(len(array))[:self.comm.rank], dtype='i8')
+                size = self.mpicomm.allreduce(len(array))
+                offset = sum(self.mpicomm.allgather(len(array))[:self.mpicomm.rank])
 
                 # sane value -- 32 million items per physical file
                 size_per_file = 32 * 1024 * 1024
@@ -1082,12 +1146,12 @@ class BigFile(BaseFile):
                 except:
                     bb = file.create('header')
                 with bb:
-                    for key in self.attrs:
+                    for key in header:
                         try:
-                            bb.attrs[key] = self.attrs[key]
+                            bb.attrs[key] = header[key]
                         except ValueError:
                             try:
-                                json_str = 'json://' + json.dumps(self.attrs[key])
+                                json_str = 'json://' + json.dumps(header[key])
                                 bb.attrs[key] = json_str
                             except:
                                 raise ValueError('Cannot save {} key in attrs dictionary'.format(key))
@@ -1096,11 +1160,95 @@ class BigFile(BaseFile):
             # write blocks one by one
             for column, source, target, region in zip(columns, sources, targets, regions):
                 if self.is_mpi_root():
-                    self.log_info('Started writing column {}'.format(column))
-                source.store(target, regions=region)
+                    self.log_debug('Started writing column {}'.format(column))
+                target[region] = source
                 target.bb.close()
                 if self.is_mpi_root():
-                    self.log_info('Finished writing column {}'.format(column))
+                    self.log_debug('Finished writing column {}'.format(column))
+
+
+try: import asdf
+except ImportError: asdf = None
+
+
+class AsdfFile(BaseFile):
+    """Class to read/write an ASDF file from/to disk."""
+    name = 'asdf'
+    extensions = ['asdf']
+    _type_read_rows = ['slice']
+    _type_write_data = ['dict']
+
+    def __init__(self, filename, group='', header=None, exclude=None, **kwargs):
+        """
+        Initialize :class:`ASDFFile`.
+
+        Parameters
+        ----------
+        filename : string
+            File name.
+
+        group : string, default='/'
+            BigFile group where columns are located.
+
+        header_blocks : string, list, default=None
+            Header blocks.
+
+        kwargs : dict
+            Arguments for :class:`BaseFile`.
+        """
+        if asdf is None:
+            raise ImportError('Install asdf')
+        self.group = group
+        self.header_blocks = header
+        self.exclude = exclude
+        super(AsdfFile, self).__init__(filename=filename, **kwargs)
+
+    def _read_header_root(self):
+        with asdf.open(self.filename) as file:
+            file = file[self.group] if self.group else file
+            columns = list(file.keys())
+            header_blocks = self.header_blocks
+            if header_blocks is None: header_blocks = ['Header', 'header']
+            if not isinstance(header_blocks, (tuple, list)): header_blocks = [header_blocks]
+            headers = []
+            for header in header_blocks:
+                if header in columns and header not in headers: headers.append(header)
+            exclude = self.exclude
+            if exclude is None:
+                # By default exclude header
+                exclude = headers
+            exclude += ['asdf_library', 'history']
+
+            columns = _select_columns(columns, exclude=exclude)
+            csize = len(file[columns[0]])
+
+            attrs = {}
+            for header in headers:
+                # copy over the attrs
+                fattrs = file[header]
+                for key in fattrs:
+                    value = fattrs[key]
+                    # load a JSON representation if str starts with json:://
+                    if isinstance(value, str) and value.startswith('json://'):
+                        attrs[key] = json.loads(value[7:])  # , cls=JSONDecoder)
+                    # copy over an array
+                    else:
+                        attrs[key] = np.array(value, copy=True)
+            return {'csize': csize, 'columns': columns, 'attrs': attrs}
+
+    def _read_rows(self, column, rows):
+        with asdf.open(self.filename) as file:
+            file = file[self.group] if self.group else file
+            return np.array(file[column][rows], copy=True)  # otherwise, segfault
+
+    def _write_data(self, data, header):
+        # trim out any default columns; these do not need to be saved as
+        # they are automatically available to every Catalog
+        data = {key: mpi.gather_array(data[key], mpicomm=self.mpicomm, root=self.mpiroot) for key in data}
+        if self.is_mpi_root():
+            af = asdf.AsdfFile(data)
+            # Write the data to a new file
+            af.write_to(self.filename)
 
 
 class BaseCatalog(BaseClass):
@@ -1309,7 +1457,7 @@ class BaseCatalog(BaseClass):
         if mpiroot is None: mpiroot = Ellipsis
         return mpi.gather_array(self[column], mpicomm=self.mpicomm, root=mpiroot)
 
-    def cslice(self, *args, loadbalance=True):
+    def cslice(self, *args):
         """
         Perform global slicing of catalog,
         e.g. ``catalog.cslice(0, 100, 1)`` will return a new catalog of global size ``100``.
@@ -1317,21 +1465,14 @@ class BaseCatalog(BaseClass):
         """
         new = self.copy()
         cumsizes = np.cumsum([0] + self.mpicomm.allgather(self.size))
-        local_slice = slice(cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank + 1], 1)
-        global_slice = Slice(slice(*args))
-        if loadbalance:
-            source = MPIScatteredSource(local_slice)
-            sl = global_slice.split(self.mpicomm.size)[self.mpicomm.rank]
-            for column in self.columns():
-                if column in self.data:
-                    new[column] = source.get(self[column], sl)
-        else:
-            sl = local_slice.find(global_slice)
-            for column in self.columns():
-                if column in self.data:
-                    new[column] = self[column][sl]
+        global_slice = Slice(*args, size=cumsizes[-1])
+        local_slice = global_slice.split(self.mpicomm.size)[self.mpicomm.rank]
+        source = MPIScatteredSource(slice(cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank + 1], 1))
+        for column in self.columns():
+            if column in self.data:
+                new[column] = source.get(self[column], local_slice)
         if self.has_source:
-            self._source = self._source.cslice(global_slice, loadbalance=loadbalance)
+            new._source = self._source.cslice(global_slice)
         return new
 
     @classmethod
@@ -1482,7 +1623,7 @@ class BaseCatalog(BaseClass):
     def copy(self, columns=None):
         """Return copy, including column names ``columns`` (defaults to all columns)."""
         new = super(BaseCatalog, self).__copy__()
-        if columns is None: columns = self.columns()
+        if columns is None: columns = list(self.data.keys())
         new.data = {col: self[col] if col in self else None for col in columns}
         if new.has_source: new._source = self._source.copy()
         import copy
