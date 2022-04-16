@@ -2,18 +2,15 @@
 A vectorisation of Duncan Campbell's script https://github.com/duncandc/cuboid_remap,
 based on Jordan Carlson and Martin White's algorithm of arXiv:1003.3178.
 """
-
-import logging
 import itertools
 
 import numpy as np
-
 
 from .utils import BaseClass
 
 
 def _make_array(value, shape, dtype='f8'):
-    # return numpy array filled with value
+    # Return numpy array filled with value
     toret = np.empty(shape, dtype=dtype)
     toret[...] = value
     return toret
@@ -27,12 +24,12 @@ def vec3(*args):
 
 def dot(u, v):
     """Dot product between vectors ``u`` and ``v``."""
-    return sum(uu*vv for uu,vv in zip(u,v))
+    return sum(uu * vv for uu, vv in zip(u, v))
 
 
 def square(v):
     """Square norm of vector ``v``."""
-    return dot(v,v)
+    return dot(v, v)
 
 
 def norm(v):
@@ -42,7 +39,7 @@ def norm(v):
 
 def det3(u, v, w):
     """Determinant of 3x3 matrix formed by input 3-vectors ``u``, ``v`` and ``w``."""
-    return u[0]*(v[1]*w[2] - v[2]*w[1]) + u[1]*(v[2]*w[0] - v[0]*w[2]) + u[2]*(v[0]*w[1] - v[1]*w[0])
+    return u[0] * (v[1] * w[2] - v[2] * w[1]) + u[1] * (v[2] * w[0] - v[0] * w[2]) + u[2] * (v[0] * w[1] - v[1] * w[0])
 
 
 def orthogonalize(u1, u2, u3):
@@ -50,13 +47,13 @@ def orthogonalize(u1, u2, u3):
     u1, u2, u3 = vec3(u1), vec3(u2), vec3(u3)
     s1 = square(u1)
     s2 = square(u2)
-    d12 = dot(u1,u2)
-    d23 = dot(u2,u3)
-    d13 = dot(u1,u3)
-    alpha = -d12/s1
-    gamma = -(alpha*d13 + d23)/(alpha*d12 + s2)
-    beta = -(d13 + gamma*d12)/s1
-    return [u1, u2 + alpha*u1, u3 + beta*u1 + gamma*u2]
+    d12 = dot(u1, u2)
+    d23 = dot(u2, u3)
+    d13 = dot(u1, u3)
+    alpha = - d12 / s1
+    gamma = - (alpha * d13 + d23) / (alpha * d12 + s2)
+    beta = - (d13 + gamma * d12) / s1
+    return [u1, u2 + alpha * u1, u3 + beta * u1 + gamma * u2]
 
 
 class Plane(BaseClass):
@@ -76,12 +73,12 @@ class Plane(BaseClass):
             A vector normal to the plane.
         """
         self.n = np.asarray(n)
-        self.d = -dot(p,n)
+        self.d = - dot(p, n)
 
     @property
     def normal(self):
         """Unit vector normal to the plane."""
-        return self.n/norm(self.n)
+        return self.n / norm(self.n)
 
     def test(self, position):
         """
@@ -98,7 +95,7 @@ class Plane(BaseClass):
             Positive, negative, or zero depending on whether
             the point lies above, below, or on the plane.
         """
-        return dot(self.n,position.T) + self.d
+        return dot(self.n, position.T) + self.d
 
     def test_unit_cube(self):
         """
@@ -109,10 +106,10 @@ class Plane(BaseClass):
         u : int
             +1 if the unit cube is above, -1 if below, or 0 if intersecting the plane.
         """
-        position = vec3(list(itertools.product((0,1),(0,1),(0,1))))
+        position = vec3(list(itertools.product((0, 1), (0, 1), (0, 1))))
         s = self.test(position)
-        above = (s>0).any()
-        below = (s<0).any()
+        above = (s > 0).any()
+        below = (s < 0).any()
         return int(above) - int(below)
 
 
@@ -121,7 +118,7 @@ class Cell(BaseClass):
     A cell, i.e. the intersection between the cuboid and a tile (replication of the unit cube).
     Convex polyhedron bounded by 12 planes: the 6 faces of the tile and the 6 faces of the cuboid.
     """
-    def __init__(self, ipos=(0,0,0)):
+    def __init__(self, ipos=(0, 0, 0)):
         """
         Initialize :class:`Cell`.
 
@@ -155,7 +152,7 @@ class Cuboid(BaseClass):
 
     """Cuboid remapping class."""
 
-    def __init__(self, u1=(1,0,0), u2=(0,1,0), u3=(0,0,1), boxsize=1.):
+    def __init__(self, u1=(1, 0, 0), u2=(0, 1, 0), u3=(0, 0, 1), boxsize=1.):
         """
         Initialize :class:`Cuboid`.
 
@@ -187,15 +184,15 @@ class Cuboid(BaseClass):
 
         self.boxsize = _make_array(boxsize, 3, dtype='f8')
         ebox = np.array([norm(e) for e in [self.e1, self.e2, self.e3]])
-        self.n1 = self.e1/ebox[0]
-        self.n2 = self.e2/ebox[1]
-        self.n3 = self.e3/ebox[2]
-        self.cuboidresize = np.array([norm(self.boxsize*n) for n in [self.n1, self.n2, self.n3]])
+        self.n1 = self.e1 / ebox[0]
+        self.n2 = self.e2 / ebox[1]
+        self.n3 = self.e3 / ebox[2]
+        self.cuboidresize = np.array([norm(self.boxsize * n) for n in [self.n1, self.n2, self.n3]])
         self.cuboidsize = self.cuboidresize * ebox
 
         self.cells = []
 
-        v0 = vec3(0,0,0)
+        v0 = vec3(0, 0, 0)
         # Coordinates of the 8 vertices of the cuboid
         self.v = [v0,
                   v0 + self.e3,
@@ -215,7 +212,7 @@ class Cuboid(BaseClass):
         iposmax = np.ceil(vmax).astype(int)
 
         # Determine which cells (and which faces within those cells) are non-trivial
-        iranges = [np.arange(imin, imax) for imin,imax in zip(iposmin,iposmax)]
+        iranges = [np.arange(imin, imax) for imin, imax in zip(iposmin, iposmax)]
         for ipos in itertools.product(*iranges):
             shift = -vec3(ipos)
             faces = [Plane(self.v[0] + shift, +self.n1),
@@ -279,7 +276,7 @@ class Cuboid(BaseClass):
             position[mask_] += cell.ipos
         if not mask.all():
             raise CuboidError('Elements not contained in any cell')
-        toret = vec3([dot(position.T,n) for n in [self.n1,self.n2,self.n3]]).T * self.cuboidresize
+        toret = vec3([dot(position.T, n) for n in [self.n1, self.n2, self.n3]]).T * self.cuboidresize
         if isscalar:
             toret = toret[0]
         return toret
@@ -304,7 +301,7 @@ class Cuboid(BaseClass):
         position /= self.cuboidresize
         if position.shape[-1] != 3:
             raise ValueError('Input position should be of shape (...,3)')
-        position = sum(p[:,None]*n for p,n in zip(position.T,[self.n1,self.n2,self.n3]))
+        position = sum(p[:, None] * n for p, n in zip(position.T, [self.n1, self.n2, self.n3]))
         toret = (position % 1) * self.boxsize
         if isscalar:
             toret = toret[0]
@@ -347,33 +344,33 @@ class Cuboid(BaseClass):
             if np.ndim(cuboidranges) == 1:
                 cuboidranges = [cuboidranges]
             cuboidranges = list(cuboidranges)
-            # fill with unconstraining ranges
-            cuboidranges += [(0,np.inf)]*(3 - len(cuboidranges))
-        # we can restrict to coprimes, following from:
+            # Fill with unconstraining ranges
+            cuboidranges += [(0, np.inf)] * (3 - len(cuboidranges))
+        # We can restrict to coprimes, following from:
         # i) determinant calculation (expansion following a culumn/line)
         # ii) unimodularity (determinant is 1)
         # iii) Bezout's theorem (for three integer)
-        coprimes = coprime_triples(range(-maxint, maxint+1))
+        coprimes = coprime_triples(range(- maxint, maxint + 1))
         triplets = []
         for coprime in coprimes:
             triplets += [t for t in itertools.permutations(coprime)]
         itervectors = []
         if cuboidranges is not None:
-            # take advantage of e = u to restrict from the beginning to the box range
+            # Take advantage of e = u to restrict from the beginning to the box range
             itervector1 = []
             for e in triplets:
-                if cuboidranges[0][0] <= norm(e*boxsize) <= cuboidranges[0][1]:
+                if cuboidranges[0][0] <= norm(e * boxsize) <= cuboidranges[0][1]:
                     itervector1.append(e)
             itervectors.append(itervector1)
         else:
             itervectors += [triplets]
-        itervectors += [triplets]*2
+        itervectors += [triplets] * 2
         triplets = itertools.product(*itervectors)
         toret = {}
         for u in triplets:
             if det3(*u) == 1:
-                # calculate cuboid side lengths
-                cuboidsize = tuple(norm(e*boxsize) for e in orthogonalize(*u))
+                # Calculate cuboid side lengths
+                cuboidsize = tuple(norm(e * boxsize) for e in orthogonalize(*u))
                 if cuboidranges is None or (cuboidranges[1][0] <= cuboidsize[1] <= cuboidranges[1][1] and cuboidranges[2][0] <= cuboidsize[2] <= cuboidranges[2][1]):
                     box = cuboidsize
                     if sort:
@@ -385,15 +382,14 @@ class Cuboid(BaseClass):
         return toret
 
 
-
 def gcd(*args):
     """Return the greatest common divisor of input integers."""
-    # return self if a single number is passed
+    # Return self if a single number is passed
     if len(args) == 1:
         return args[0]
-    # pairwise case
+    # Pairwise case
     elif len(args) == 2:
-        a,b = args
+        a, b = args
         if a < 0: a = -a
         if b < 0: b = -b
         while(b != 0):
@@ -401,10 +397,10 @@ def gcd(*args):
             b = a % b
             a = tmp
         return a
-    # if greater than two arguments, recurse
+    # If greater than two arguments, recurse
     a = args[0]
     b = gcd(*args[1:])
-    return gcd(a,b)
+    return gcd(a, b)
 
 
 def coprime_triples(range):
@@ -421,16 +417,15 @@ def coprime_triples(range):
     toret : set
         A set of coprime triples.
     """
-
     toret = set()
 
     for i in range:
         for j in range:
-            # if a pair is coprime, a triple must be coprime
+            # If a pair is coprime, a triple must be coprime
             if gcd(i, j) == 1:
                 for k in range:
                     toret.add(tuple(sorted([i, j, k])))
-            # if not, check to see if triple is coprime
+            # If not, check to see if triple is coprime
             else:
                 for k in range:
                     if gcd(i, j, k) == 1:

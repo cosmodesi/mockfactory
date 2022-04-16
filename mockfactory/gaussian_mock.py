@@ -1,10 +1,9 @@
-import logging
-
 import numpy as np
 
-from .mpi import MPIRandomState, CurrentMPIComm
+from mpytools import mpi, MPIRandomState, CurrentMPIComm
+
 from .utils import BaseClass
-from . import mpi, utils
+from . import utils
 
 
 def _make_array(value, shape, dtype='f8'):
@@ -23,13 +22,13 @@ def _get_los(los):
         los = np.zeros(3, dtype='f8')
         los[ilos] = 1.
     los = np.array(los, dtype='f8')
-    return los/utils.distance(los)
+    return los / utils.distance(los)
 
 
 def _compensate_mesh(mesh, resampler='nnb'):
     # Compensate particle-mesh assignment by applying window
     # See https://arxiv.org/abs/astro-ph/0409240.
-    p = {'nnb':1,'ngp':1,'cic':2,'tsc':3,'pcs':4}[resampler]
+    p = {'nnb': 1, 'ngp': 1, 'cic': 2, 'tsc': 3, 'pcs': 4}[resampler]
 
     def window(x):
         toret = 1.
@@ -38,7 +37,7 @@ def _compensate_mesh(mesh, resampler='nnb'):
         return toret
 
     mesh = mesh.r2c()
-    cellsize = mesh.pm.BoxSize/mesh.pm.Nmesh
+    cellsize = mesh.pm.BoxSize / mesh.pm.Nmesh
     for k, slab in zip(mesh.slabs.x, mesh.slabs):
         slab[...] /= window(ki * ci for ki, ci in zip(k, cellsize))
     return mesh.c2r()
@@ -169,7 +168,7 @@ class BaseGaussianMock(BaseClass):
 
         if nmesh is None:
             if cellsize is not None:
-                nmesh = np.rint(boxsize/cellsize).astype(int)
+                nmesh = np.rint(boxsize / cellsize).astype(int)
             else:
                 raise ValueError('nmesh (or cellsize) must be specified')
 
@@ -218,20 +217,20 @@ class BaseGaussianMock(BaseClass):
         # iterate in slabs over fields
         # loop over the mesh, slab by slab
         los = self.attrs['los']
-        for kslab,delta_slab in zip(mesh_delta_k.slabs.x,mesh_delta_k.slabs):
+        for kslab, delta_slab in zip(mesh_delta_k.slabs.x, mesh_delta_k.slabs):
             # the square of the norm of k on the mesh
             k2 = sum(kk**2 for kk in kslab)
             k = (k2**0.5).ravel()
             mask_nonzero = k != 0.
             power = np.zeros_like(k)
             if los is not None:
-                mu = sum(kk*ll for kk, ll in zip(kslab, los)).ravel()/k
+                mu = sum(kk * ll for kk, ll in zip(kslab, los)).ravel() / k
                 power[mask_nonzero] = self.power(k[mask_nonzero], mu[mask_nonzero])
             else:
                 power[mask_nonzero] = self.power(k[mask_nonzero])
 
             # multiply complex field by sqrt of power
-            delta_slab[...].flat *= (power*norm)**0.5
+            delta_slab[...].flat *= (power * norm)**0.5
         self.mesh_delta_k = mesh_delta_k
 
     def set_real_delta_field(self, bias=None, lognormal_transform=False):
@@ -250,13 +249,13 @@ class BaseGaussianMock(BaseClass):
             Whether to apply a lognormal transform to the (biased) real field, i.e. :math:`\exp{(\delta)}'
         """
         mesh_delta_r = self.mesh_delta_k.c2r()
-        offset = self.boxcenter - self.boxsize/2. #+ 0.5*self.boxsize / self.nmesh
+        offset = self.boxcenter - self.boxsize / 2.  # + 0.5*self.boxsize / self.nmesh
         if bias is not None:
             if callable(bias):
                 for islabs in zip(mesh_delta_r.slabs.x, mesh_delta_r.slabs):
                     rslab, delta_slab = islabs[:2]
                     rslab = _transform_rslab(rslab, self.boxsize)
-                    rnorm = np.sum((r + o)**2 for r,o in zip(rslab,offset))**0.5
+                    rnorm = np.sum((r + o)**2 for r, o in zip(rslab, offset))**0.5
                     delta_slab[...].flat = bias(delta_slab.flatten(), rnorm.flatten())
             else:
                 mesh_delta_r *= bias
@@ -281,27 +280,27 @@ class BaseGaussianMock(BaseClass):
             Whether to use interlacing to reduce aliasing when applying selection function on the mesh.
             If positive int, the interlacing order (minimum: 2).
         """
-        cellsize = self.boxsize/self.nmesh
+        cellsize = self.boxsize / self.nmesh
         dv = np.prod(cellsize)
         self.attrs['shotnoise'] = 0.
         if not callable(nbar):
             self.nbar = nbar
-            self.attrs['norm'] = np.prod(self.nmesh)*self.nbar**2*dv
+            self.attrs['norm'] = np.prod(self.nmesh) * self.nbar**2 * dv
             return
         self.nbar = self.pm.create(type='real')
 
         def cartesian_to_sky(*position):
             dist = sum(pos**2 for pos in position)**0.5
-            ra = np.arctan2(position[1], position[0]) % (2.*np.pi)
-            dec = np.arcsin(position[2]/dist)
-            conversion = np.pi/180.
-            return dist, ra/conversion, dec/conversion
+            ra = np.arctan2(position[1], position[0]) % (2. * np.pi)
+            dec = np.arcsin(position[2] / dist)
+            conversion = np.pi / 180.
+            return dist, ra / conversion, dec / conversion
 
-        offset = self.boxcenter - self.boxsize/2.
+        offset = self.boxcenter - self.boxsize / 2.
 
-        for rslab, slab in zip(self.nbar.slabs.x,self.nbar.slabs):
+        for rslab, slab in zip(self.nbar.slabs.x, self.nbar.slabs):
             rslab = _transform_rslab(rslab, self.boxsize)
-            dist,ra,dec = cartesian_to_sky(*[(r + o).ravel() for r,o in zip(rslab, offset)])
+            dist, ra, dec = cartesian_to_sky(*[(r + o).ravel() for r, o in zip(rslab, offset)])
             slab[...].flat = nbar(dist, ra, dec)
         if interlacing:
             interlacing = int(interlacing)
@@ -309,17 +308,17 @@ class BaseGaussianMock(BaseClass):
                 if self.is_mpi_root():
                     self.log_warning('Provided interlacing is {}; setting it to 2.'.format(interlacing))
                 interlacing = 2
-            shifts = np.arange(interlacing)*1./interlacing
+            shifts = np.arange(interlacing) * 1. / interlacing
             # remove 0 shift, already computed
             shifts = shifts[1:]
             self.nbar = self.nbar.r2c()
             for shift in shifts:
                 # paint to two shifted meshes
                 nbar_shifted = self.pm.create(type='real')
-                offset -= 0.5*cellsize # shift nbar by 0.5*cellsize
+                offset -= 0.5 * cellsize  # shift nbar by 0.5*cellsize
                 for rslab, slab in zip(nbar_shifted.slabs.x, nbar_shifted.slabs):
                     rslab = _transform_rslab(rslab, self.boxsize)
-                    dist,ra,dec = cartesian_to_sky(*[(r + o).ravel() for r,o in zip(rslab, offset)])
+                    dist, ra, dec = cartesian_to_sky(*[(r + o).ravel() for r, o in zip(rslab, offset)])
                     slab[...].flat = nbar(dist, ra, dec)
                 nbar_shifted = nbar_shifted.r2c()
                 for k, s1, s2 in zip(self.nbar.slabs.x, self.nbar.slabs, nbar_shifted.slabs):
@@ -327,7 +326,7 @@ class BaseGaussianMock(BaseClass):
                     s1[...] = s1[...] + s2[...] * np.exp(shift * 1j * kc)
             self.nbar = self.nbar.c2r()
             self.nbar[:] /= interlacing
-        self.attrs['norm'] = (self.nbar**2).csum()*dv
+        self.attrs['norm'] = (self.nbar**2).csum() * dv
 
     def set_real_white_noise(self, seed=None):
         """
@@ -342,8 +341,8 @@ class BaseGaussianMock(BaseClass):
         noise = self.pm.generate_whitenoise(seed, type='real')
         # noise has amplitude of 1
         # multiply by expected density
-        vol_per_cell = np.prod(self.boxsize/self.nmesh)
-        self.mesh_delta_r += noise/(self.nbar*vol_per_cell)**0.5
+        vol_per_cell = np.prod(self.boxsize / self.nmesh)
+        self.mesh_delta_r += noise / (self.nbar * vol_per_cell) ** 0.5
 
     def readout(self, positions, field='delta', resampler='nnb', compensate=False):
         """
@@ -376,9 +375,9 @@ class BaseGaussianMock(BaseClass):
         elif field == 'delta':
             mesh = self.mesh_delta_r
         elif field == 'nbar*delta':
-            mesh = self.nbar*self.mesh_delta_r
+            mesh = self.nbar * self.mesh_delta_r
         elif field == 'nbar*(1+delta)':
-            mesh = self.nbar*(self.mesh_delta_r + 1)
+            mesh = self.nbar * (self.mesh_delta_r + 1)
         elif field == 'nbar':
             mesh = self.nbar
         else:
@@ -391,7 +390,7 @@ class BaseGaussianMock(BaseClass):
 
         if resampler == 'ngp': resampler = 'nnb'
         # half cell shift already included in resampling
-        positions = positions - self.boxcenter + self.boxsize/2.
+        positions = positions - self.boxcenter + self.boxsize / 2.
         layout = self.pm.decompose(positions, smoothing=resampler)
         positions = layout.exchange(positions)
         values = mesh.readout(positions, resampler=resampler)
@@ -400,7 +399,7 @@ class BaseGaussianMock(BaseClass):
     def to_nbodykit_mesh(self):
         """Export density fied ``self.mesh_delta_r*self.nbar`` to :class:`nbodykit.source.mesh.field.FieldMesh`."""
         from nbodykit.source.mesh.field import FieldMesh
-        toret = FieldMesh(self.mesh_delta_r*self.nbar)
+        toret = FieldMesh(self.mesh_delta_r * self.nbar)
         toret.attrs.update(self.attrs)
         toret.attrs['BoxSize'] = self.boxsize
         toret.attrs['BoxCenter'] = self.boxcenter
@@ -421,7 +420,7 @@ class BaseGaussianMock(BaseClass):
         cellsize = self.boxsize / self.nmesh
         dv = np.prod(cellsize)
         # number of objects in each cell (per rank, as a RealField)
-        cellmean = (1. + self.mesh_delta_r) * self.nbar*dv
+        cellmean = (1. + self.mesh_delta_r) * self.nbar * dv
         # create a random state with the input seed
         rng = MPIRandomState(size=self.mesh_delta_r.size, seed=seed1, mpicomm=self.mpicomm)
         # generate poissons. Note that we use ravel/unravel to
@@ -454,25 +453,13 @@ class BaseGaussianMock(BaseClass):
         in_cell_shift = np.array([rng_shift.uniform(0, c) for c in cellsize]).T
 
         positions[...] += in_cell_shift
-        #for ii in range(3):
-        #    positions[positions[:,ii] >= self.boxsize[ii]/2,ii] -= self.boxsize[ii]
-        #print(positions.min(axis=0), positions.max(axis=0))
-        #positions[...] %= self.boxsize
-        positions[...] += self.boxcenter - self.boxsize/2.
+        # for ii in range(3):
+        #     positions[positions[:,ii] >= self.boxsize[ii]/2,ii] -= self.boxsize[ii]
+        # print(positions.min(axis=0), positions.max(axis=0))
+        # positions[...] %= self.boxsize
+        positions[...] += self.boxcenter - self.boxsize / 2.
 
         self.position = positions
-
-    def to_nbodykit_catalog(self):
-        """
-        Export as :class:`nbodykit.source.catalog.ArrayCatalog`.
-
-        Note
-        ----
-        :meth:`poisson_sample` must be called first.
-        """
-        source = {'Position':self.position}
-        from nbodykit.source.catalog import ArrayCatalog
-        return ArrayCatalog(source, **self.attrs)
 
     def to_catalog(self):
         """
@@ -482,6 +469,6 @@ class BaseGaussianMock(BaseClass):
         ----
         :meth:`poisson_sample` must be called first.
         """
-        source = {'Position':self.position}
+        source = {'Position': self.position}
         from .make_survey import BoxCatalog
         return BoxCatalog(source, position='Position', boxsize=self.boxsize, boxcenter=self.boxcenter, attrs=self.attrs)

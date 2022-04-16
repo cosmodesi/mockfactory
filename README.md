@@ -4,7 +4,7 @@
 Its main purpose is to study geometry effects on the power spectrum.
 
 A typical run, generating lognormal mocks and applying some cutsky geometry is
-(pseudo-code, for an example with all variables defined see [this notebook](https://github.com/adematti/mockfactory/blob/main/nb/basic_examples.ipynb)):
+(pseudo-code, for an example with all variables defined see [this notebook](https://github.com/cosmodesi/mockfactory/blob/main/nb/basic_examples.ipynb)):
 ```
 from mockfactory import LagrangianLinearMock, utils, setup_logging
 
@@ -48,11 +48,11 @@ data = data[mask_radial(data['Z'], seed=84)]
 randoms = randoms[mask_radial(randoms['Z'], seed=85)]
 
 # Save to disk
-data.save_fits(data_fn)
-randoms.save_fits(randoms_fn)
+data.write(data_fn)
+randoms.write(randoms_fn)
 ```
 
-One can also apply Jordan Carlson and Martin White's remapping algorithm to any periodic mock, e.g. (pseudo-code, for an example with all variables defined see [this notebook](https://github.com/adematti/mockfactory/blob/main/nb/remap_examples.ipynb)):
+One can also apply Jordan Carlson and Martin White's remapping algorithm to any periodic mock, e.g. (pseudo-code, for an example with all variables defined see [this notebook](https://github.com/cosmodesi/mockfactory/blob/main/nb/remap_examples.ipynb)):
 ```
 # We start from a random catalog, but can be anything with a periodic box geometry
 from mockfactory.make_survey import RandomBoxCatalog
@@ -75,6 +75,7 @@ Strict requirements are:
   - scipy
   - mpi4py
   - pmesh
+  - mpytools
 
 ## Installation
 
@@ -82,14 +83,14 @@ Strict requirements are:
 
 Simply run:
 ```
-python -m pip install git+https://github.com/adematti/mockfactory
+python -m pip install git+https://github.com/cosmodesi/mockfactory
 ```
 
 ### git
 
 First:
 ```
-git clone https://github.com/adematti/mockfactory.git
+git clone https://github.com/cosmodesi/mockfactory.git
 ```
 To install the code::
 ```
@@ -102,7 +103,7 @@ python setup.py develop --user
 
 ## License
 
-**mockfactory** is free software distributed under a GPLv3 license. For details see the [LICENSE](https://github.com/adematti/mockfactory/blob/main/LICENSE).
+**mockfactory** is free software distributed under a BSD3 license. For details see the [LICENSE](https://github.com/cosmodesi/mockfactory/blob/main/LICENSE).
 
 ## Credits
 

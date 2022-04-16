@@ -1,158 +1,13 @@
 """A few utilities."""
 
-import os
-import sys
-import time
-import logging
-import traceback
-import functools
-
 import numpy as np
 
-from .mpi import CurrentMPIComm
+from mpytools.utils import mkdir, setup_logging, BaseMetaClass, BaseClass
 
 
-@CurrentMPIComm.enable
-def exception_handler(exc_type, exc_value, exc_traceback, mpicomm=None):
-    """Print exception with a logger."""
-    # Do not print traceback if the exception has been handled and logged
-    _logger_name = 'Exception'
-    log = logging.getLogger(_logger_name)
-    line = '=' * 100
-    #log.critical(line[len(_logger_name) + 5:] + '\n' + ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)) + line)
-    log.critical('\n' + line + '\n' + ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)) + line)
-    if exc_type is KeyboardInterrupt:
-        log.critical('Interrupted by the user.')
-    else:
-        log.critical('An error occured.')
-    if mpicomm.size > 1:
-        mpicomm.Abort()
-
-
-def mkdir(dirname):
-    """Try to create ``dirnm`` and catch :class:`OSError`."""
-    try:
-        os.makedirs(dirname)  # MPI...
-    except OSError:
-        return
-
-
-def setup_logging(level=logging.INFO, stream=sys.stdout, filename=None, filemode='w', **kwargs):
-    """
-    Set up logging.
-
-    Parameters
-    ----------
-    level : string, int, default=logging.INFO
-        Logging level.
-
-    stream : _io.TextIOWrapper, default=sys.stdout
-        Where to stream.
-
-    filename : string, default=None
-        If not ``None`` stream to file name.
-
-    filemode : string, default='w'
-        Mode to open file, only used if filename is not ``None``.
-
-    kwargs : dict
-        Other arguments for :func:`logging.basicConfig`.
-    """
-    # Cannot provide stream and filename kwargs at the same time to logging.basicConfig, so handle different cases
-    # Thanks to https://stackoverflow.com/questions/30861524/logging-basicconfig-not-creating-log-file-when-i-run-in-pycharm
-    if isinstance(level, str):
-        level = {'info': logging.INFO, 'debug': logging.DEBUG, 'warning': logging.WARNING}[level.lower()]
-    for handler in logging.root.handlers:
-        logging.root.removeHandler(handler)
-
-    t0 = time.time()
-
-    class MyFormatter(logging.Formatter):
-
-        @CurrentMPIComm.enable
-        def format(self, record, mpicomm=None):
-            ranksize = '[{:{dig}d}/{:d}]'.format(mpicomm.rank, mpicomm.size, dig=len(str(mpicomm.size)))
-            self._style._fmt = '[%09.2f] ' % (time.time() - t0) + ranksize + ' %(asctime)s %(name)-25s %(levelname)-8s %(message)s'
-            return super(MyFormatter, self).format(record)
-
-    fmt = MyFormatter(datefmt='%m-%d %H:%M ')
-    if filename is not None:
-        mkdir(os.path.dirname(filename))
-        handler = logging.FileHandler(filename, mode=filemode)
-    else:
-        handler = logging.StreamHandler(stream=stream)
-    handler.setFormatter(fmt)
-    logging.basicConfig(level=level, handlers=[handler], **kwargs)
-    sys.excepthook = exception_handler
-
-
-class BaseMetaClass(type):
-
-    """Metaclass to add logging attributes to :class:`BaseClass` derived classes."""
-
-    def __new__(meta, name, bases, class_dict):
-        cls = super().__new__(meta, name, bases, class_dict)
-        cls.set_logger()
-        return cls
-
-    def set_logger(cls):
-        """
-        Add attributes for logging:
-
-        - logger
-        - methods log_debug, log_info, log_warning, log_error, log_critical
-        """
-        cls.logger = logging.getLogger(cls.__name__)
-
-        def make_logger(level):
-
-            @classmethod
-            @CurrentMPIComm.enable
-            def logger(cls, *args, rank=None, mpicomm=None, **kwargs):
-                if rank is None or mpicomm.rank == rank:
-                    getattr(cls.logger, level)(*args, **kwargs)
-
-            return logger
-
-        for level in ['debug', 'info', 'warning', 'error', 'critical']:
-            setattr(cls, 'log_{}'.format(level), make_logger(level))
-
-
-class BaseClass(object, metaclass=BaseMetaClass):
-    """
-    Base class that implements :meth:`copy`.
-    To be used throughout this package.
-    """
-    def __copy__(self):
-        new = self.__class__.__new__(self.__class__)
-        new.__dict__.update(self.__dict__)
-        return new
-
-    def copy(self, **kwargs):
-        new = self.__copy__()
-        new.__dict__.update(kwargs)
-        return new
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-
-    @classmethod
-    def from_state(cls, state):
-        new = cls.__new__(cls)
-        new.__setstate__(state)
-        return new
-
-    def save(self, filename):
-        self.log_info('Saving {}.'.format(filename))
-        mkdir(os.path.dirname(filename))
-        np.save(filename, self.__getstate__(), allow_pickle=True)
-
-    @classmethod
-    def load(cls, filename):
-        cls.log_info('Loading {}.'.format(filename))
-        state = np.load(filename, allow_pickle=True)[()]
-        new = cls.from_state(state)
-        return new
+def is_sequence(item):
+    """Whether input item is a tuple or list."""
+    return isinstance(item, (list, tuple))
 
 
 def distance(position):
@@ -244,12 +99,16 @@ def sky_to_cartesian(dist, ra, dec, degree=True, dtype=None):
         Position in cartesian coordinates.
     """
     conversion = np.pi / 180. if degree else 1.
-    position = [None] * 3
+    dist, ra, dec = (np.asarray(array) for array in (dist, ra, dec))
+    if dtype is None:
+        dtype = np.result_type(dist, ra, dec)
+    position = np.empty(dist.shape + (3,), dtype=dtype)
     cos_dec = np.cos(dec * conversion)
-    position[0] = cos_dec * np.cos(ra * conversion)
-    position[1] = cos_dec * np.sin(ra * conversion)
-    position[2] = np.sin(dec * conversion)
-    return (dist * np.asarray(position, dtype=dtype)).T
+    position[..., 0] = cos_dec * np.cos(ra * conversion)
+    position[..., 1] = cos_dec * np.sin(ra * conversion)
+    position[..., 2] = np.sin(dec * conversion)
+
+    return dist[..., None] * position
 
 
 def radecbox_area(rarange, decrange):
@@ -308,70 +167,3 @@ def vector_projection(vector, direction):
     projection = projection[:, None] * direction
 
     return projection
-
-
-def match1d(id1, id2):
-    """
-    Match ``id2`` array to ``id1`` array, such that ``np.all(id1[index1] == id2[index2])``.
-
-    Parameters
-    ----------
-    id1 : array
-        IDs 1, should be unique.
-
-    id2 : array
-        IDs 2, should be unique.
-
-    Returns
-    -------
-    index1 : array
-        Indices of matching ``id1``.
-
-    index2 : array
-        Indices of matching ``id2``.
-
-    Warning
-    -------
-    Makes sense only if ``id1`` and ``id2`` elements are unique.
-
-    References
-    ----------
-    https://www.followthesheep.com/?p=1366
-    """
-    sort1 = np.argsort(id1)
-    sort2 = np.argsort(id2)
-
-    ind1 = id2[sort2].searchsorted(id1[sort1], side='right') > id2[sort2].searchsorted(id1[sort1], side='left')
-    ind2 = id1[sort1].searchsorted(id2[sort2], side='right') > id1[sort1].searchsorted(id2[sort2], side='left')
-
-    return sort1[ind1], sort2[ind2]
-
-
-def match1d_to(id1, id2, return_index=False):
-    """
-    Return indexes where ``id1`` matches ``id2``, such that ``np.all(id1[index1] == id2)``.
-
-    Parameters
-    ----------
-    id1 : array
-        IDs 1, should be unique.
-
-    id2 : array
-        IDs 2.
-
-    return_index : bool, default=False
-        Return indices in ``id2`` corresponding to ``id1[index1]``.
-
-    Returns
-    -------
-    index1 : array
-        Indices of matching ``id1``.
-    """
-    sort1 = np.argsort(id1)
-    ind2 = id1[sort1].searchsorted(id2, side='left')
-    mask = id1[sort1].searchsorted(id2, side='right') > ind2
-    ind2 = ind2[mask]
-    ind1 = sort1[ind2]
-    if return_index:
-        return ind1, np.flatnonzero(mask)
-    return ind1

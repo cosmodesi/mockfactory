@@ -7,9 +7,9 @@ import itertools
 import numpy as np
 from scipy import interpolate, optimize
 
-from . import mpi, utils
-from .mpi import CurrentMPIComm, MPIRandomState
-from .catalog import BaseCatalog
+from mpytools import CurrentMPIComm, MPIRandomState, MPIScatteredArray, Catalog, mpi
+
+from . import utils
 from .utils import BaseClass
 
 
@@ -26,31 +26,32 @@ def rotation_matrix_from_vectors(a, b):
     b = np.asarray(b)
     a /= utils.distance(a)
     b /= utils.distance(b)
-    v = np.cross(a,b)
-    c = np.dot(a,b)
+    v = np.cross(a, b)
+    c = np.dot(a, b)
     s = utils.distance(v)
-    I = np.identity(3,dtype='f8')
-    k = np.array([[0., -v[2], v[1]],[v[2], 0., -v[0]],[-v[1], v[0], 0.]])
-    if s == 0.: return I
-    return I + k + np.matmul(k,k) * ((1.-c)/(s**2))
+    eye = np.identity(3, dtype='f8')
+    k = np.array([[0., -v[2], v[1]], [v[2], 0., -v[0]], [-v[1], v[0], 0.]])
+    if s == 0.:
+        return eye
+    return eye + k + np.matmul(k, k) * ((1. - c) / (s ** 2))
 
 
 def _make_array(value, shape, dtype='f8'):
-    # return numpy array filled with value
+    # Return numpy array filled with value
     toret = np.empty(shape, dtype=dtype)
     toret[...] = value
     return toret
 
 
 def _get_los(los):
-    # return line of sight 3-vector
+    # Return line of sight 3-vector from string ('x', 'y', 'z'), (0, 1, 2) or vector
     if isinstance(los, str):
         los = 'xyz'.index(los)
     if np.ndim(los) == 0:
         ilos = los
         los = np.zeros(3, dtype='f8')
         los[ilos] = 1.
-    los = np.asarray(los)
+    los = _make_array(los, 3, dtype='f8')
     return los
 
 
@@ -93,7 +94,7 @@ class EuclideanIsometry(BaseClass):
         vector : array of shape (N, 3)
             Output vector, with isometry applied.
         """
-        toret = np.tensordot(vector, self._rotation, axes=((-1,),(1,)))
+        toret = np.tensordot(vector, self._rotation, axes=((-1,), (1,)))
         if not translational_invariant: toret += self._translation
         return toret
 
@@ -123,7 +124,7 @@ class EuclideanIsometry(BaseClass):
             Either 'origin', in which case rotation is w.r.t. origin :math:`(0,0,0)`,
             or 'current', in which case rotation is w.r.t. current position.
         """
-        if degree: angle *= np.pi/180.
+        if degree: angle *= np.pi / 180.
         if axis is not None:
             axis = self._get_axis(axis)
             angle = [angle if ax == axis else 0. for ax in range(3)]
@@ -131,9 +132,9 @@ class EuclideanIsometry(BaseClass):
         matrix = np.eye(3, dtype='f8')
         for axis, angle in enumerate(angles):
             c, s = np.cos(angle), np.sin(angle)
-            if axis == 0: mat = [[1.,0.,0.],[0.,c,-s],[0.,s,c]]
-            if axis == 1: mat = [[c,0.,s],[0,1.,0.],[-s,0.,c]]
-            if axis == 2: mat = [[c,-s,0],[s,c,0],[0.,0,1.]]
+            if axis == 0: mat = [[1., 0., 0.], [0., c, -s], [0., s, c]]
+            if axis == 1: mat = [[c, 0., s], [0, 1., 0.], [-s, 0., c]]
+            if axis == 2: mat = [[c, -s, 0.], [s, c, 0.], [0., 0., 1.]]
             matrix = np.asarray(mat).dot(matrix)
         self._rotation = matrix.dot(self._rotation)
         if frame == 'origin':
@@ -163,7 +164,7 @@ class EuclideanIsometry(BaseClass):
             shift = [shift if ax == axis else 0. for ax in range(3)]
         shift = _make_array(shift, 3)
         if frame == 'current':
-            shift = np.tensordot(shift, self._rotation, axes=((-1,),(1,)))
+            shift = np.tensordot(shift, self._rotation, axes=((-1,), (1,)))
         elif frame != 'origin':
             raise EuclideanIsometryError('center must be "origin" or "current"')
         self._translation += shift
@@ -192,15 +193,22 @@ class EuclideanIsometry(BaseClass):
     def concatenate(cls, *others):
         """Return isometry corresponding to the successive input isometries."""
         new = cls()
+        if len(others) == 1 and utils.is_sequence(others[0]):
+            others = others[0]
         if not others: return new
         for other in others:
             new._rotation = other._rotation.dot(new._rotation)
-            new._translation = np.tensordot(new._translation, other._rotation, axes=((-1,),(1,))) + other._translation
-            #new._translation += other._translation
+            new._translation = np.tensordot(new._translation, other._rotation, axes=((-1,), (1,))) + other._translation
+            # new._translation += other._translation
         return new
 
+    def append(self, other):
+        """Append ``other`` to current isometry."""
+        new = self.concatenate(self, other)
+        self.__dict__.update(new.__dict__)
+
     def extend(self, other):
-        """Add ``other`` isometry to ``self``."""
+        """Add ``other`` to current isometry."""
         new = self.concatenate(self, other)
         self.__dict__.update(new.__dict__)
 
@@ -245,12 +253,12 @@ def box_to_cutsky(boxsize, dmax):
         Dec range.
     """
     boxsize = _make_array(boxsize, 3)
-    deltara = np.arcsin(boxsize[1]/2./dmax)
-    deltadec = np.arcsin(boxsize[2]/2./dmax)
-    dmin = (dmax - boxsize[0])/min(np.cos(deltara), np.cos(deltadec))
-    deltara *= 180./np.pi
-    deltadec *= 180./np.pi
-    return [dmin, dmax], [-deltara, deltara], [-deltadec, deltadec]
+    deltara = np.arcsin(boxsize[1] / 2. / dmax)
+    deltadec = np.arcsin(boxsize[2] / 2. / dmax)
+    dmin = (dmax - boxsize[0]) / min(np.cos(deltara), np.cos(deltadec))
+    deltara *= 180. / np.pi
+    deltadec *= 180. / np.pi
+    return (dmin, dmax), (-deltara, deltara), (-deltadec, deltadec)
 
 
 def cutsky_to_box(drange, rarange, decrange, return_isometry=False):
@@ -283,19 +291,19 @@ def cutsky_to_box(drange, rarange, decrange, return_isometry=False):
         to apply to the initial positions.
     """
     rarange = utils.wrap_angle(rarange, degree=True)
-    # if e.g. rarange = (300, 40), we want to point to the middle of |-60, 40]
+    # If e.g. rarange = (300, 40), we want to point to the middle of |-60, 40]
     if rarange[0] > rarange[1]: rarange[0] -= 360
-    deltara = abs(rarange[1]-rarange[0])/2.*np.pi/180.
-    deltadec = abs(decrange[1]-decrange[0])/2.*np.pi/180.
+    deltara = abs(rarange[1] - rarange[0]) / 2. * np.pi / 180.
+    deltadec = abs(decrange[1] - decrange[0]) / 2. * np.pi / 180.
     boxsize = np.empty(3, dtype='f8')
-    boxsize[1] = 2.*drange[1]*np.sin(deltara)
-    boxsize[2] = 2.*drange[1]*np.sin(deltadec)
-    boxsize[0] = drange[1] - drange[0]*min(np.cos(deltara),np.cos(deltadec))
+    boxsize[1] = 2. * drange[1] * np.sin(deltara)
+    boxsize[2] = 2. * drange[1] * np.sin(deltadec)
+    boxsize[0] = drange[1] - drange[0] * min(np.cos(deltara), np.cos(deltadec))
     if return_isometry:
         isometry = EuclideanIsometry()
-        isometry.translation(drange[1]-boxsize[0]/2., axis='x', frame='origin')
-        isometry.rotation(-(decrange[0]+decrange[1])/2., axis='y', degree=True, frame='origin') # minus because of direction convention
-        isometry.rotation((rarange[0]+rarange[1])/2., axis='z', degree=True, frame='origin')
+        isometry.translation(drange[1] - boxsize[0] / 2., axis='x', frame='origin')
+        isometry.rotation(-(decrange[0] + decrange[1]) / 2., axis='y', degree=True, frame='origin')  # minus because of direction convention
+        isometry.rotation((rarange[0] + rarange[1]) / 2., axis='z', degree=True, frame='origin')
         return boxsize, isometry
     return boxsize
 
@@ -327,7 +335,7 @@ class DistanceToRedshift(BaseClass):
         self.distance = distance
         self.zmax = zmax
         self.nz = nz
-        zgrid = np.logspace(-8,np.log10(self.zmax),self.nz)
+        zgrid = np.logspace(-8, np.log10(self.zmax), self.nz)
         self.zgrid = np.concatenate([[0.], zgrid])
         self.rgrid = self.distance(self.zgrid)
         self.interp = interpolate.UnivariateSpline(self.rgrid, self.zgrid, k=interp_order, s=0, ext='raise')
@@ -404,10 +412,9 @@ class RedshiftDensityInterpolator(BaseClass):
             return mpi.min_array(z, mpicomm=self.mpicomm), mpi.max_array(z, mpicomm=self.mpicomm)
 
         if bins is None or isinstance(bins, str) and bins == 'scott':
-            # scott's rule
-            var = mpi.var_array(z, aweights=weights, ddof=1, mpicomm=self.mpicomm)
+            # Scott's rule
             size = mpi.size_array(z)
-            sigma = np.sqrt(var)
+            sigma = np.sqrt(mpi.var_array(z, aweights=weights, ddof=1, mpicomm=self.mpicomm))
             dx = sigma * (24. * np.sqrt(np.pi) / size) ** (1. / 3)
             minval, maxval = zrange(z)
             nbins = np.ceil((maxval - minval) * 1. / dx)
@@ -415,18 +422,18 @@ class RedshiftDensityInterpolator(BaseClass):
             bins = minval + dx * np.arange(nbins + 1)
 
         elif np.ndim(bins) == 0:
-            bins = np.linspace(*zrange(z), num=bins+1, endpoint=True)
+            bins = np.linspace(*zrange(z), num=bins + 1, endpoint=True)
 
         counts = np.histogram(z, weights=weights, bins=bins)[0]
-        counts = self.mpicomm.allreduce(counts, op=mpi.MPI.SUM)
+        counts = mpi.reduce_array(counts, op='sum', mpicomm=self.mpicomm, root=Ellipsis)
 
         if radial_distance is not None:
             dbins = radial_distance(bins)
         else:
             dbins = bins
-        dvol = fsky*4./3.*np.pi*(dbins[1:]**3 - dbins[:-1]**3)
-        self.z = (bins[:-1] + bins[1:])/2.
-        self.nbar = counts/dvol
+        dvol = fsky * 4. / 3. * np.pi * (dbins[1:]**3 - dbins[:-1]**3)
+        self.z = (bins[:-1] + bins[1:]) / 2.
+        self.nbar = counts / dvol
         self.spline = interpolate.UnivariateSpline(self.z, self.nbar, k=interp_order, s=0, ext='zeros')
 
     def __call__(self, z):
@@ -434,9 +441,9 @@ class RedshiftDensityInterpolator(BaseClass):
         return self.spline(z)
 
 
-class ParticleCatalog(BaseCatalog):
+class ParticleCatalog(Catalog):
 
-    _attrs = BaseCatalog._attrs + ['_position', '_velocity', '_vectors', '_translational_invariants']
+    _attrs = Catalog._attrs + ['_position', '_velocity', '_vectors', '_translational_invariants']
 
     """A catalog of particles, with 'Position' and 'Velocity'."""
 
@@ -447,7 +454,7 @@ class ParticleCatalog(BaseCatalog):
 
         Parameters
         ----------
-        data : dict, BaseCatalog
+        data : dict, Catalog
             Dictionary of {name: array}.
 
         columns : list, default=None
@@ -503,7 +510,7 @@ class ParticleCatalog(BaseCatalog):
         return utils.distance(self.position)
 
     def rsd_position(self, f=1., los=None):
-        """
+        r"""
         Return :attr:`position` with redshift space distortions applied.
 
         Parameters
@@ -518,7 +525,7 @@ class ParticleCatalog(BaseCatalog):
             If ``None``, use local line of sight.
         """
         if los is None:
-            los = self.position/self.distance()[:,None]
+            los = self.position / self.distance()[:, None]
         else:
             los = _get_los(los)
         rsd = utils.vector_projection(self.velocity, los)
@@ -560,7 +567,7 @@ class BoxCatalog(ParticleCatalog):
 
         Parameters
         ----------
-        data : dict, BaseCatalog
+        data : dict, Catalog
             Dictionary of {name: array}.
 
         columns : list, default=None
@@ -614,7 +621,7 @@ class BoxCatalog(ParticleCatalog):
 
     def glos(self):
         """Return unit vector to the box center."""
-        return self.boxcenter/utils.distance(self.boxcenter)
+        return self.boxcenter / utils.distance(self.boxcenter)
 
     def remap(self, *args):
         """
@@ -640,16 +647,16 @@ class BoxCatalog(ParticleCatalog):
                 args = args[0]
         if len(args) > 1:
             cuboid = Cuboid(*args, boxsize=self.boxsize)
-        offset = self.boxcenter - self.boxsize/2.
+        offset = self.boxcenter - self.boxsize / 2.
         new = self.copy()
         new.boxsize = cuboid.cuboidsize
-        cuboidoffset = new.boxcenter - new.boxsize/2.
+        cuboidoffset = new.boxcenter - new.boxsize / 2.
         for name in self.vectors:
             if name not in self._translational_invariants:
                 new[name] = cuboid.transform(self[name] - offset) + cuboidoffset
         return new
 
-    def subbox(self, ranges=(0,1), boxsize_unit=True):
+    def subbox(self, ranges=(0, 1), boxsize_unit=True):
         """
         Return new catalog limited to input ranges.
 
@@ -670,24 +677,24 @@ class BoxCatalog(ParticleCatalog):
             Catalog cut to provided ranges.
         """
         if np.ndim(ranges[0]) == 0:
-            ranges = [ranges]*3
+            ranges = [ranges] * 3
         if len(ranges) != 3:
             raise ValueError('Provide ranges for each axis')
         mask = self.trues()
-        offset = [0]*3
+        offset = [0] * 3
         if boxsize_unit:
-            offset = self.boxcenter - self.boxsize/2.
-        current_box = [self.boxcenter - self.boxsize/2., self.boxcenter + self.boxsize/2.]
+            offset = self.boxcenter - self.boxsize / 2.
+        current_box = [self.boxcenter - self.boxsize / 2., self.boxcenter + self.boxsize / 2.]
         box = [np.empty(3, dtype='f8') for i in range(2)]
         for ii, brange in enumerate(ranges):
             if boxsize_unit:
                 brange = [self.boxsize[ii] * bb + offset[ii] for bb in brange]
             box[0][ii] = max(current_box[0][ii], brange[0])
             box[1][ii] = min(current_box[1][ii], brange[1])
-            mask &= (self.position[:,ii] >= brange[0]) & (self.position[:,ii] < brange[1])
+            mask &= (self.position[:, ii] >= brange[0]) & (self.position[:, ii] < brange[1])
         new = self[mask]
         new.boxsize = np.asarray(box[1]) - np.asarray(box[0])
-        new.boxcenter = (np.asarray(box[1]) + np.asarray(box[0]))/2.
+        new.boxcenter = (np.asarray(box[1]) + np.asarray(box[0])) / 2.
         return new
 
     def pad(self, factor=1.1):
@@ -711,19 +718,20 @@ class BoxCatalog(ParticleCatalog):
         # only boxsize changes; boxcenter does not move as box is padded by the same amount on both sides
         new.boxsize *= factors
         position = self._position
-        shifts = [np.arange(-np.ceil(factor)+1, np.ceil(factor)) for factor in factors]
-        data = {col:[] for col in new}
+        shifts = [np.arange(-np.ceil(factor) + 1, np.ceil(factor)) for factor in factors]
+        data = {column: [] for column in new}
+        pad_columns = [column for column in new if column in self._vectors and column not in self._translational_invariants]
         for shift in itertools.product(shifts):
-            tmp = {col: self[col] + self.boxsize*shift for col in replicate}
-            mask = (tmp[position] >= new.boxcenter - new.boxsize/2.) & (tmp[position] <= new.boxcenter + new.boxsize/2.)
+            tmp = {column: self.get(column, return_type='ndarray') + self.boxsize * shift for column in pad_columns}
+            mask = (tmp[position] >= new.boxcenter - new.boxsize / 2.) & (tmp[position] <= new.boxcenter + new.boxsize / 2.)
             mask = np.all(mask, axis=-1)
-            for col in new:
-                if col in self._vectors and col not in self._translational_invariants:
-                    data[col].append(tmp[col][mask])
+            for column in new:
+                if column in tmp:
+                    data[column].append(tmp[column][mask])
                 else:
-                    data[col].append(self[col][mask])
-        for col in new:
-            new[col] = np.concatenate(data[col], axis=0)
+                    data[column].append(self[column][mask])
+        for column in new:
+            new[column] = np.concatenate(data[column], axis=0)
         return new
 
     def isometry_for_cutsky(self, drange, rarange, decrange, external_margin=None, internal_margin=None, noutput=1):
@@ -769,15 +777,15 @@ class BoxCatalog(ParticleCatalog):
             Angular mask (function of RA, Dec) to apply to the shifted catalog.
         """
         if np.ndim(external_margin) == 0:
-            external_margin = [external_margin]*3
+            external_margin = [external_margin] * 3
         if np.ndim(internal_margin) == 0:
-            internal_margin = [internal_margin]*3
+            internal_margin = [internal_margin] * 3
         boxsize, origin_isometry = cutsky_to_box(drange, rarange, decrange, return_isometry=True)
         mask_radial = UniformRadialMask(zrange=drange)
         mask_angular = UniformAngularMask(rarange=rarange, decrange=decrange)
         if noutput == 1:
             em = np.array([0. if m is None else m for m in external_margin])
-            factor = (self.boxsize - 2.*em) / boxsize
+            factor = (self.boxsize - 2. * em) / boxsize
             if not np.all(factor > 1.):
                 raise ValueError('boxsize {} with margin {} is too small for input survey geometry which requires {}'.format(self.boxsize, external_margin, boxsize))
             isometry = EuclideanIsometry()
@@ -790,7 +798,7 @@ class BoxCatalog(ParticleCatalog):
             # boxsize * nboxes + internal_margin * (nboxes - 1) + 2 * external_margin = self.boxsize
             em = external_margin[iaxis] or 0.
             im = internal_margin[iaxis] or 0.
-            nboxes = int((self.boxsize[iaxis] - 2.*em + im)/(boxsize[iaxis] + im))
+            nboxes = int((self.boxsize[iaxis] - 2. * em + im) / (boxsize[iaxis] + im))
             if external_margin[iaxis] is None and internal_margin[iaxis] is None:
                 tm = self.boxsize[iaxis] - boxsize[iaxis] * nboxes
                 em = im = tm / (nboxes + 1.)
@@ -800,13 +808,13 @@ class BoxCatalog(ParticleCatalog):
                 raise ValueError('margins must be > 0')
             if (em > 0.) or (im > 0.):
                 # extend margins to occupy full volume (same rescaling factor assumed for internal and external)
-                rescale_margin = (self.boxsize[iaxis] - boxsize[iaxis] * nboxes)/(im * (nboxes - 1) + 2 * em)
+                rescale_margin = (self.boxsize[iaxis] - boxsize[iaxis] * nboxes) / (im * (nboxes - 1) + 2 * em)
                 assert rescale_margin >= 1.
                 im = rescale_margin * im
                 em = rescale_margin * em
             low = em + (boxsize[iaxis] + im) * np.arange(nboxes)
             high = low + boxsize[iaxis]
-            center = (low + high)/2. - self.boxsize[iaxis]/2. + self.boxcenter[iaxis]
+            center = (low + high) / 2. - self.boxsize[iaxis] / 2. + self.boxcenter[iaxis]
             centers.append(center)
         nmax = np.prod([len(center) for center in centers])
         if noutput is not None and nmax < noutput:
@@ -958,15 +966,15 @@ class RandomBoxCatalog(BoxCatalog):
         kwargs : dict
             Other optional arguments, see :class:`ParticleCatalog`.
         """
-        super(RandomBoxCatalog,self).__init__(data={}, boxsize=boxsize, boxcenter=boxcenter, **kwargs)
+        super(RandomBoxCatalog, self).__init__(data={}, boxsize=boxsize, boxcenter=boxcenter, **kwargs)
         self.attrs['seed'] = seed
 
         if size is None:
-            size = int(nbar*np.prod(self.boxsize) + 0.5)
+            size = int(nbar * np.prod(self.boxsize) + 0.5)
         size = mpi.local_size(size, mpicomm=self.mpicomm)
         rng = MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
 
-        self[self._position] = np.array([rng.uniform(self.boxcenter[i] - self.boxsize[i]/2., self.boxcenter[i] + self.boxsize[i]/2.) for i in range(3)]).T
+        self[self._position] = np.array([rng.uniform(self.boxcenter[i] - self.boxsize[i] / 2., self.boxcenter[i] + self.boxsize[i] / 2.) for i in range(3)]).T
 
 
 class RandomCutskyCatalog(CutskyCatalog):
@@ -974,7 +982,7 @@ class RandomCutskyCatalog(CutskyCatalog):
     """A catalog of random particles, with a cutsky geometry."""
 
     @CurrentMPIComm.enable
-    def __init__(self, rarange=(0.,360.), decrange=(-90.,90.), drange=None, size=None, nbar=None, seed=None, **kwargs):
+    def __init__(self, rarange=(0., 360.), decrange=(-90., 90.), drange=None, size=None, nbar=None, seed=None, **kwargs):
         """
         Initialize :class:`RandomCutskyCatalog`, with a uniform sampling on the sky and as a function of distance.
         Set columns 'RA' (degree), 'DEC' (degree), 'Distance' and ``position``.
@@ -1004,10 +1012,10 @@ class RandomCutskyCatalog(CutskyCatalog):
         kwargs : dict
             Other optional arguments, see :class:`ParticleCatalog`.
         """
-        super(RandomCutskyCatalog,self).__init__(data={}, **kwargs)
+        super(RandomCutskyCatalog, self).__init__(data={}, **kwargs)
         area = utils.radecbox_area(rarange, decrange)
         if size is None:
-            size = int(nbar*area + 0.5)
+            size = int(nbar * area + 0.5)
         self.attrs['seed'] = seed
         self.attrs['area'] = area
 
@@ -1103,7 +1111,7 @@ class MaskCollection(BaseMask, dict):
         for ichunkz, density in self.items():
             mask = chunk == ichunkz
             if mask.any():
-                prob[...,mask] = density.prob(*[arg[...,mask] for arg in args], **kwargs)
+                prob[..., mask] = density.prob(*[arg[..., mask] for arg in args], **kwargs)
         return prob
 
 
@@ -1153,10 +1161,11 @@ class BaseRadialMask(BaseMask):
             Array of sampled redshifts.
         """
         drange = distance(self.zrange)
+
         def sample(size, seed=None):
             rng = MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
             dist = rng.uniform(drange[0], drange[1])
-            prob = dist**2 # jacobian, d^3 r = r^2 dr
+            prob = dist**2  # jacobian, d^3 r = r^2 dr
             prob /= prob.max()
             mask = prob >= rng.uniform(low=0., high=1.)
             z = DistanceToRedshift(distance, zmax=self.zrange[-1] + 0.1)(dist[mask])
@@ -1166,8 +1175,8 @@ class BaseRadialMask(BaseMask):
         z = []
         dsize = size
         while dsize > 0:
-            std = 1./np.sqrt(dsize)
-            newsize = int(dsize*(1. + 3.*std) + 100.)
+            std = 1. / np.sqrt(dsize)
+            newsize = int(dsize * (1. + 3. * std) + 100.)
             seed = mpi.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
             tmpz = sample(newsize, seed=seed)
             dsize -= tmpz.size
@@ -1188,7 +1197,7 @@ class UniformRadialMask(BaseRadialMask):
     def prob(self, z):
         """Uniform probability within :attr:`zrange`."""
         z = np.asarray(z)
-        prob = np.clip(self.nbar, 0., 1.)*np.ones_like(z)
+        prob = np.clip(self.nbar, 0., 1.) * np.ones_like(z)
         mask = (z >= self.zrange[0]) & (z <= self.zrange[-1])
         prob[~mask] = 0.
         return prob
@@ -1234,15 +1243,15 @@ class TabulatedRadialMask(BaseRadialMask):
                 z, nbar = np.loadtxt(filename, unpack=True)
             z = mpi.broadcast_array(z, mpicomm=self.mpicomm, root=self.mpiroot)
             nbar = mpi.broadcast_array(nbar, mpicomm=self.mpicomm, root=self.mpiroot)
-        self.z = mpi.broadcast_array(np.asarray(z), mpicomm=self.mpicomm, root=self.mpiroot)
-        self.nbar = mpi.broadcast_array(np.asarray(nbar), mpicomm=self.mpicomm, root=self.mpiroot)
+        self.z = np.asarray(z)
+        self.nbar = np.asarray(nbar)
         if not np.all(self.nbar >= 0.):
             raise ValueError('Provided nbar should be all positive.')
         zmin, zmax = self.z[0], self.z[-1]
         if zrange is None: zrange = zmin, zmax
         super(TabulatedRadialMask, self).__init__(zrange=zrange, mpicomm=mpicomm)
         if not ((zmin <= self.zrange[0]) & (zmax >= self.zrange[1])):
-            raise ValueError('Redshift range is {:.2f} - {:.2f} but the limiting range is {:.2f} - {:.2f}.'.format(zmin,zmax,self.zrange[0],self.zrange[1]))
+            raise ValueError('Redshift range is {:.2f} - {:.2f} but the limiting range is {:.2f} - {:.2f}.'.format(zmin, zmax, self.zrange[0], self.zrange[1]))
         self.prepare(norm=norm)
 
     def prepare(self, norm=None):
@@ -1255,14 +1264,14 @@ class TabulatedRadialMask(BaseRadialMask):
             Factor to scale :attr:`nbar`.
             Defaults to maximum :attr:`nbar` in redshift range.
         """
-        if norm is None: norm = 1./self.nbar[self.zmask].max(axis=0)
+        if norm is None: norm = 1. / self.nbar[self.zmask].max(axis=0)
         self.norm = norm
         self._set_interp()
         return self.norm
 
     def _set_interp(self):
         # Set :attr:`interp`, the end user does not need to call it
-        prob = np.clip(self.norm*self.nbar, 0., 1.)
+        prob = np.clip(self.norm * self.nbar, 0., 1.)
         self.interp = interpolate.Akima1DInterpolator(self.z, prob, axis=0)
 
     @property
@@ -1314,10 +1323,10 @@ class TabulatedRadialMask(BaseRadialMask):
         if weights is None:
             weights = 1.
             if normalize_weights:
-                weights = weights/self.mpicomm.allreduce(z.size)
+                weights = weights / self.mpicomm.allreduce(z.size)
         elif normalize_weights:
-            weights = weights/mpi.sum_array(weights, mpicomm=mpicomm)
-        return mpi.sum_array(self.prob(z)*weights, mpicomm=self.mpicomm)
+            weights = weights / mpi.sum_array(weights, mpicomm=self.mpicomm)
+        return mpi.sum_array(self.prob(z) * weights, mpicomm=self.mpicomm)
 
     def normalize(self, target, z=None, weights=None, mpiroot=None):
         """
@@ -1349,15 +1358,15 @@ class TabulatedRadialMask(BaseRadialMask):
                 weights = mpi.scatter_array(weights, mpicomm=self.mpicomm, root=mpiroot)
 
         if weights is not None:
-            weights = weights/mpi.sum_array(weights, mpicomm=mpicomm)
+            weights = weights / mpi.sum_array(weights, mpicomm=self.mpicomm)
 
         def normalization(norm):
             self.norm = norm
             self._set_interp()
-            return self.integral(z, weights, normalize_weights=False)/target - 1.
+            return self.integral(z, weights, normalize_weights=False) / target - 1.
 
-        min_ = self.nbar[self.nbar>0.].min()
-        norm = optimize.brentq(normalization, 0., 1/min_) # the lowest point of n(z) is limited by 1.
+        min_ = self.nbar[self.nbar > 0.].min()
+        norm = optimize.brentq(normalization, 0., 1. / min_)  # the lowest point of n(z) is limited by 1.
         norm = self.mpicomm.bcast(norm, root=self.mpiroot)
 
         self.prepare(norm=norm)
@@ -1384,13 +1393,13 @@ class TabulatedRadialMask(BaseRadialMask):
             Defaults to edges falling in the middle of :attr:`z` points.
         """
         if zedges is None:
-            zedges = (self.z[:-1] + self.z[1:])/2.
-            zedges = np.concatenate([[self.z[0]],zedges,[self.z[-1]]], axis=0)
+            zedges = (self.z[:-1] + self.z[1:]) / 2.
+            zedges = np.concatenate([[self.z[0]], zedges, [self.z[-1]]], axis=0)
         dedges = distance_self(zedges)
-        volume_self = dedges[1:]**3-dedges[:-1]**3
+        volume_self = dedges[1:]**3 - dedges[:-1]**3
         dedges = distance_target(zedges)
-        volume_target = dedges[1:]**3-dedges[:-1]**3
-        self.nbar = self.nbar*volume_self/volume_target
+        volume_target = dedges[1:]**3 - dedges[:-1]**3
+        self.nbar = self.nbar * volume_self / volume_target
         self.prepare()
 
 
@@ -1461,16 +1470,16 @@ class BaseAngularMask(BaseMask):
             # if e.g. rarange = (300, 40), we want to generate RA > -60 and RA < 40
             if rarange[0] > rarange[1]: rarange[0] -= 360
             ra = rng.uniform(low=rarange[0], high=rarange[1]) % 360.
-            urange = np.sin(np.asarray(self.decrange)*np.pi/180.)
-            dec = np.arcsin(rng.uniform(low=urange[0], high=urange[1]))/(np.pi/180.)
+            urange = np.sin(np.asarray(self.decrange) * np.pi / 180.)
+            dec = np.arcsin(rng.uniform(low=urange[0], high=urange[1])) / (np.pi / 180.)
             mask = self(ra, dec)
             return ra[mask], dec[mask]
 
         ra, dec = [], []
         dsize = size
         while dsize > 0:
-            std = 1./np.sqrt(dsize)
-            newsize = int(dsize*(1. + 3.*std) + 100.)
+            std = 1. / np.sqrt(dsize)
+            newsize = int(dsize * (1. + 3. * std) + 100.)
             seed = mpi.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
             tmpra, tmpdec = sample(newsize, seed=seed)
             dsize -= tmpra.size
@@ -1492,7 +1501,7 @@ class UniformAngularMask(BaseAngularMask):
     def prob(self, ra, dec):
         """Uniform probability within :attr:`rarange` and :attr:`decrange`."""
         ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
-        prob = np.clip(self.nbar, 0., 1.)*np.ones_like(ra)
+        prob = np.clip(self.nbar, 0., 1.) * np.ones_like(ra)
         mask = self._mask_ranges(ra, dec)
         prob[~mask] = 0
         return prob
@@ -1521,13 +1530,13 @@ class MangleAngularMask(BaseAngularMask):
         """
         if pymangle is None:
             raise ImportError('Install pymangle')
-        super(MangleAngularMask,self).__init__(**kwargs)
+        super(MangleAngularMask, self).__init__(**kwargs)
         if filename is not None:
             if self.is_mpi_root():
                 self.log_info('Loading Mangle geometry file: {}.'.format(filename))
             self.nbar = pymangle.Mangle(filename)
         else:
-            self.nbar = mpi.broadcast_array(np.asarray(nbar), mpicomm=self.mpicomm, root=self.mpiroot)
+            self.nbar = np.asarray(nbar)
 
     def prob(self, ra, dec):
         """
@@ -1580,12 +1589,12 @@ class HealpixAngularMask(BaseAngularMask):
         """
         if healpy is None:
             raise ImportError('Install healpy')
-        super(HealpixAngularMask,self).__init__(**kwargs)
+        super(HealpixAngularMask, self).__init__(**kwargs)
         if filename is not None:
             if self.is_mpi_root():
                 self.log_info('Loading healpy geometry file: {}.'.format(filename))
             nbar = healpy.fitsfunc.read_map(filename, nest=nest, **kwargs)
-        self.nbar = mpi.broadcast_array(np.asarray(nbar), mpicomm=self.mpicomm, root=0)
+        self.nbar = np.asarray(nbar)
         self.nside = healpy.npix2nside(self.nbar.size)
         self.nest = nest
 
@@ -1607,8 +1616,8 @@ class HealpixAngularMask(BaseAngularMask):
             Selection probability.
         """
         ra, dec = utils.wrap_angle(ra, degree=True), np.asarray(dec)
-        theta, phi = (-dec+90.)*np.pi/180., ra*np.pi/180.
-        prob = self.nbar[healpy.ang2pix(self.nside,theta,phi,nest=self.nest,lonlat=False)]
+        theta, phi = (-dec + 90.) * np.pi / 180., ra * np.pi / 180.
+        prob = self.nbar[healpy.ang2pix(self.nside, theta, phi, nest=self.nest, lonlat=False)]
         mask = self._mask_ranges(ra, dec)
         prob[~mask] = 0.
         return prob

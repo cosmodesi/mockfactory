@@ -47,8 +47,8 @@ class EulerianLinearMock(BaseGaussianMock):
             Line of sight :math:`\hat{\eta}` for RSD.
             If ``None``, use local line of sight.
         """
-        # cartesian product faster than harmonic (I guess due to non-trivial Ymls)
-        offset = self.boxcenter - self.boxsize/2. #+ 0.5*self.boxsize / self.nmesh
+        # Cartesian product faster than harmonic (I guess due to non-trivial Ymls)
+        offset = self.boxcenter - self.boxsize / 2.  # + 0.5*self.boxsize / self.nmesh
         disp_deriv_k = self.mesh_delta_k.copy()
         iscallable = callable(f)
 
@@ -59,9 +59,9 @@ class EulerianLinearMock(BaseGaussianMock):
             los = _get_los(los)
             for kslab, slab in zip(disp_deriv_k.slabs.x, disp_deriv_k.slabs):
                 k2 = sum(kk**2 for kk in kslab)
-                k2[k2 == 0.] = 1. # avoid dividing by zero
+                k2[k2 == 0.] = 1.  # avoid dividing by zero
                 k = k2**0.5
-                mu = sum(kk*ll for kk,ll in zip(kslab, los))/k
+                mu = sum(kk * ll for kk, ll in zip(kslab, los)) / k
                 slab[...] *= mu**2
             disp_deriv_k.c2r(out=mesh_delta_r_tot)
             if not iscallable:
@@ -70,27 +70,27 @@ class EulerianLinearMock(BaseGaussianMock):
             # the real-space grid
             mesh_delta_rsd = self.mesh_delta_r.copy()
             for i in range(self.ndim):
-                for j in range(i,self.ndim):
+                for j in range(i, self.ndim):
                     disp_deriv_k[:] = self.mesh_delta_k[:]
                     for kslab, slab in zip(disp_deriv_k.slabs.x, disp_deriv_k.slabs):
                         k2 = sum(kk**2 for kk in kslab)
-                        k2[k2 == 0.] = 1. # avoid dividing by zero
-                        slab[...] *= kslab[i]*kslab[j]/k2
+                        k2[k2 == 0.] = 1.  # avoid dividing by zero
+                        slab[...] *= kslab[i] * kslab[j] / k2
                     disp_deriv_k.c2r(out=mesh_delta_rsd)
-                    for rslab, slab in zip(mesh_delta_rsd.slabs.x,mesh_delta_rsd.slabs):
+                    for rslab, slab in zip(mesh_delta_rsd.slabs.x, mesh_delta_rsd.slabs):
                         # reslab in [0, boxsize]
                         rslab = _transform_rslab(rslab, self.boxsize)
                         rgrid = [r + o for r, o in zip(rslab, offset)]
                         r2 = np.sum(rr**2 for rr in rgrid)
-                        slab[...] *= rgrid[i]*rgrid[j]/r2
+                        slab[...] *= rgrid[i] * rgrid[j] / r2
                     factor = 1. + (i != j)
                     if not iscallable:
                         factor *= f
-                    mesh_delta_r_tot[:] += factor*mesh_delta_rsd[:]
+                    mesh_delta_r_tot[:] += factor * mesh_delta_rsd[:]
         if iscallable:
-            for rslab,slab in zip(mesh_delta_r_tot.slabs.x, mesh_delta_r_tot.slabs):
+            for rslab, slab in zip(mesh_delta_r_tot.slabs.x, mesh_delta_r_tot.slabs):
                 rslab = _transform_rslab(rslab, self.boxsize)
-                rgrid = [r + o for r,o in zip(rslab, offset)]
+                rgrid = [r + o for r, o in zip(rslab, offset)]
                 rnorm = np.sum(rr**2 for rr in rgrid)**0.5
                 slab[...].flat *= f(rnorm.flatten())
 

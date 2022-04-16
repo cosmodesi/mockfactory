@@ -3,11 +3,10 @@ from setuptools import setup
 
 setup(name='mockfactory',
       version='0.0.1',
-      author='Arnaud de Mattia',
+      author='cosmodesi',
       author_email='',
       description='pmesh-based package to produce Gaussian mocks for validation of clustering pipelines',
-      license='GPL3',
-      url='http://github.com/adematti/mockfactory',
-      install_requires=['numpy', 'scipy', 'pmesh'],
-      packages=['mockfactory']
-)
+      license='BSD3',
+      url='http://github.com/cosmodesi/mockfactory',
+      install_requires=['numpy', 'scipy', 'pmesh', 'mpytools'],
+      packages=['mockfactory'])

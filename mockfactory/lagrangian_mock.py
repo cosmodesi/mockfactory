@@ -1,7 +1,3 @@
-import logging
-
-import numpy as np
-
 from .gaussian_mock import BaseGaussianMock, _get_los
 from . import utils
 
@@ -58,15 +54,15 @@ class LagrangianLinearMock(BaseGaussianMock):
         disp_k = [self.pm.create(type='untransposedcomplex') for i in range(self.ndim)]
         slabs = [self.mesh_delta_k.slabs.x, self.mesh_delta_k.slabs] + [d.slabs for d in disp_k]
         for islabs in zip(*slabs):
-            kslab, delta_slab = islabs[:2] # the k arrays and delta slab
+            kslab, delta_slab = islabs[:2]  # the k arrays and delta slab
             # the square of the norm of k on the mesh
             k2 = sum(kk**2 for kk in kslab)
             mask_zero = k2 == 0.
-            k2[mask_zero] = 1. # avoid dividing by zero
+            k2[mask_zero] = 1.  # avoid dividing by zero
             for i in range(self.ndim):
-                disp_slab = islabs[2+i]
+                disp_slab = islabs[2 + i]
                 disp_slab[...] = 1j * kslab[i] / k2 * delta_slab[...]
-                #disp_slab[mask_zero] = 0. # no bulk displacement
+                # disp_slab[mask_zero] = 0.  # no bulk displacement
         self.mesh_disp_r = [d.c2r() for d in disp_k]
 
     def readout(self, positions, field='delta', resampler='nnb', compensate=False):
@@ -102,7 +98,6 @@ class LagrangianLinearMock(BaseGaussianMock):
 
         return super(LagrangianLinearMock, self).readout(positions, field, resampler=resampler)
 
-
     def poisson_sample(self, seed=None, resampler='cic', compensate=False):
         """
         Poisson sample density field and set :attr:`position` and :attr:`disp`,
@@ -126,8 +121,8 @@ class LagrangianLinearMock(BaseGaussianMock):
         """
         super(LagrangianLinearMock, self).poisson_sample(seed=seed)
         self.disps = self.position.copy()
-        for i,mesh_disp_r in enumerate(self.mesh_disp_r):
-            self.disps[:,i] = self.readout(self.position, field=mesh_disp_r, resampler=resampler, compensate=compensate)
+        for iaxis, mesh_disp_r in enumerate(self.mesh_disp_r):
+            self.disps[:, iaxis] = self.readout(self.position, field=mesh_disp_r, resampler=resampler, compensate=compensate)
         self.position += self.disps
 
     def set_rsd(self, f, los=None):
@@ -150,7 +145,7 @@ class LagrangianLinearMock(BaseGaussianMock):
             If ``None``, use local line of sight.
         """
         if los is None:
-            los = self.position/utils.distance(self.position)[:,None]
+            los = self.position / utils.distance(self.position)[:, None]
         else:
             los = _get_los(los)
         rsd = utils.vector_projection(self.disps, los)
@@ -161,18 +156,6 @@ class LagrangianLinearMock(BaseGaussianMock):
             rsd *= f
         self.position += rsd
 
-    def to_nbodykit_catalog(self):
-        """
-        Export as :class:`nbodykit.source.catalog.ArrayCatalog`.
-
-        Note
-        ----
-        :meth:`poisson_sample` and optionally :meth:`set_rsd` must be called first.
-        """
-        source = {'Position':self.position, 'Displacement':self.disps}
-        from nbodykit.source.catalog import ArrayCatalog
-        return ArrayCatalog(source, **self.attrs)
-
     def to_catalog(self):
         """
         Export as :class:`make_survey.BoxCatalog`.
@@ -181,6 +164,6 @@ class LagrangianLinearMock(BaseGaussianMock):
         ----
         :meth:`poisson_sample` must be called first.
         """
-        source = {'Position':self.position, 'Displacement':self.disps}
+        source = {'Position': self.position, 'Displacement': self.disps}
         from .make_survey import BoxCatalog
         return BoxCatalog(source, position='Position', velocity='Displacement', boxsize=self.boxsize, boxcenter=self.boxcenter, attrs=self.attrs)

@@ -1,18 +1,17 @@
 import numpy as np
 from matplotlib import pyplot as plt
-
 from cosmoprimo.fiducial import DESI
-from mockfactory import EulerianLinearMock, setup_logging
-from mockfactory.make_survey import RandomBoxCatalog
-from pycorr import TwoPointCorrelationFunction, project_to_multipoles
+from pycorr import TwoPointCorrelationFunction
+
+from mockfactory import EulerianLinearMock, RandomBoxCatalog, setup_logging
 
 
-def kaiser_corr(s, pklin, bias, f):
-    beta = f/bias
+def kaiser_correlation(s, pklin, bias, f):
+    beta = f / bias
     toret = []
-    toret.append(bias**2*(1. + 2./3.*beta + 1./5.*beta**2)*pklin.to_xi(fftlog_kwargs={'ell':0})(s))
-    toret.append(bias**2*(4./3.*beta + 4./7.*beta**2)*pklin.to_xi(fftlog_kwargs={'ell':2})(s))
-    toret.append(bias**2*8./35*beta**2*pklin.to_xi(fftlog_kwargs={'ell':4})(s))
+    toret.append(bias**2 * (1. + 2. / 3. * beta + 1. / 5. * beta**2) * pklin.to_xi(fftlog_kwargs={'ell': 0})(s))
+    toret.append(bias**2 * (4. / 3. * beta + 4. / 7. * beta**2) * pklin.to_xi(fftlog_kwargs={'ell': 2})(s))
+    toret.append(bias**2 * 8. / 35 * beta**2 * pklin.to_xi(fftlog_kwargs={'ell': 4})(s))
     return np.array(toret)
 
 
@@ -38,12 +37,12 @@ def main():
     result = TwoPointCorrelationFunction('smu', edges, data_positions1=data['Position'], data_weights1=data['Weight'],
                                          engine='corrfunc', los=los, boxsize=boxsize, position_type='pos', mpicomm=data.mpicomm, nthreads=4)
     ells = (0, 2, 4)
-    s, xiell = project_to_multipoles(result, ells=ells)
-    theory = kaiser_corr(s, pklin, bias, f)
+    s, xiell = result(ells=ells, return_sep=True)
+    theory = kaiser_correlation(s, pklin, bias, f)
     ax = plt.gca()
     for ill, ell in enumerate(ells):
-        ax.plot(s, s**2*xiell[ill], color='C{:d}'.format(ill), label='$\ell = {:d}$'.format(ell))
-        ax.plot(s, s**2*theory[ill], linestyle='--', color='C{:d}'.format(ill))
+        ax.plot(s, s**2 * xiell[ill], color='C{:d}'.format(ill), label=r'$\ell = {:d}$'.format(ell))
+        ax.plot(s, s**2 * theory[ill], linestyle='--', color='C{:d}'.format(ill))
     ax.legend()
     ax.grid(True)
     ax.set_xlabel(r'$s$')
