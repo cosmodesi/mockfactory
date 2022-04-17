@@ -7,7 +7,8 @@ import itertools
 import numpy as np
 from scipy import interpolate, optimize
 
-from mpytools import CurrentMPIComm, MPIRandomState, MPIScatteredArray, Catalog, mpi
+import mpytools as mpy
+from mpytools import CurrentMPIComm, Catalog
 
 from . import utils
 from .utils import BaseClass
@@ -404,17 +405,17 @@ class RedshiftDensityInterpolator(BaseClass):
 
         if mpiroot is not None:
             if not self.mpicomm.bcast(z is None, root=mpiroot):
-                z = mpi.scatter_array(z, mpicomm=self.mpicomm, root=mpiroot)
+                z = mpy.scatter(z, mpicomm=self.mpicomm, mpiroot=mpiroot)
             if not self.mpicomm.bcast(weights is None, root=mpiroot):
-                weights = mpi.scatter_array(weights, mpicomm=self.mpicomm, root=mpiroot)
+                weights = mpy.scatter(weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
 
         def zrange(z):
-            return mpi.min_array(z, mpicomm=self.mpicomm), mpi.max_array(z, mpicomm=self.mpicomm)
+            return mpy.cmin(z, mpicomm=self.mpicomm), mpy.cmax(z, mpicomm=self.mpicomm)
 
         if bins is None or isinstance(bins, str) and bins == 'scott':
             # Scott's rule
-            size = mpi.size_array(z)
-            sigma = np.sqrt(mpi.var_array(z, aweights=weights, ddof=1, mpicomm=self.mpicomm))
+            size = mpy.csize(z)
+            sigma = np.sqrt(mpy.cvar(z, aweights=weights, ddof=1, mpicomm=self.mpicomm))
             dx = sigma * (24. * np.sqrt(np.pi) / size) ** (1. / 3)
             minval, maxval = zrange(z)
             nbins = np.ceil((maxval - minval) * 1. / dx)
@@ -425,7 +426,7 @@ class RedshiftDensityInterpolator(BaseClass):
             bins = np.linspace(*zrange(z), num=bins + 1, endpoint=True)
 
         counts = np.histogram(z, weights=weights, bins=bins)[0]
-        counts = mpi.reduce_array(counts, op='sum', mpicomm=self.mpicomm, root=Ellipsis)
+        counts = mpy.reduce(counts, op='sum', mpicomm=self.mpicomm, mpiroot=Ellipsis)
 
         if radial_distance is not None:
             dbins = radial_distance(bins)
@@ -971,8 +972,8 @@ class RandomBoxCatalog(BoxCatalog):
 
         if size is None:
             size = int(nbar * np.prod(self.boxsize) + 0.5)
-        size = mpi.local_size(size, mpicomm=self.mpicomm)
-        rng = MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
+        size = mpy.core.local_size(size, mpicomm=self.mpicomm)
+        rng = mpy.random.MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
 
         self[self._position] = np.array([rng.uniform(self.boxcenter[i] - self.boxsize[i] / 2., self.boxcenter[i] + self.boxsize[i] / 2.) for i in range(3)]).T
 
@@ -1019,9 +1020,9 @@ class RandomCutskyCatalog(CutskyCatalog):
         self.attrs['seed'] = seed
         self.attrs['area'] = area
 
-        size = mpi.local_size(size, mpicomm=self.mpicomm)
+        size = mpy.core.local_size(size, mpicomm=self.mpicomm)
 
-        seed1, seed2 = mpi.bcast_seed(seed=seed, size=2, mpicomm=self.mpicomm)
+        seed1, seed2 = mpy.random.bcast_seed(seed=seed, size=2, mpicomm=self.mpicomm)
         mask = UniformAngularMask(rarange=rarange, decrange=decrange, mpicomm=self.mpicomm)
         self['RA'], self['DEC'] = mask.sample(size, seed=seed1)
         if drange is None:
@@ -1077,7 +1078,7 @@ class BaseMask(BaseClass):
             Optional arguments for :meth:`prob`.
         """
         prob = self.prob(*args, **kwargs)
-        rng = MPIRandomState(size=prob.size, seed=seed, mpicomm=self.mpicomm)
+        rng = mpy.random.MPIRandomState(size=prob.size, seed=seed, mpicomm=self.mpicomm)
         return prob >= rng.uniform(low=0., high=1.)
 
 
@@ -1163,7 +1164,7 @@ class BaseRadialMask(BaseMask):
         drange = distance(self.zrange)
 
         def sample(size, seed=None):
-            rng = MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
+            rng = mpy.random.MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
             dist = rng.uniform(drange[0], drange[1])
             prob = dist**2  # jacobian, d^3 r = r^2 dr
             prob /= prob.max()
@@ -1177,7 +1178,7 @@ class BaseRadialMask(BaseMask):
         while dsize > 0:
             std = 1. / np.sqrt(dsize)
             newsize = int(dsize * (1. + 3. * std) + 100.)
-            seed = mpi.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
+            seed = mpy.random.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
             tmpz = sample(newsize, seed=seed)
             dsize -= tmpz.size
             z.append(tmpz)
@@ -1241,8 +1242,8 @@ class TabulatedRadialMask(BaseRadialMask):
             if self.is_mpi_root():
                 self.log_info('Loading density file: {}.'.format(filename))
                 z, nbar = np.loadtxt(filename, unpack=True)
-            z = mpi.broadcast_array(z, mpicomm=self.mpicomm, root=self.mpiroot)
-            nbar = mpi.broadcast_array(nbar, mpicomm=self.mpicomm, root=self.mpiroot)
+            z = mpy.bcast(z, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
+            nbar = mpy.bcast(nbar, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
         self.z = np.asarray(z)
         self.nbar = np.asarray(nbar)
         if not np.all(self.nbar >= 0.):
@@ -1313,9 +1314,9 @@ class TabulatedRadialMask(BaseRadialMask):
         """
         if mpiroot is not None:
             if not self.mpicomm.bcast(z is None, root=mpiroot):
-                z = mpi.scatter_array(z, mpicomm=self.mpicomm, root=mpiroot)
+                z = mpy.scatter(z, mpicomm=self.mpicomm, mpiroot=mpiroot)
             if not self.mpicomm.bcast(weights is None, root=mpiroot):
-                weights = mpi.scatter_array(weights, mpicomm=self.mpicomm, root=mpiroot)
+                weights = mpy.scatter(weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
         if z is None and weights is None:
             return self.interp.integrate(self.zrange[0], self.zrange[1])
         if weights is not None and z is None:
@@ -1325,8 +1326,8 @@ class TabulatedRadialMask(BaseRadialMask):
             if normalize_weights:
                 weights = weights / self.mpicomm.allreduce(z.size)
         elif normalize_weights:
-            weights = weights / mpi.sum_array(weights, mpicomm=self.mpicomm)
-        return mpi.sum_array(self.prob(z) * weights, mpicomm=self.mpicomm)
+            weights = weights / mpy.csum(weights, mpicomm=self.mpicomm)
+        return mpy.csum(self.prob(z) * weights, mpicomm=self.mpicomm)
 
     def normalize(self, target, z=None, weights=None, mpiroot=None):
         """
@@ -1353,12 +1354,12 @@ class TabulatedRadialMask(BaseRadialMask):
 
         if mpiroot is not None:
             if not self.mpicomm.bcast(z is None, root=mpiroot):
-                z = mpi.scatter_array(z, mpicomm=self.mpicomm, root=mpiroot)
+                z = mpy.scatter(z, mpicomm=self.mpicomm, mpiroot=mpiroot)
             if not self.mpicomm.bcast(weights is None, root=mpiroot):
-                weights = mpi.scatter_array(weights, mpicomm=self.mpicomm, root=mpiroot)
+                weights = mpy.scatter(weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
 
         if weights is not None:
-            weights = weights / mpi.sum_array(weights, mpicomm=self.mpicomm)
+            weights = weights / mpy.csum(weights, mpicomm=self.mpicomm)
 
         def normalization(norm):
             self.norm = norm
@@ -1465,7 +1466,7 @@ class BaseAngularMask(BaseMask):
             Array of sampled RA, Dec.
         """
         def sample(size, seed=None):
-            rng = MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
+            rng = mpy.random.MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
             rarange = list(self.rarange)
             # if e.g. rarange = (300, 40), we want to generate RA > -60 and RA < 40
             if rarange[0] > rarange[1]: rarange[0] -= 360
@@ -1480,7 +1481,7 @@ class BaseAngularMask(BaseMask):
         while dsize > 0:
             std = 1. / np.sqrt(dsize)
             newsize = int(dsize * (1. + 3. * std) + 100.)
-            seed = mpi.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
+            seed = mpy.random.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
             tmpra, tmpdec = sample(newsize, seed=seed)
             dsize -= tmpra.size
             ra.append(tmpra)

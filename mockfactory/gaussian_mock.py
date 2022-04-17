@@ -1,6 +1,7 @@
 import numpy as np
 
-from mpytools import mpi, MPIRandomState, CurrentMPIComm
+import mpytools as mpy
+from mpytools import CurrentMPIComm
 
 from .utils import BaseClass
 from . import utils
@@ -153,7 +154,7 @@ class BaseGaussianMock(BaseClass):
         self.mpicomm = mpicomm
         self.mpiroot = 0
         # set the seed randomly if it is None
-        if seed is None: seed = mpi.bcast_seed(size=None)
+        if seed is None: seed = mpy.random.bcast_seed(size=None)
         self.attrs = {}
         self.attrs['seed'] = seed
         self.attrs['unitary_amplitude'] = unitary_amplitude
@@ -337,7 +338,7 @@ class BaseGaussianMock(BaseClass):
         seed : int, default=None
             The global random seed, used to set the seeds across all ranks.
         """
-        if seed is None: seed = mpi.bcast_seed(size=None)
+        if seed is None: seed = mpy.random.bcast_seed(size=None)
         noise = self.pm.generate_whitenoise(seed, type='real')
         # noise has amplitude of 1
         # multiply by expected density
@@ -415,14 +416,14 @@ class BaseGaussianMock(BaseClass):
             Random seed.
         """
         import mpsort
-        seed1, seed2 = mpi.bcast_seed(seed=seed, size=2, mpicomm=self.mpicomm)
+        seed1, seed2 = mpy.random.bcast_seed(seed=seed, size=2, mpicomm=self.mpicomm)
         # mean number of objects per cell
         cellsize = self.boxsize / self.nmesh
         dv = np.prod(cellsize)
         # number of objects in each cell (per rank, as a RealField)
         cellmean = (1. + self.mesh_delta_r) * self.nbar * dv
         # create a random state with the input seed
-        rng = MPIRandomState(size=self.mesh_delta_r.size, seed=seed1, mpicomm=self.mpicomm)
+        rng = mpy.random.MPIRandomState(size=self.mesh_delta_r.size, seed=seed1, mpicomm=self.mpicomm)
         # generate poissons. Note that we use ravel/unravel to
         # maintain MPI invariance.
         number_ravel = rng.poisson(lam=cellmean.ravel())
@@ -449,7 +450,7 @@ class BaseGaussianMock(BaseClass):
 
         positions = mpsort.sort(positions, orderby=ids, comm=self.mpicomm)
 
-        rng_shift = MPIRandomState(size=len(positions), seed=seed2, mpicomm=self.mpicomm)
+        rng_shift = mpy.random.MPIRandomState(size=len(positions), seed=seed2, mpicomm=self.mpicomm)
         in_cell_shift = np.array([rng_shift.uniform(0, c) for c in cellsize]).T
 
         positions[...] += in_cell_shift
