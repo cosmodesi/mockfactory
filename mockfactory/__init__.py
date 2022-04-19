@@ -1,3 +1,4 @@
+from ._version import __version__
 from .eulerian_mock import EulerianLinearMock
 from .lagrangian_mock import LagrangianLinearMock
 from .make_survey import (EuclideanIsometry, DistanceToRedshift, RedshiftDensityInterpolator,
