@@ -43,7 +43,7 @@ def main():
     theory = kaiser_power(kth, pklin, bias, f)
     ax = plt.gca()
     for ill, ell in enumerate(ells):
-        ax.plot(poles.k, poles.k * poles(ell=ell, complex=True), color='C{:d}'.format(ill), label=r'$\ell = {:d}$'.format(ell))
+        ax.plot(poles.k, poles.k * poles(ell=ell, complex=False), color='C{:d}'.format(ill), label=r'$\ell = {:d}$'.format(ell))
         ax.plot(kth, kth * theory[ill], linestyle='--', color='C{:d}'.format(ill))
     ax.legend()
     ax.grid(True)

@@ -12,14 +12,14 @@ from mockfactory import LagrangianLinearMock, utils, setup_logging
 # power is the callable power spectrum as a function of k
 mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, unitary_amplitude=False)
 # This is Lagrangian bias, Eulerian bias - 1
-mock.set_real_delta_field(bias=bias-1)
+mock.set_real_delta_field(bias=bias - 1)
 mock.set_analytic_selection_function(nbar=nbar)
 mock.poisson_sample(seed=43)
 data = mock.to_catalog()
 
 # We've got data, now turn to randoms
 from mockfactory.make_survey import RandomBoxCatalog
-randoms = RandomBoxCatalog(nbar=10.*nbar, boxsize=boxsize)
+randoms = RandomBoxCatalog(nbar=10. * nbar, boxsize=boxsize)
 
 # Apply cutsky geometry
 randoms = randoms.cutsky(drange=drange, rarange=rarange, decrange=decrange)
@@ -66,6 +66,7 @@ remapped_randoms = randoms.remap(*basis)
 ```
 
 Example notebooks are provided in directory nb/.
+Example scripts are provided in directory mockfactory/tests/scripts.
 
 ## Requirements
 
