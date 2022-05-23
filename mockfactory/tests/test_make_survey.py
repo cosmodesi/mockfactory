@@ -138,6 +138,8 @@ def test_isometry():
 
 def test_cutsky():
 
+    drange, rarange, decrange = box_to_cutsky(boxsize=1000., dmax=500.)
+    assert np.allclose([drange, rarange, decrange], [(0., 500.)] + [(-180., 180.)] * 2)
     drange = [2200., 2300.]; rarange = [0., 50.]; decrange = [-1., 5.]
     boxsize = cutsky_to_box(drange=drange, rarange=rarange, decrange=decrange, return_isometry=False)
     drange2, rarange2, decrange2 = box_to_cutsky(boxsize=boxsize, dmax=drange[-1])
@@ -253,7 +255,6 @@ def test_redshift_density():
     assert np.all((density.z >= z.min()) & (density.z <= z.max() + density.z[-1] - density.z[-2]))
 
 
-
 def test_rotation_matrix():
 
     def norm(v):
@@ -270,8 +271,8 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    #test_remap()
-    #test_isometry()
+    # test_remap()
+    # test_isometry()
 
     test_randoms()
     test_cutsky()

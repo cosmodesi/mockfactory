@@ -10,11 +10,11 @@ from mockfactory import EulerianLinearMock, LagrangianLinearMock, RandomBoxCatal
 seed = 42
 boxsize = 500 * np.ones(3, dtype='f8')
 los = np.array([0, 0, 1], dtype='f8')
-nmesh = 100 * np.ones(3, dtype='i8')
+nmesh = 150 * np.ones(3, dtype='i8')
 boxcenter = 40000. * los
 ells = (0, 2)
 f = 0.8
-bias = 2.0
+bias = 2.
 nbar = 4e-3
 z = 1.
 power = DESI().get_fourier().pk_interpolator().to_1d(z=z)
@@ -145,6 +145,8 @@ def test_eulerian():
 
 def test_lagrangian():
 
+    los = None
+    boxcenter = [1000., 0., 0.]
     mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
     mock.set_real_delta_field(bias=bias - 1.)
     mock.set_analytic_selection_function(nbar=nbar)
@@ -154,15 +156,16 @@ def test_lagrangian():
 
     mock.set_analytic_selection_function(nbar=nbar_callable, interlacing=True)
     mock.poisson_sample(seed=seed, resampler='cic', compensate=True)
-    # mock.set_rsd(f=f, los=los)
-    mock.set_rsd(f=f)
+    data = mock.to_catalog()
+    mock.set_rsd(f=f, los=los)
+    # mock.set_rsd(f=f)
     data = mock.to_catalog()
     randoms = RandomBoxCatalog(nbar=nbar, boxsize=boxsize, boxcenter=mock.boxcenter, seed=seed + 1)
 
     result = CatalogFFTPower(data_positions1=data['Position'], randoms_positions1=randoms['Position'], ells=ells, edges={'step': 0.01},
-                             boxsize=1000, nmesh=100, resampler='tsc', interlacing=2, position_type='pos', mpicomm=data.mpicomm)
-    # plot_power_spectrum(result, model=kaiser)
-    plot_power_spectrum(result.poles, model=lambda k: [bias**2 * power(k)] * 3)
+                             boxsize=1000, nmesh=100, resampler='tsc', interlacing=2, los=los, position_type='pos', mpicomm=data.mpicomm)
+    plot_power_spectrum(result.poles, model=kaiser)
+    # plot_power_spectrum(result.poles, model=lambda k: [bias**2 * power(k)] * 3)
 
     from nbodykit.lab import LogNormalCatalog, FKPCatalog, ConvolvedFFTPower
     from nbodykit import cosmology
@@ -172,7 +175,7 @@ def test_lagrangian():
     data['Displacement'] = data['VelocityOffset'] / fref
     data['Position'] += mock.boxcenter - mock.boxsize / 2.
     # data['Position'] -= data['Displacement']
-    data['Position'] += f * utils.vector_projection(data['Displacement'], los)
+    data['Position'] += f * utils.vector_projection(data['Displacement'], data['Position'].compute() if los is None else result.poles.attrs['los'])
     randoms = randoms.to_nbodykit()
     for catalog in [data, randoms]:
         catalog['NZ'] = np.ones(catalog.size, dtype='f8') * nbar
@@ -237,6 +240,6 @@ if __name__ == '__main__':
     setup_logging()
     # test_pm()
     # test_readout()
-    test_eulerian()
+    # test_eulerian()
     test_lagrangian()
-    test_mpi()
+    # test_mpi()

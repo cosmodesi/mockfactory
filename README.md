@@ -93,11 +93,11 @@ First:
 ```
 git clone https://github.com/cosmodesi/mockfactory.git
 ```
-To install the code::
+To install the code:
 ```
 python setup.py install --user
 ```
-Or in development mode (any change to Python code will take place immediately)::
+Or in development mode (any change to Python code will take place immediately):
 ```
 python setup.py develop --user
 ```

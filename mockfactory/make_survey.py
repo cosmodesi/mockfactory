@@ -18,10 +18,10 @@ def rotation_matrix_from_vectors(a, b):
     """
     Return rotation matrix transforming 3D vector ``a`` to 3D vector ``b``.
 
-    >>> a = np.array([0.,1.,2.])
-    >>> b = np.array([0.,2.,1.])
+    >>> a = np.array([0., 1., 2.])
+    >>> b = np.array([0., 2., 1.])
     >>> rot = rotation_matrix_from_vectors(a, b):
-    >>> assert np.allclose(rot.dot(a),b)
+    >>> assert np.allclose(rot.dot(a), b)
     """
     a = np.asarray(a)
     b = np.asarray(b)
@@ -254,9 +254,11 @@ def box_to_cutsky(boxsize, dmax):
         Dec range.
     """
     boxsize = _make_array(boxsize, 3)
-    deltara = np.arcsin(boxsize[1] / 2. / dmax)
-    deltadec = np.arcsin(boxsize[2] / 2. / dmax)
-    dmin = (dmax - boxsize[0]) / min(np.cos(deltara), np.cos(deltadec))
+    # if dmax is smaller than boxsize / 2, we have full sky coverage
+    deltara, deltadec = (np.arcsin(dyz) if dyz < 1. else np.pi for dyz in boxsize[1:] / 2. / dmax)
+    dx = dmax - boxsize[0]
+    # if dmax is smaller than boxsize, dmin is 0
+    dmin = dx / min(np.cos(deltara), np.cos(deltadec)) if dx > 0. else 0.
     deltara *= 180. / np.pi
     deltadec *= 180. / np.pi
     return (dmin, dmax), (-deltara, deltara), (-deltadec, deltadec)
@@ -505,6 +507,16 @@ class ParticleCatalog(Catalog):
     def velocity(self):
         """Velocities."""
         return self[self._velocity]
+
+    @position.setter
+    def position(self, position):
+        """Cartesian positions."""
+        self[self._position] = position
+
+    @velocity.setter
+    def velocity(self, velocity):
+        """Velocities."""
+        self[self._velocity] = velocity
 
     def distance(self):
         """Distance."""
@@ -787,7 +799,8 @@ class BoxCatalog(ParticleCatalog):
         if noutput == 1:
             em = np.array([0. if m is None else m for m in external_margin])
             factor = (self.boxsize - 2. * em) / boxsize
-            if not np.all(factor > 1.):
+            if not np.all(factor >= 1.):
+                print(factor)
                 raise ValueError('boxsize {} with margin {} is too small for input survey geometry which requires {}'.format(self.boxsize, external_margin, boxsize))
             isometry = EuclideanIsometry()
             isometry.translation(-self.boxcenter)

@@ -20,10 +20,11 @@ def main():
     boxsize = 500
     boxcenter = 0
     seed = 42
-    f = 0.8
-    bias = 2.
+    f = 0.9
+    bias = 1.7
+    z = 1.1
     los = 'x'
-    pklin = DESI().get_fourier().pk_interpolator().to_1d(z=1)
+    pklin = DESI().get_fourier().pk_interpolator().to_1d(z=z)
 
     # unitary_amplitude forces amplitude to 1
     mock = EulerianLinearMock(pklin, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
