@@ -1,8 +1,11 @@
+import os
+import tempfile
+
 import numpy as np
 
 from mockfactory.remap import Cuboid
 from mockfactory.make_survey import (EuclideanIsometry, DistanceToRedshift, RedshiftDensityInterpolator,
-                                     RandomBoxCatalog, RandomCutskyCatalog,
+                                     BoxCatalog, RandomBoxCatalog, RandomCutskyCatalog,
                                      rotation_matrix_from_vectors, cutsky_to_box, box_to_cutsky,
                                      MaskCollection, UniformRadialMask, TabulatedRadialMask,
                                      UniformAngularMask, HealpixAngularMask)
@@ -62,8 +65,9 @@ def test_remap():
 
 
 def test_randoms():
-    """
     catalog = RandomBoxCatalog(size=1000, boxsize=10., boxcenter=3., attrs={'name': 'randoms'})
+    test = BoxCatalog(data=catalog, columns=catalog.columns(), boxsize=catalog.boxsize)
+    assert np.allclose(test['Position'], catalog['Position'])
     position = catalog.position
     name = catalog.attrs['name']
     assert name == 'randoms'
@@ -82,7 +86,7 @@ def test_randoms():
     for col in ref:
         assert np.allclose(test[col], ref[col])
     assert np.all(test.position >= test.boxcenter - test.boxsize / 2.) & np.all(test.position <= test.boxcenter + test.boxsize / 2.)
-    """
+
     rarange, decrange = [0., 30.], [-10., 10.]
     catalog = RandomCutskyCatalog(size=1000, rarange=rarange, decrange=decrange)
     assert np.all((catalog['RA'] >= rarange[0]) & (catalog['RA'] <= rarange[1]))
@@ -96,6 +100,17 @@ def test_randoms():
     assert np.all((catalog['DEC'] >= decrange[0]) & (catalog['DEC'] <= decrange[1]))
     assert np.all((catalog['Distance'] >= drange[0]) & (catalog['Distance'] <= drange[1]))
     assert catalog.csize == 1000
+
+
+def test_io():
+
+    catalog = RandomBoxCatalog(size=1000, boxsize=10., boxcenter=3.)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir = '_tests'
+        fn = os.path.join(tmp_dir, 'tmp.bigfile')
+        catalog.write(fn)
+        catalog = BoxCatalog.read(fn, boxsize=1.)
+        assert np.allclose(catalog.boxsize, 1.)
 
 
 def test_isometry():
@@ -177,7 +192,7 @@ def test_masks():
     assert np.all(mask == (z >= zrange[0]) & (z <= zrange[1]))
     z = selection.sample(10, distance=lambda z: z)
     assert np.all((z >= zrange[0]) & (z <= zrange[1]))
-    #assert np.allclose(selection.integral(), 1.)
+    # assert np.allclose(selection.integral(), 1.)
 
     z = np.linspace(0.5, 1.5, 100)
     nbar = np.ones_like(z)
@@ -273,8 +288,8 @@ if __name__ == '__main__':
 
     # test_remap()
     # test_isometry()
-
     test_randoms()
+    test_io()
     test_cutsky()
     test_masks()
     test_redshift_array()

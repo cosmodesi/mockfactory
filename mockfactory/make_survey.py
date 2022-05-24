@@ -447,6 +447,7 @@ class RedshiftDensityInterpolator(BaseClass):
 class ParticleCatalog(Catalog):
 
     _attrs = Catalog._attrs + ['_position', '_velocity', '_vectors', '_translational_invariants']
+    _init_kwargs = ['position', 'velocity', 'vectors', 'translational_invariants']
 
     """A catalog of particles, with 'Position' and 'Velocity'."""
 
@@ -570,6 +571,7 @@ class CutskyCatalog(ParticleCatalog):
 class BoxCatalog(ParticleCatalog):
 
     _attrs = ParticleCatalog._attrs + ['_boxsize', '_boxcenter']
+    _init_kwargs = ParticleCatalog._init_kwargs + ['boxsize', 'boxcenter']
 
     """A catalog of particles, with a box geometry."""
 
@@ -598,7 +600,9 @@ class BoxCatalog(ParticleCatalog):
         """
         super(BoxCatalog, self).__init__(data=data, columns=columns, **kwargs)
         if boxsize is None:
-            boxsize = self.attrs['boxsize']
+            boxsize = self.attrs.get('boxsize', None)
+        if boxsize is None:
+            raise ValueError('Provide boxsize')
         if boxcenter is None:
             boxcenter = self.attrs.get('boxcenter', 0.)
         self._boxsize = _make_array(boxsize, 3)
