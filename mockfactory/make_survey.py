@@ -116,7 +116,7 @@ class EuclideanIsometry(BaseClass):
 
         axis : int, string, default=None
             Axis number, or 'x' (0), 'y' (1) or 'z' (2),
-            or ``None``, in which case ``angle`` is broadcast to all axes.
+            or ``None``, in which case ``angle`` is applied to all axes.
 
         degree : bool, default=True
             Whether input ``angle`` is in degree.
@@ -125,7 +125,7 @@ class EuclideanIsometry(BaseClass):
             Either 'origin', in which case rotation is w.r.t. origin :math:`(0,0,0)`,
             or 'current', in which case rotation is w.r.t. current position.
         """
-        if degree: angle *= np.pi / 180.
+        if degree: angle = angle * np.pi / 180.
         if axis is not None:
             axis = self._get_axis(axis)
             angle = [angle if ax == axis else 0. for ax in range(3)]
@@ -154,7 +154,7 @@ class EuclideanIsometry(BaseClass):
 
         axis : int, string, default=None
             Axis number, or 'x' (0), 'y' (1) or 'z' (2),
-            or ``None``, in which case ``shift`` is broadcast to all axes.
+            or ``None``, in which case ``shift`` is applied to all axes.
 
         frame : string, default='origin'
             Either 'origin', in which case translation is w.r.t. origin frame.
@@ -203,11 +203,6 @@ class EuclideanIsometry(BaseClass):
             # new._translation += other._translation
         return new
 
-    def append(self, other):
-        """Append ``other`` to current isometry."""
-        new = self.concatenate(self, other)
-        self.__dict__.update(new.__dict__)
-
     def extend(self, other):
         """Add ``other`` to current isometry."""
         new = self.concatenate(self, other)
@@ -229,7 +224,7 @@ class EuclideanIsometry(BaseClass):
         return self.concatenate(self, other)
 
 
-def box_to_cutsky(boxsize, dmax):
+def box_to_cutsky(boxsize, dmax, dmin=0.):
     r"""
     Given input box size ``boxsize``, and maximum distance to the observer desired ``dmax``,
     return the maximum distance, RA, Dec ranges.
@@ -241,6 +236,9 @@ def box_to_cutsky(boxsize, dmax):
 
     dmax : float
         Maximum distance to the observer.
+
+    dmin : float, default=0.
+        Minimum distance to the observer; only used when ``boxsize[0] < dmax < boxsize[1:] / 2.``
 
     Returns
     -------
@@ -254,14 +252,27 @@ def box_to_cutsky(boxsize, dmax):
         Dec range.
     """
     boxsize = _make_array(boxsize, 3)
-    # if dmax is smaller than boxsize / 2, we have full sky coverage
-    deltara, deltadec = (np.arcsin(dyz) if dyz < 1. else np.pi for dyz in boxsize[1:] / 2. / dmax)
+    deltaradec = []
     dx = dmax - boxsize[0]
+    for dyz in boxsize[1:] / 2. / dmax:
+        if dyz < 1.:  # Intersection of dmax sphere with the side planes
+            deltaradec.append(np.arcsin(dyz))
+            continue
+        # Intersection of dmax sphere with the front plane
+        if dx > 0:  # this would yield dmin = dmax; hence dmin is required to set deltara/dec
+            if dmin < dx:
+                raise ValueError('Provided dx must be greater than dmax - boxsize[0] = {:.3f}'.format(dx))
+            deltaradec.append(np.arccos(dx / dmin))
+            continue
+        # deltara/dec is > pi / 2
+        if dx > -dmax:
+            deltaradec.append(np.arccos(dx / dmax))
+        deltaradec.append(np.pi)
+    deltaradec = np.array(deltaradec)
     # if dmax is smaller than boxsize, dmin is 0
-    dmin = dx / min(np.cos(deltara), np.cos(deltadec)) if dx > 0. else 0.
-    deltara *= 180. / np.pi
-    deltadec *= 180. / np.pi
-    return (dmin, dmax), (-deltara, deltara), (-deltadec, deltadec)
+    dmin = dx / min(np.cos(deltaradec)) if dx > 0. else 0.
+    deltaradec *= 180. / np.pi
+    return (dmin, dmax), (-deltaradec[0], deltaradec[0]), (-deltaradec[1], deltaradec[1])
 
 
 def cutsky_to_box(drange, rarange, decrange, return_isometry=False):
@@ -608,11 +619,46 @@ class BoxCatalog(ParticleCatalog):
         self._boxsize = _make_array(boxsize, 3)
         self._boxcenter = _make_array(boxcenter, 3)
 
-    def recenter(self):
-        """Recenter box at origin."""
+    def translate(self, shift=0., axis=None):
+        """
+        Translate box in place.
+
+        Parameters
+        ----------
+        shift : float, array, default=0.
+            Shift (along ``axis``).
+
+        axis : int, string, default=None
+            Axis number, or 'x' (0), 'y' (1) or 'z' (2),
+            or ``None``, in which case ``shift`` is applied to all axes.
+        """
         operation = EuclideanIsometry()
-        operation.translation(-self.boxcenter)
-        self.boxcenter = operation.transform(self.boxcenter)
+        operation.translation(shift=shift, axis=axis)
+        self.boxcenter = operation.transform(self.boxcenter, translational_invariant=False)
+        for name in self.vectors:
+            self[name] = operation.transform(self[name], translational_invariant=name in self._translational_invariants)
+
+    def recenter(self):
+        """Recenter box at origin in place."""
+        self.translate(-self.boxcenter)
+
+    def rotate(self, angle_over_halfpi=0, axis=None):
+        r"""
+        Rotate box in place.
+
+        Parameters
+        ----------
+        angle_over_halfpi : int, default=0
+            (Signed) number of :math:`\pi/2` rotations to apply (around ``axis``).
+
+        axis : int, string, default=None
+            Axis number, or 'x' (0), 'y' (1) or 'z' (2),
+            or ``None``, in which case ``angle`` is applied to all axes.
+        """
+        angle = angle_over_halfpi * np.pi / 2.
+        operation = EuclideanIsometry()
+        operation.rotation(angle=angle, axis=axis, degree=False)
+        self.boxcenter = operation.transform(self.boxcenter, translational_invariant=False)
         for name in self.vectors:
             self[name] = operation.transform(self[name], translational_invariant=name in self._translational_invariants)
 
@@ -854,9 +900,10 @@ class BoxCatalog(ParticleCatalog):
 
         Parameters
         ----------
-        isometries : EuclideanIsometry or list of EuclideanIsometry instances
-            Isometries to apply to current instance to move it (using :meth:`isometry`) to the desired sky location.
+        isometry : EuclideanIsometry or list of EuclideanIsometry instances
+            Isometries to apply to current instance to move it (using :meth:`isometry`) to the desired sky location(s).
             If a single :class:`EuclideanIsometry` instance, a single catalog is returned.
+            Else, as many catalogs as input isometries are returned.
 
         mask_radial : UniformRadialMask, default=None
             Radial mask (function of distance) to apply to the shifted catalog.

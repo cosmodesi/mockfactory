@@ -153,8 +153,11 @@ def test_isometry():
 
 def test_cutsky():
 
+    drange, rarange, decrange = box_to_cutsky([3900, 9500, 4500], 4600, dmin=2000.)
+    assert np.allclose(drange, (2000., 4600.))
     drange, rarange, decrange = box_to_cutsky(boxsize=1000., dmax=500.)
     assert np.allclose([drange, rarange, decrange], [(0., 500.)] + [(-180., 180.)] * 2)
+
     drange = [2200., 2300.]; rarange = [0., 50.]; decrange = [-1., 5.]
     boxsize = cutsky_to_box(drange=drange, rarange=rarange, decrange=decrange, return_isometry=False)
     drange2, rarange2, decrange2 = box_to_cutsky(boxsize=boxsize, dmax=drange[-1])
@@ -173,14 +176,21 @@ def test_cutsky():
     assert np.all((dist >= drange[0]) & (dist <= drange[1]) & (ra >= rarange[0]) & (ra < rarange[1]) & (dec >= decrange[0]) & (dec <= decrange[1]))
 
     catalog = RandomBoxCatalog(boxsize=boxsize * 2.1, size=10000, boxcenter=10000., seed=42)
-    gsize = catalog.cutsky(drange=drange, rarange=rarange, decrange=decrange, noutput=1).csize
+    csize = catalog.cutsky(drange=drange, rarange=rarange, decrange=decrange, noutput=1).csize
     cutsky = catalog.cutsky(drange=drange, rarange=rarange, decrange=decrange, noutput=None)
     assert isinstance(cutsky, list)
     assert len(cutsky) == 8
     for catalog in cutsky:
-        assert abs(catalog.csize / gsize - 1) < 3. / gsize ** 0.5  # 3 sigmas
+        assert abs(catalog.csize / csize - 1) < 3. / csize ** 0.5  # 3 sigmas
     catalog['Velocity'] = catalog.zeros(3, dtype='f8')
     assert np.allclose(catalog.position, catalog.rsd_position(f=1., los=None))
+
+    catalog = RandomBoxCatalog(boxsize=1000., size=10000, boxcenter=10000., seed=42)
+    catalog.translate(1000.)
+    catalog.recenter()
+    rposition = np.array([catalog['Position'][:, 0], -catalog['Position'][:, 2], catalog['Position'][:, 1]]).T
+    catalog.rotate(angle_over_halfpi=1, axis='x')
+    assert np.allclose(catalog['Position'], rposition)
 
 
 def test_masks():
@@ -286,8 +296,8 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    # test_remap()
-    # test_isometry()
+    test_remap()
+    test_isometry()
     test_randoms()
     test_io()
     test_cutsky()
