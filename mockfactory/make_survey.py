@@ -678,7 +678,7 @@ class BoxCatalog(ParticleCatalog):
         operation = EuclideanIsometry()
         operation.rotation(angle=angle, axis=axis, degree=False)
         self.boxcenter = operation.transform(self.boxcenter, translational_invariant=False)
-        self.boxsize = operation.transform(self.boxsize, translational_invariant=True)
+        self.boxsize = np.abs(operation.transform(self.boxsize, translational_invariant=True))
         for name in self.vectors:
             self[name] = operation.transform(self[name], translational_invariant=name in self._translational_invariants)
 
