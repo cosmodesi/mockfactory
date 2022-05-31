@@ -286,7 +286,7 @@ def box_to_cutsky(boxsize, dmax, dmin=0.):
         
         if flip_yz:
             # if z is larger than y --> flip ra, dec range.
-            deltaradec = deltaradec[[1, 0]]
+            deltaradec = [deltaradec[1], deltaradec[0]]
     
     # convert deltara and deltadec in degrees
     deltaradec = np.degrees(deltaradec)
