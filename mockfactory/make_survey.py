@@ -228,29 +228,35 @@ def box_to_cutsky(boxsize, dmax, dmin=0.):
     r"""
     Given input box size ``boxsize``, and maximum distance to the observer desired ``dmax``,
     return the maximum distance, RA, Dec ranges.
+    First axis of ``boxsize`` is considered as depth.
+
     Parameters
     ----------
     boxsize : float, array
         Box size.
+
     dmax : float
         Maximum distance to the observer.
+
     dmin : float, default=0.
         Minimum distance to the observer; only used when ``boxsize[0] < dmax < boxsize[1:] / 2.``
+
     Returns
     -------
     drange : tuple
         Maximum distance range.
+
     rarange : tuple
-        RA range.
+        RA range, in degree.
+
     decrange : tuple
-        Dec range.
+        Dec range, in degree.
     """
     boxsize = _make_array(boxsize, 3)
     deltaradec = []
-    # x is considered as the depth
+    # x is considered as depth
     dx = dmax - boxsize[0]
-    
-    # observer is inside the box
+    # Observer is inside the box
     if dx <= 0:
         dmin = 0
         for dyz in boxsize[1:] / 2. / dmax:
@@ -258,37 +264,34 @@ def box_to_cutsky(boxsize, dmax, dmin=0.):
                 deltaradec.append(np.pi / 2)
             else:
                 deltaradec.append(np.arcsin(dyz))
-    
-    # observer is outside the box 
+    # Observer is outside the box
     else:
-        # to be always in the same configuration, the largest size is considered as y
+        # To be always in the same configuration, the largest size is considered as y
         flip_yz = False
         if boxsize[1] < boxsize[2]:
-            flip_yz = True 
+            flip_yz = True
             boxsize[[1, 2]] = boxsize[[2, 1]]
 
-        # Case 1: if dmax intercept the side of the box -> dmin and deltara are fixed
+        # Case 1: if dmax intercepts the side of the box -> dmin and deltara are fixed
         if np.sqrt(dx**2 + (boxsize[1] / 2.)**2) < dmax:
             deltaradec.append(np.arcsin(boxsize[1] / 2. / dmax))
             dmin = dx / np.cos(np.arcsin(boxsize[1] / 2. / dmax))
-        # Case 2: if dmax intercept the front of the the box --> dmin has to be fixed in order to defined deltara
+        # Case 2: if dmax intercepts the front of the the box --> dmin has to be fixed in order to defined deltara
         else:
             if dmin < dx:
                 raise ValueError('Provided dx must be greater than dmax - boxsize[0] = {:.3f}'.format(dx))
             deltaradec.append(np.arccos(dx / dmin))
-        
         # Define deltadec --> take the lower deltadec between the two cases
-        # Case 1: dmax intercept the top of the box
+        # Case 1: dmax intercepts the top of the box
         theta_dmax = np.arcsin(boxsize[2] / 2 / dmax)
-        # Case 2: dmin intercept the front of the box
+        # Case 2: dmin intercepts the front of the box
         theta_dmin = np.arccos(dx / dmin)
-        deltaradec.append(min([theta_dmax, theta_dmin]))
-        
+        deltaradec.append(min(theta_dmax, theta_dmin))
         if flip_yz:
             # if z is larger than y --> flip ra, dec range.
             deltaradec = [deltaradec[1], deltaradec[0]]
-    
-    # convert deltara and deltadec in degrees
+
+    # Convert deltara and deltadec in degrees
     deltaradec = np.degrees(deltaradec)
 
     return (dmin, dmax), (-deltaradec[0], deltaradec[0]), (-deltaradec[1], deltaradec[1])

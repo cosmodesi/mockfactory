@@ -296,6 +296,9 @@ if __name__ == '__main__':
 
     setup_logging()
 
+    test_cutsky()
+    exit()
+
     test_remap()
     test_isometry()
     test_randoms()
