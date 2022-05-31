@@ -265,7 +265,7 @@ def box_to_cutsky(boxsize, dmax, dmin=0.):
         flip_yz = False
         if boxsize[1] < boxsize[2]:
             flip_yz = True 
-            boxsize[1, 2] = boxsize[2, 1]
+            boxsize[[1, 2]] = boxsize[[2, 1]]
 
         # Case 1: if dmax intercept the side of the box -> dmin and deltara are fixed
         if np.sqrt(dx**2 + (boxsize[1] / 2.)**2) < dmax:
@@ -286,7 +286,7 @@ def box_to_cutsky(boxsize, dmax, dmin=0.):
         
         if flip_yz:
             # if z is larger than y --> flip ra, dec range.
-            deltaradec = deltaradec[1, 0]
+            deltaradec = deltaradec[[1, 0]]
     
     # convert deltara and deltadec in degrees
     deltaradec = np.degrees(deltaradec)
