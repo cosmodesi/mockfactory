@@ -156,8 +156,12 @@ def test_cutsky():
     drange, rarange, decrange = box_to_cutsky([3900, 9500, 4500], 4600, dmin=2000.)
     assert np.allclose(drange, (2000., 4600.))
     drange, rarange, decrange = box_to_cutsky(boxsize=1000., dmax=500.)
-    assert np.allclose([drange, rarange, decrange], [(0., 500.)] + [(-180., 180.)] * 2)
-
+    assert np.allclose([drange, rarange, decrange], [(0., 500.), (-180., 180.), (-90.0, 90.0)])
+    drange, rarange, decrange = box_to_cutsky(boxsize=[2000, 3000, 8000], dmax=4000, dmin=3500)
+    assert np.allclose([drange, rarange, decrange], [(3500, 4000), (-22.024312837042164, 22.024312837042164), (-55.15009542095352, 55.15009542095352)])
+    drange, rarange, decrange = box_to_cutsky(boxsize=[2000, 9000, 8000], dmax=4000, dmin=3500)
+    assert np.allclose([drange, rarange, decrange], [(3500, 4000), (-55.15009542095352, 55.15009542095352), (-55.15009542095352, 55.15009542095352)])
+    
     drange = [2200., 2300.]; rarange = [0., 50.]; decrange = [-1., 5.]
     boxsize = cutsky_to_box(drange=drange, rarange=rarange, decrange=decrange, return_isometry=False)
     drange2, rarange2, decrange2 = box_to_cutsky(boxsize=boxsize, dmax=drange[-1])
