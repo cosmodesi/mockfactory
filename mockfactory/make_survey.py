@@ -256,21 +256,21 @@ def box_to_cutsky(boxsize, dmax, dmin=0.):
     deltaradec = []
     # x is considered as depth
     dx = dmax - boxsize[0]
-    
+
     # To be always in the same configuration, the largest size is considered as y
     flip_yz = False
     if boxsize[1] < boxsize[2]:
         flip_yz = True
         boxsize[[1, 2]] = boxsize[[2, 1]]
-    
+
     # Observer is inside the box
     if dx <= 0:
         dmin = 0
-        # Observer cannot look back 
+        # Observer cannot look back
         if boxsize[1] / 2 / dmax < 1:
             for dyz in boxsize[1:] / 2 / dmax:
                 deltaradec.append(np.arcsin(dyz))
-        # Observer can look back 
+        # Observer can look back
         else:
             # Box is to small to have 360 survey
             if np.abs(dx) / dmax < 1:
@@ -283,7 +283,7 @@ def box_to_cutsky(boxsize, dmax, dmin=0.):
                 deltaradec.append(np.arcsin(boxsize[2] / 2 / dmax))
             else:
                 deltaradec.append(np.pi / 2)
-  
+
     # Observer is outside the box
     else:
         # Case 1: if dmax intercepts the side of the box -> dmin and deltara are fixed
@@ -301,9 +301,9 @@ def box_to_cutsky(boxsize, dmax, dmin=0.):
         # Case 2: dmin intercepts the front of the box
         theta_dmin = np.arccos(dx / dmin)
         deltaradec.append(min(theta_dmax, theta_dmin))
-        
+
     # If z is larger than y --> flip ra, dec range.
-    if flip_yz:    
+    if flip_yz:
         deltaradec = [deltaradec[1], deltaradec[0]]
 
     # Convert deltara and deltadec in degrees
@@ -887,9 +887,8 @@ class BoxCatalog(ParticleCatalog):
         if noutput == 1:
             em = np.array([0. if m is None else m for m in external_margin])
             factor = (self.boxsize - 2. * em) / boxsize
-            if not np.all(factor >= 1.):
-                print(factor)
-                raise ValueError('boxsize {} with margin {} is too small for input survey geometry which requires {}'.format(self.boxsize, external_margin, boxsize))
+            if not np.all(factor >= 1. - 1e-9):
+                self.log_warning('boxsize {} with margin {} is too small for input survey geometry which requires {}'.format(self.boxsize, external_margin, boxsize))
             isometry = EuclideanIsometry()
             isometry.translation(-self.boxcenter)
             isometry += origin_isometry
