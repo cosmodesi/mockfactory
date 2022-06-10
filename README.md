@@ -3,7 +3,7 @@
 **mockfactory** is a MPI-parallel Python toolkit to generate Gaussian and lognormal mocks and apply cut-sky geometry to box galaxy mocks.
 Its main purpose is to study geometry effects on the power spectrum. 
 
-![My image](https://github.com/echaussidon/mockfactory/blob/main/remap_and_cutsky.png)
+![My image](https://github.com/echaussidon/mockfactory/blob/main/remap.png)
 
 A typical run, generating lognormal mocks and applying some cutsky geometry is
 (pseudo-code, for an example with all variables defined see [this notebook](https://github.com/cosmodesi/mockfactory/blob/main/nb/basic_examples.ipynb)):
