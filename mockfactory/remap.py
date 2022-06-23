@@ -180,7 +180,7 @@ class Cuboid(BaseClass):
 
         self.e1, self.e2, self.e3 = orthogonalize(u1, u2, u3)
 
-        self.log_info('Orthogonal base (e1, e2, e3) = ({}, {}, {})'.format(self.e1, self.e2, self.e3))
+        # self.log_info('Orthogonal base (e1, e2, e3) = ({}, {}, {})'.format(self.e1, self.e2, self.e3))
 
         self.boxsize = _make_array(boxsize, 3, dtype='f8')
         ebox = np.array([norm(e) for e in [self.e1, self.e2, self.e3]])
