@@ -38,14 +38,8 @@ def split_size_2d(s):
     return a, b
 
 
-def bitmask_radec(brickid, ra, dec, bricks, field='south'):
+def bitmask_radec(bitmask_fn, ra, dec):
     """ Extract bitmask associated to a (Ra, Dec) position from a legacy imaging brick"""
-
-    # build brickname file in the correct field (north or south)
-    brick_index = np.where(bricks['BRICKID'] == brickid)[0][0]
-    brickname = str(bricks['BRICKNAME'][brick_index])
-    bitmask_fn = '/global/cfs/cdirs/cosmo/data/legacysurvey/dr9/{}/coadd/{}/{}/legacysurvey-{}-maskbits.fits.fz'.format(field, brickname[:3], brickname, brickname)
-
     if os.path.isfile(bitmask_fn):
         # read data and header:
         bitmask_img, header = fitsio.read(bitmask_fn, header=True)
@@ -61,8 +55,8 @@ def bitmask_radec(brickid, ra, dec, bricks, field='south'):
         # Sometimes we can have objects outside DR9 footprint:
         # Either because the footprint in regressis.footprint.DR9Footpint has a resolution of nside=256
         # Or because we do cut outside the footprint simply
-        # Remove these objects setting bitmask 1 (bright pixel) which is always removed
-        bitmask = 2**1 * np.ones(ra.size, dtype=np.int16)
+        # Remove these objects setting bitmask 0 (NPRIMARY pixel)
+        bitmask = 2**0 * np.ones(ra.size, dtype=np.int16)
 
     return bitmask
 
@@ -92,8 +86,14 @@ def add_dr9_maskbits(ra, dec, north_or_south='south', mpicomm=None):
 
         idx, bitmask = np.array([]), np.array([])
         for bid_index in np.arange(nbr_bricks):
+            # build brickname file in the correct field (north or south)
+            brick_index = np.where(bricks['BRICKID'] == bid_unique[bid_index])[0][0]
+            brickname = str(bricks['BRICKNAME'][brick_index])
+            bitmask_fn = '/global/cfs/cdirs/cosmo/data/legacysurvey/dr9/{}/coadd/{}/{}/legacysurvey-{}-maskbits.fits.fz'.format(north_or_south, brickname[:3], brickname, brickname)
+
             idx_tmp = bidorder[bidcnts[bid_index]: bidcnts[bid_index + 1]]
-            bitmask_tmp = bitmask_radec(bid_unique[bid_index], ra[idx_tmp], dec[idx_tmp], bricks, field=north_or_south)
+
+            bitmask_tmp = bitmask_radec(bitmask_fn, ra[idx_tmp], dec[idx_tmp])
             idx, bitmask = np.concatenate([idx, idx_tmp]), np.concatenate([bitmask, bitmask_tmp])
         maskbits = np.array(bitmask[np.argsort(idx)])
 
