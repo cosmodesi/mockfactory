@@ -1076,7 +1076,7 @@ class RandomBoxCatalog(BoxCatalog):
         size = mpy.core.local_size(size, mpicomm=self.mpicomm)
         rng = mpy.random.MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
 
-        self[self._position] = np.array([rng.uniform(self.boxcenter[i] - self.boxsize[i] / 2., self.boxcenter[i] + self.boxsize[i] / 2.) for i in range(3)]).T
+        self[self._position] = self.boxsize * rng.uniform(-0.5, 0.5, itemshape=3) + self.boxcenter
 
 
 class RandomCutskyCatalog(CutskyCatalog):
@@ -1131,6 +1131,7 @@ class RandomCutskyCatalog(CutskyCatalog):
         else:
             mask = UniformRadialMask(zrange=drange, mpicomm=self.mpicomm)
             self['Distance'] = mask.sample(size, distance=lambda z: z, seed=seed2)
+        #print(self.mpicomm.allreduce(self['RA'].sum()))
         self['Position'] = utils.sky_to_cartesian(self['Distance'], self['RA'], self['DEC'], degree=True)
 
 
@@ -1276,15 +1277,20 @@ class BaseRadialMask(BaseMask):
 
         z = []
         dsize = size
-        while dsize > 0:
-            std = 1. / np.sqrt(dsize)
-            newsize = int(dsize * (1. + 3. * std) + 100.)
+        cdsize = self.mpicomm.allreduce(dsize)
+        while cdsize > 0:
             seed = mpy.random.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
-            tmpz = sample(newsize, seed=seed)
-            dsize -= tmpz.size
+            tmpz = sample(size, seed=seed)
             z.append(tmpz)
+            dsize -= tmpz.size
+            cdsize = self.mpicomm.allreduce(dsize)
+        z = np.concatenate(z, axis=0)
 
-        return np.concatenate(z, axis=0)[:size]
+        from mpytools.core import MPIScatteredSource
+        sli = slice(*np.cumsum([0] + self.mpicomm.allgather(len(z)))[self.mpicomm.rank:self.mpicomm.rank + 2], 1)
+        source = MPIScatteredSource(sli)
+        sli = slice(*np.cumsum([0] + self.mpicomm.allgather(size))[self.mpicomm.rank:self.mpicomm.rank + 2], 1)
+        return source.get(z, sli)
 
 
 class UniformRadialMask(BaseRadialMask):
@@ -1579,16 +1585,21 @@ class BaseAngularMask(BaseMask):
 
         ra, dec = [], []
         dsize = size
-        while dsize > 0:
-            std = 1. / np.sqrt(dsize)
-            newsize = int(dsize * (1. + 3. * std) + 100.)
+        cdsize = self.mpicomm.allreduce(dsize)
+        while cdsize > 0:
             seed = mpy.random.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
-            tmpra, tmpdec = sample(newsize, seed=seed)
-            dsize -= tmpra.size
+            tmpra, tmpdec = sample(size, seed=seed)
             ra.append(tmpra)
             dec.append(tmpdec)
+            dsize -= tmpra.size
+            cdsize = self.mpicomm.allreduce(dsize)
+        ra, dec = np.concatenate(ra, axis=0), np.concatenate(dec, axis=0)
 
-        return np.concatenate(ra, axis=0)[:size], np.concatenate(dec, axis=0)[:size]
+        from mpytools.core import MPIScatteredSource
+        sli = slice(*np.cumsum([0] + self.mpicomm.allgather(len(ra)))[self.mpicomm.rank:self.mpicomm.rank + 2], 1)
+        source = MPIScatteredSource(sli)
+        sl = slice(*np.cumsum([0] + self.mpicomm.allgather(size))[self.mpicomm.rank:self.mpicomm.rank + 2], 1)
+        return source.get(ra, sli), source.get(dec, sli)
 
 
 class UniformAngularMask(BaseAngularMask):

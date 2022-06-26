@@ -99,7 +99,7 @@ def sky_to_cartesian(dist, ra, dec, degree=True, dtype=None):
         Position in cartesian coordinates.
     """
     conversion = np.pi / 180. if degree else 1.
-    dist, ra, dec = (np.asarray(array) for array in (dist, ra, dec))
+    dist, ra, dec = np.broadcast_arrays(dist, ra, dec)
     if dtype is None:
         dtype = np.result_type(dist, ra, dec)
     position = np.empty(dist.shape + (3,), dtype=dtype)

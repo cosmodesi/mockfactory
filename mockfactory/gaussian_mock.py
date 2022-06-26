@@ -290,18 +290,18 @@ class BaseGaussianMock(BaseClass):
             return
         self.nbar = self.pm.create(type='real')
 
-        def cartesian_to_sky(*position):
-            dist = sum(pos**2 for pos in position)**0.5
-            ra = np.arctan2(position[1], position[0]) % (2. * np.pi)
-            dec = np.arcsin(position[2] / dist)
+        def cartesian_to_sky(*positions):
+            dist = sum(pos**2 for pos in positions)**0.5
+            ra = np.arctan2(positions[1], positions[0]) % (2. * np.pi)
+            dec = np.arcsin(positions[2] / dist)
             conversion = np.pi / 180.
-            return dist, ra / conversion, dec / conversion
+            return dist.ravel(), ra.ravel() / conversion, dec.ravel() / conversion
 
         offset = self.boxcenter - self.boxsize / 2.
 
         for rslab, slab in zip(self.nbar.slabs.x, self.nbar.slabs):
             rslab = _transform_rslab(rslab, self.boxsize)
-            dist, ra, dec = cartesian_to_sky(*[(r + o).ravel() for r, o in zip(rslab, offset)])
+            dist, ra, dec = cartesian_to_sky(*[r + o for r, o in zip(rslab, offset)])
             slab[...].flat = nbar(dist, ra, dec)
         if interlacing:
             interlacing = int(interlacing)
@@ -319,7 +319,7 @@ class BaseGaussianMock(BaseClass):
                 offset -= 0.5 * cellsize  # shift nbar by 0.5*cellsize
                 for rslab, slab in zip(nbar_shifted.slabs.x, nbar_shifted.slabs):
                     rslab = _transform_rslab(rslab, self.boxsize)
-                    dist, ra, dec = cartesian_to_sky(*[(r + o).ravel() for r, o in zip(rslab, offset)])
+                    dist, ra, dec = cartesian_to_sky(*[r + o for r, o in zip(rslab, offset)])
                     slab[...].flat = nbar(dist, ra, dec)
                 nbar_shifted = nbar_shifted.r2c()
                 for k, s1, s2 in zip(self.nbar.slabs.x, self.nbar.slabs, nbar_shifted.slabs):
