@@ -17,12 +17,13 @@ from desiutil import brick
 logger = logging.getLogger('maskbits')
 
 
-
 def get_maskbits(ra, dec, maskbits_fn='/global/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', dtype='i2', mpicomm=MPI.COMM_WORLD):
     """
     Return value of bit mask at input RA/Dec, expected to be scattered on all MPI processes.
     Based on Rongpu Zhou's code:
     https://github.com/rongpu/desi-examples/blob/master/bright_star_mask/read_pixel_maskbit.py
+
+    **WANRING:** take care to split correctly ra, dec accross the rank otherwise the code is unusable
 
     Parameters
     ----------
@@ -73,34 +74,54 @@ def get_maskbits(ra, dec, maskbits_fn='/global/cfs/cdirs/cosmo/data/legacysurvey
             maskbits = maskbits_img[coadd_y, coadd_x]
 
         else:
-            #raise ValueError
+            # raise ValueError
             # Sometimes we can have objects outside DR9 footprint:
             # remove these objects setting maskbits 0 (NPRIMARY pixel)
             maskbits = 2**0 * np.ones(ra.size, dtype=dtype)
 
         return maskbits
 
-    # If not empty, collect the information from brick
     ra, dec = np.asarray(ra), np.asarray(dec)
     maskbits = np.ones_like(ra, dtype='i2')
-    if ra.size != 0:
-        # Collect brickid
-        bricks = brick.Bricks()
-        cumsize = np.cumsum([0] + mpicomm.allgather(ra.size))[mpicomm.rank]
-        index = cumsize + np.arange(ra.size)
-        data = _dict_to_array({'ra': ra, 'dec': dec, 'brickname': bricks.brickname(ra, dec), 'brickid': bricks.brickid(ra, dec), 'maskbits': maskbits, 'index': index})
-        #data = _dict_to_array({'ra': ra, 'dec': dec, 'brickname': bricks.brickname(ra, dec), 'brickid': index[::-1], 'maskbits': maskbits, 'index': index})
-        import mpsort
-        mpsort.sort(data, orderby='brickid')
 
-        for brickname in np.unique(data['brickname']):
-            mask_brick = data['brickname'] == brickname
-            region = 'north' if bricks.brick_radec(data['ra'][mask_brick][0], data['dec'][mask_brick][0])[1] > 32.375 else 'south'
-            data['maskbits'][mask_brick] = get_brick_maskbits(maskbits_fn.format(region=region, brickname=brickname), data['ra'][mask_brick], data['dec'][mask_brick])
+    # load bricks class
+    bricks = brick.Bricks()
 
-        mpsort.sort(data, orderby='index')
-        assert np.all(data['index'] == index)
-        maskbits = data['maskbits']
+    # create unique identification as index column
+    cumsize = np.cumsum([0] + mpicomm.allgather(ra.size))[mpicomm.rank]
+    index = cumsize + np.arange(ra.size)
+    data = _dict_to_array({'ra': ra, 'dec': dec, 'brickname': bricks.brickname(ra, dec), 'brickid': bricks.brickid(ra, dec), 'maskbits': maskbits, 'index': index})
+
+    # since we want to parrallelize around the brickid
+    # we do not expect that the number of particles is the same as the input on each rank
+    # use out argument in mpsort.sort function
+    unique_brickname, brick_counts = np.unique(np.concatenate(mpicomm.allgather(data['brickid'])), return_counts=True)
+    # number of brick per rank
+    nbr_bricks = unique_brickname.size // mpicomm.size
+    if mpicomm.rank < (unique_brickname.size % mpicomm.size):
+        nbr_bricks += 1
+    nbr_bricks = mpicomm.allgather(nbr_bricks)
+    # number of particles (after sort) desired per rank
+    nbr_particles = np.sum(brick_counts[int(np.sum(nbr_bricks[:mpicomm.rank])): int(np.sum(nbr_bricks[:mpicomm.rank])) + nbr_bricks[mpicomm.rank]])
+
+    # sort data to have same number of bricks in each available rank
+    import mpsort
+    data_tmp = np.empty(nbr_particles, dtype=data.dtype)
+    mpsort.sort(data, orderby='brickid', out=data_tmp)
+
+    if mpicomm.rank == 0:
+        logger.info(f'Nbr of bricks to read per rank = {np.min(nbr_bricks)}/{np.max(nbr_bricks)} (min/max)')
+
+    for brickname in np.unique(data_tmp['brickname']):
+        mask_brick = data_tmp['brickname'] == brickname
+        region = 'north' if bricks.brick_radec(data_tmp['ra'][mask_brick][0], data_tmp['dec'][mask_brick][0])[1] > 32.375 else 'south'
+        data_tmp['maskbits'][mask_brick] = get_brick_maskbits(maskbits_fn.format(region=region, brickname=brickname), data_tmp['ra'][mask_brick], data_tmp['dec'][mask_brick])
+
+    data = np.empty(data.size, dtype=data_tmp.dtype)
+    mpsort.sort(data_tmp, orderby='index', out=data)
+    # test if we find the corret inital order
+#    assert np.all(data['index'] == index)
+#    maskbits = data['maskbits']
 
     return maskbits
 
@@ -117,9 +138,14 @@ if __name__ == '__main__':
         logger.info('Run simple example to illustrate how to apply DR9 maskbits.')
 
     # Generate example cutsky catalog, scattered on all processes
-    ra, dec = 0., 0.
     cutsky = RandomCutskyCatalog(rarange=(20., 30.), decrange=(-0.5, 2.), size=10000, seed=44, mpicomm=mpicomm)
     start = MPI.Wtime()
-    maskbits = get_maskbits(cutsky['RA'], cutsky['DEC'], mpicomm=mpicomm)
+
+    ra, dec = cutsky['RA'], cutsky['DEC']
+    if mpicomm.rank == 1:
+        # to test when empty catalog is given with MPI
+        ra, dec = [], []
+
+    maskbits = get_maskbits(ra, dec, mpicomm=mpicomm)
     if mpicomm.rank == 0:
         logger.info(f'Apply DR9 maskbits done in {MPI.Wtime() - start:2.2f} s.')
