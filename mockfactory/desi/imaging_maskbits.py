@@ -23,8 +23,6 @@ def get_maskbits(ra, dec, maskbits_fn='/global/cfs/cdirs/cosmo/data/legacysurvey
     Based on Rongpu Zhou's code:
     https://github.com/rongpu/desi-examples/blob/master/bright_star_mask/read_pixel_maskbit.py
 
-    **WANRING:** take care to split correctly ra, dec accross the rank otherwise the code is unusable
-
     Parameters
     ----------
     ra : array
