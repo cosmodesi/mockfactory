@@ -96,11 +96,13 @@ def get_maskbits(ra, dec, maskbits_fn='/global/cfs/cdirs/cosmo/data/legacysurvey
     # we do not expect that the number of particles is the same as the input on each rank
     # use out argument in mpsort.sort function
     unique_brickname, brick_counts = np.unique(np.concatenate(mpicomm.allgather(data['brickid'])), return_counts=True)
+
     # number of brick per rank
     nbr_bricks = unique_brickname.size // mpicomm.size
     if mpicomm.rank < (unique_brickname.size % mpicomm.size):
         nbr_bricks += 1
     nbr_bricks = mpicomm.allgather(nbr_bricks)
+
     # number of particles (after sort) desired per rank
     nbr_particles = np.sum(brick_counts[int(np.sum(nbr_bricks[:mpicomm.rank])): int(np.sum(nbr_bricks[:mpicomm.rank])) + nbr_bricks[mpicomm.rank]])
 
@@ -120,8 +122,8 @@ def get_maskbits(ra, dec, maskbits_fn='/global/cfs/cdirs/cosmo/data/legacysurvey
     data = np.empty(data.size, dtype=data_tmp.dtype)
     mpsort.sort(data_tmp, orderby='index', out=data)
     # test if we find the corret inital order
-#    assert np.all(data['index'] == index)
-#    maskbits = data['maskbits']
+    assert np.all(data['index'] == index)
+    maskbits = data['maskbits']
 
     return maskbits
 
