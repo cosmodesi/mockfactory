@@ -82,62 +82,61 @@ def get_maskbits(ra, dec, maskbits_fn='/global/cfs/cdirs/cosmo/data/legacysurvey
 
     ra, dec = np.asarray(ra), np.asarray(dec)
 
-    # load bricks class
+    # Load bricks class
     bricks = brick.Bricks()
 
-    # create unique identification as index column
+    # Create unique identification as index column
     cumsize = np.cumsum([0] + mpicomm.allgather(ra.size))[mpicomm.rank]
     index = cumsize + np.arange(ra.size)
     data = _dict_to_array({'ra': ra, 'dec': dec, 'brickname': bricks.brickname(ra, dec), 'brickid': bricks.brickid(ra, dec), 'maskbits': np.ones_like(ra, dtype='i2'), 'index': index})
 
-    # since we want to parrallelize around the brickid
-    # we do not expect that the number of particles is the same as the input on each rank (use out argument in mpsort.sort function)
-    # take care: compute nbr_particles only in rank 0 to avoid troubles with large array communcation and blow up the memory of the rank (collection of large array in all the rank)
+    # Let's group particles by brickid, with ~ similar number of brickids on each rank
+    # Caution: this may produce memory unbalance between different processes
+    # hence potential memory error, which may be avoided using some criterion to rebalance load at the cost of less efficiency
+    unique_brickid, counts_brickid = np.unique(data['brickid'], return_counts=True)
 
-    # reduce the array which will be send to root rank:
-    local_unique_brickname, local_brick_counts = np.unique(data['brickid'], return_counts=True)
+    import mpytools as mpy
+    # Proceed rank-by-rank to save memory
+    for irank in range(1, mpicomm.size):
+        unique_brickid_irank = mpy.sendrecv(unique_brickid, source=irank, dest=0, tag=0, mpicomm=mpicomm)
+        counts_brickid_irank = mpy.sendrecv(counts_brickid, source=irank, dest=0, tag=0, mpicomm=mpicomm)
+        if mpicomm.rank == 0:
+            unique_brickid, counts_brickid = np.concatenate([unique_brickid, unique_brickid_irank]), np.concatenate([counts_brickid, counts_brickid_irank])
+            unique_brickid, inverse = np.unique(unique_brickid, return_inverse=True)
+            counts_brickid = np.bincount(inverse, weights=counts_brickid).astype(int)
 
-    # collect the info only in the root rank:
-    local_unique_brickname, local_brick_counts = mpicomm.gather(local_unique_brickname), mpicomm.gather(local_brick_counts)
-
-    # compute the nbr particles that will contain each rank after sorting. Do it only in root rank.
+    # Compute the number particles that each rank must contain after sorting
     nbr_particles = None
     if mpicomm.rank == 0:
-        local_unique_brickname, local_brick_counts = np.concatenate(local_unique_brickname), np.concatenate(local_brick_counts)
-        unique_brickname = np.unique(local_unique_brickname)
-        brick_counts = np.array([local_brick_counts[local_unique_brickname == brickname].sum() for brickname in unique_brickname])
+        nbr_bricks = [(irank * unique_brickid.size // mpicomm.size, (irank + 1) * unique_brickid.size // mpicomm.size) for irank in range(mpicomm.size)]
+        nbr_particles = [np.sum(counts_brickid[nbr_brick_low:nbr_brick_high], dtype='i8') for nbr_brick_low, nbr_brick_high in nbr_bricks]
+        nbr_bricks = np.diff(nbr_bricks, axis=-1)
+        logger.info(f'Number of bricks to read per rank = {np.min(nbr_bricks)} - {np.max(nbr_bricks)} (min - max).')
 
-        # number of brick per rank
-        nbr_bricks = unique_brickname.size // mpicomm.size + np.array([1 if i < (unique_brickname.size % mpicomm.size) else 0 for i in range(mpicomm.size)])
+    # Send the number particles that each rank must contain after sorting
+    nbr_particles = mpicomm.scatter(nbr_particles, root=0)
+    assert mpicomm.allreduce(nbr_particles) == mpicomm.allreduce(data.size), 'float in bincount messes up total particle counts'
 
-        # number of particles (after sort) desired per rank
-        nbr_particles = [np.sum(brick_counts[int(np.sum(nbr_bricks[:i])): int(np.sum(nbr_bricks[:i])) + nbr_bricks[i]]) for i in range(mpicomm.size)]
-
-    # send the nbr particles that will contain each rank after sorting
-    nbr_particles = mpicomm.scatter(nbr_particles)
-
-    # sort data to have same number of bricks in each available rank
-    data_tmp = np.empty(nbr_particles, dtype=data.dtype)
+    # Sort data to have same number of bricks in each rank
+    data_tmp = np.empty_like(data, shape=nbr_particles)
     mpsort.sort(data, orderby='brickid', out=data_tmp)
-
-    if mpicomm.rank == 0: logger.info(f'Nbr of bricks to read per rank = {np.min(nbr_bricks)}/{np.max(nbr_bricks)} (min/max)')
 
     for brickname in np.unique(data_tmp['brickname']):
         mask_brick = data_tmp['brickname'] == brickname
         region = 'north' if bricks.brick_radec(data_tmp['ra'][mask_brick][0], data_tmp['dec'][mask_brick][0])[1] > 32.375 else 'south'
         data_tmp['maskbits'][mask_brick] = get_brick_maskbits(maskbits_fn.format(region=region, brickname=brickname), data_tmp['ra'][mask_brick], data_tmp['dec'][mask_brick])
 
-    # collect the data in the intial order
-    data = np.empty(data.size, dtype=data_tmp.dtype)
+    # Collect the data in the intial order
     mpsort.sort(data_tmp, orderby='index', out=data)
 
-    # test if we find the corret inital order
+    # Check if we find the correct inital order
     assert np.all(data['index'] == index)
 
     return data['maskbits']
 
 
 if __name__ == '__main__':
+
     from mockfactory import RandomCutskyCatalog, setup_logging
 
     setup_logging()
