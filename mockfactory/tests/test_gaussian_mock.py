@@ -113,6 +113,7 @@ def test_readout():
 
 def test_eulerian():
     mock = EulerianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
+    mock = EulerianLinearMock.from_complex_delta_field(mock.mesh_delta_k)
     mock.set_real_delta_field(bias=bias)
     # mock.set_rsd(f=f, los='z')
     mock.set_rsd(f=f, los=los)
@@ -148,6 +149,7 @@ def test_lagrangian():
     los = None
     boxcenter = [1000., 0., 0.]
     mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)
+    mock = LagrangianLinearMock.from_complex_delta_field(mock.mesh_delta_k)
     mock.set_real_delta_field(bias=bias - 1.)
     mock.set_analytic_selection_function(nbar=nbar)
 
@@ -240,6 +242,6 @@ if __name__ == '__main__':
     setup_logging()
     # test_pm()
     # test_readout()
-    # test_eulerian()
+    test_eulerian()
     test_lagrangian()
     # test_mpi()

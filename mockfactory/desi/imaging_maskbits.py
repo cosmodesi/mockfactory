@@ -40,6 +40,7 @@ def get_maskbits(ra, dec, maskbits_fn='/global/cfs/cdirs/cosmo/data/legacysurvey
     mpicomm : MPI communicator, default=None
         The current MPI communicator.
     """
+    import mpytools as mpy
     import mpsort
 
     def _dict_to_array(data):
@@ -95,7 +96,6 @@ def get_maskbits(ra, dec, maskbits_fn='/global/cfs/cdirs/cosmo/data/legacysurvey
     # hence potential memory error, which may be avoided using some criterion to rebalance load at the cost of less efficiency
     unique_brickid, counts_brickid = np.unique(data['brickid'], return_counts=True)
 
-    import mpytools as mpy
     # Proceed rank-by-rank to save memory
     for irank in range(1, mpicomm.size):
         unique_brickid_irank = mpy.sendrecv(unique_brickid, source=irank, dest=0, tag=0, mpicomm=mpicomm)

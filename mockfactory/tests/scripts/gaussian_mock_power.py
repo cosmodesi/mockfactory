@@ -25,6 +25,20 @@ def main():
     bias = 2.
     los = 'x'
     pklin = DESI().get_fourier().pk_interpolator().to_1d(z=1)
+    truncate = False
+
+    if truncate:
+        k = pklin.k
+        pk = pklin(k)
+        sigma = 0.05
+        kcut = 0.2
+        mask = k > kcut
+        pk[mask] = pk[mask] * np.exp(-(k[mask] - kcut)**2 / (2 * sigma ** 2))
+        #from scipy.interpolate import InterpolatedUnivariateSpline
+        #pklin = InterpolatedUnivariateSpline(k, pk, k=1)
+        from cosmoprimo import PowerSpectrumInterpolator1D
+        mask = k < 1.
+        pklin = PowerSpectrumInterpolator1D(k=k[mask], pk=pk[mask])
 
     # unitary_amplitude forces amplitude to 1
     mock = EulerianLinearMock(pklin, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=seed, unitary_amplitude=True)

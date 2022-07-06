@@ -55,6 +55,75 @@ def _transform_rslab(rslab, boxsize):
     return toret
 
 
+@CurrentMPIComm.enable
+def ArrayMesh(array, boxsize, type='real', nmesh=None, mpiroot=0, mpicomm=None):
+    """
+    Turn numpy array into :class:`pmesh.pm.Field`.
+
+    Parameters
+    ----------
+    array : array
+        Mesh numpy array gathered on ``mpiroot``.
+
+    boxsize : array, float, default=None
+        Physical size of the box along each axis.
+
+    type : str, default='real'
+        Type of field, 'real', 'complex', 'untransposedcomplex'.
+
+    nmesh : array, int, default=None
+        In case ``mpiroot`` is ``None`` or complex field, mesh size, i.e. number of mesh nodes along each axis.
+
+    mpiroot : int, default=0
+        MPI rank where input array is gathered.
+        If input array is scattered accross all ranks in C ordering, pass ``mpiroot = None`` and specify ``nmesh``.
+
+    mpicomm : MPI communicator, default=MPI.COMM_WORLD
+        The MPI communicator.
+
+    Returns
+    -------
+    mesh : pmesh.pm.Field
+    """
+    type = type.lower()
+
+    if nmesh is None:
+        if type == 'real' and mpiroot is not None:
+            nmesh = mpicomm.bcast(array.shape if mpicomm.rank == mpiroot else None, root=mpiroot)
+        else:
+            raise ValueError('In case of scattered or complex mesh, provide nmesh')
+
+    nmesh = _make_array(nmesh, 3, dtype='i8')
+
+    if mpiroot is None:
+        array_dtype = array.dtype
+        csize = mpicomm.allreduce(array.size)
+    else:
+        array_dtype = mpicomm.bcast(array.dtype if mpicomm.rank == mpiroot else None, root=mpiroot)
+        csize = mpicomm.bcast(array.size if mpicomm.rank == mpiroot else None, root=mpiroot)
+
+    dtype = array_dtype
+    if 'complex' in type:
+        itemsize = dtype.itemsize
+        if 'complex' not in dtype.name: itemsize *= 2
+        if np.prod(nmesh) != csize:  # hermitian symmetry
+            dtype = np.dtype('f{:d}'.format(itemsize // 2))
+        else:
+            dtype = np.dtype('c{:d}'.format(itemsize))
+
+    boxsize = _make_array(boxsize, 3, dtype='f8')
+    pm = ParticleMesh(BoxSize=boxsize, Nmesh=nmesh, dtype=dtype, comm=mpicomm)
+    mesh = pm.create(type=type)
+
+    if mpiroot is None or mpicomm.rank == mpiroot:
+        array = np.ravel(array)  # ignore data from other ranks
+    else:
+        array = np.empty((0,), dtype=array_dtype)
+
+    mesh.unravel(array)
+    return mesh
+
+
 class SetterProperty(object):
     """
     Attribute setter, runs ``func`` when setting a class attribute.
@@ -145,7 +214,7 @@ class BaseGaussianMock(BaseClass):
             ``True`` to invert phase of the complex field.
 
         dtype : string, np.dtype, defaut='f8'
-            Type for :attr:`mesh_delta_k`.
+            Type for :attr:`mesh_delta_r`.
 
         mpicomm : MPI communicator, default=None
             The MPI communicator.
@@ -159,7 +228,7 @@ class BaseGaussianMock(BaseClass):
         self.attrs['seed'] = seed
         self.attrs['unitary_amplitude'] = unitary_amplitude
         self.attrs['inverted_phase'] = inverted_phase
-        self.dtype = np.dtype(dtype)
+        dtype = np.dtype(dtype)
 
         if boxsize is None:
             if cellsize is not None and nmesh is not None:
@@ -175,12 +244,34 @@ class BaseGaussianMock(BaseClass):
 
         self.boxcenter = boxcenter
         from pmesh.pm import ParticleMesh
-        self.pm = ParticleMesh(BoxSize=_make_array(boxsize, 3, dtype='f8'), Nmesh=_make_array(nmesh, 3, dtype='i8'), dtype=self.dtype, comm=self.mpicomm)
+        self.pm = ParticleMesh(BoxSize=_make_array(boxsize, 3, dtype='f8'), Nmesh=_make_array(nmesh, 3, dtype='i8'), dtype=dtype, comm=self.mpicomm)
 
         if los is not None:
             los = self._get_los(los)
         self.attrs['los'] = los
         self.set_complex_delta_field()
+
+    @classmethod
+    def from_complex_delta_field(cls, mesh, boxcenter=0.):
+        r"""
+        Initialize :class:`GaussianFieldMesh` directly with Fourier field :attr:`mesh_delta_k`.
+
+        Parameters
+        ----------
+        boxcenter : float, 3-vector of floats, default=0.
+            Box center.
+        """
+        self = cls.__new__(cls)
+        self.mpicomm = mesh.pm.comm
+        self.mpiroot = 0
+        self.attrs = {}
+        self.boxcenter = boxcenter
+        self.mesh_delta_k = mesh
+        from pmesh.pm import BaseComplexField
+        if not isinstance(mesh, BaseComplexField):
+            self.mesh_delta_k = mesh.r2c()
+        self.pm = self.mesh_delta_k.pm
+        return self
 
     def is_mpi_root(self):
         """Whether current rank is root."""
