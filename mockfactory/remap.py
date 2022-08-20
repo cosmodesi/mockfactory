@@ -249,7 +249,7 @@ class Cuboid(BaseClass):
         for cell in self.cells:
             self.log_debug(str(cell))
 
-    def transform(self, position):
+    def transform(self, position, translational_invariant=False):
         """
         Transform input positions in box to remapped positions.
 
@@ -257,6 +257,10 @@ class Cuboid(BaseClass):
         ----------
         position : array_like (N, 3)
             Cartesian positions in box, in [0, boxsize].
+
+        translational_invariant : bool, default=False
+            Whether vector is translational-invariant (in which case no translation is applied),
+            as is e.g. the case of velocities.
 
         Returns
         -------
@@ -268,20 +272,23 @@ class Cuboid(BaseClass):
         position = np.atleast_2d(position)
         if position.shape[-1] != 3:
             raise ValueError('Input position should be of shape (...,3)')
-        position /= self.boxsize
-        mask = np.zeros(position.shape[0], dtype=np.bool_)
-        for cell in self.cells:
-            mask_ = cell.isin(position)
-            mask |= mask_
-            position[mask_] += cell.ipos
-        if not mask.all():
-            raise CuboidError('Elements not contained in any cell')
-        toret = vec3([dot(position.T, n) for n in [self.n1, self.n2, self.n3]]).T * self.cuboidresize
+        if translational_invariant:
+            toret = vec3([dot(position.T, n) for n in [self.n1, self.n2, self.n3]]).T
+        else:
+            position /= self.boxsize
+            mask = np.zeros(position.shape[0], dtype=np.bool_)
+            for cell in self.cells:
+                mask_ = cell.isin(position)
+                mask |= mask_
+                position[mask_] += cell.ipos
+            if not mask.all():
+                raise CuboidError('Elements not contained in any cell')
+            toret = vec3([dot(position.T, n) for n in [self.n1, self.n2, self.n3]]).T * self.cuboidresize
         if isscalar:
             toret = toret[0]
         return toret
 
-    def inverse_transform(self, position):
+    def inverse_transform(self, position, translational_invariant=False):
         """
         Transform remapped positions to positions in box.
 
@@ -289,6 +296,10 @@ class Cuboid(BaseClass):
         ----------
         position : array_like (N, 3)
             Cartesian remapped positions.
+
+        translational_invariant : bool, default=False
+            Whether vector is translational-invariant (in which case no translation is applied),
+            as is e.g. the case of velocities.
 
         Returns
         -------
@@ -298,11 +309,14 @@ class Cuboid(BaseClass):
         position = np.array(position)
         isscalar = position.ndim == 1
         position = np.atleast_2d(position)
-        position /= self.cuboidresize
-        if position.shape[-1] != 3:
-            raise ValueError('Input position should be of shape (...,3)')
-        position = sum(p[:, None] * n for p, n in zip(position.T, [self.n1, self.n2, self.n3]))
-        toret = (position % 1) * self.boxsize
+        if translational_invariant:
+            toret = sum(p[:, None] * n for p, n in zip(position.T, [self.n1, self.n2, self.n3]))
+        else:
+            position /= self.cuboidresize
+            if position.shape[-1] != 3:
+                raise ValueError('Input position should be of shape (...,3)')
+            position = sum(p[:, None] * n for p, n in zip(position.T, [self.n1, self.n2, self.n3]))
+            toret = (position % 1.) * self.boxsize
         if isscalar:
             toret = toret[0]
         return toret

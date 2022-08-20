@@ -63,6 +63,11 @@ def test_remap():
     inverse = cuboid.inverse_transform(test)
     assert np.allclose(position, inverse)
 
+    test = cuboid.transform(position, translational_invariant=True)
+    assert np.allclose(np.sum(test**2, axis=-1), np.sum(position**2, axis=-1))
+    inverse = cuboid.inverse_transform(test, translational_invariant=True)
+    assert np.allclose(position, inverse)
+
 
 def test_randoms():
     catalog = RandomBoxCatalog(size=1000, boxsize=10., boxcenter=3., attrs={'name': 'randoms'})
@@ -161,7 +166,7 @@ def test_cutsky():
     assert np.allclose([drange, rarange, decrange], [(3500, 4000), (-22.024312837042164, 22.024312837042164), (-55.15009542095352, 55.15009542095352)])
     drange, rarange, decrange = box_to_cutsky(boxsize=[2000, 9000, 8000], dmax=4000, dmin=3500)
     assert np.allclose([drange, rarange, decrange], [(3500, 4000), (-55.15009542095352, 55.15009542095352), (-55.15009542095352, 55.15009542095352)])
-    
+
     drange = [2200., 2300.]; rarange = [0., 50.]; decrange = [-1., 5.]
     boxsize = cutsky_to_box(drange=drange, rarange=rarange, decrange=decrange, return_isometry=False)
     drange2, rarange2, decrange2 = box_to_cutsky(boxsize=boxsize, dmax=drange[-1])
@@ -299,9 +304,6 @@ def test_rotation_matrix():
 if __name__ == '__main__':
 
     setup_logging()
-
-    test_cutsky()
-    exit()
 
     test_remap()
     test_isometry()

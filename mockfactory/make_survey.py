@@ -534,7 +534,7 @@ class ParticleCatalog(Catalog):
         self._velocity = velocity
         self._vectors = set(vectors or [])
         self._translational_invariants = set(translational_invariants or [])
-        self._vectors |= set([self._position, self._velocity])
+        self._vectors |= {self._position, self._velocity}
         self._translational_invariants |= set([self._velocity])
 
     @property
@@ -753,8 +753,12 @@ class BoxCatalog(ParticleCatalog):
         new.boxsize = cuboid.cuboidsize
         cuboidoffset = new.boxcenter - new.boxsize / 2.
         for name in self.vectors:
-            if name not in self._translational_invariants:
-                new[name] = cuboid.transform(self[name] - offset) + cuboidoffset
+            if name in self._translational_invariants:
+                new[name] = cuboid.transform(self[name], translational_invariant=True)
+            else:
+                new[name] = cuboid.transform(self[name] - offset, translational_invariant=False) + cuboidoffset
+            #if name not in self._translational_invariants:
+            #    new[name] = cuboid.transform(self[name] - offset) + cuboidoffset
         return new
 
     def subbox(self, ranges=(0, 1), boxsize_unit=True):
@@ -930,7 +934,7 @@ class BoxCatalog(ParticleCatalog):
 
         return isometries, mask_radial, mask_angular
 
-    def cutsky_from_isometry(self, isometry, mask_radial=None, mask_angular=None, dradec=('Distance', 'RA', 'DEC')):
+    def cutsky_from_isometry(self, isometry, mask_radial=None, mask_angular=None, rdd=('RA', 'DEC', 'Distance')):
         """
         Cut box to sky geometry, starting from distance, RA, and Dec ranges.
         Typically called with outputs of :meth:`isometry_for_cutsky`.
@@ -950,9 +954,9 @@ class BoxCatalog(ParticleCatalog):
             Angular mask (function of RA, Dec) to apply to the shifted catalog.
             If not provided, no angular mask is applied.
 
-        dradec : tuple or list of strings
-            Names of columns to store distance, RA and Dec in output catalog.
-            If ``None``, columns distance, RA and Dec are not added to output catalog.
+        rdd : tuple or list of strings
+            Names of columns to store RA, Dec and distance in output catalog.
+            If ``None``, columns RA, Dec and distance are not added to output catalog.
 
         Returns
         -------
@@ -968,8 +972,8 @@ class BoxCatalog(ParticleCatalog):
                                 translational_invariants=catalog._translational_invariants, attrs=catalog.attrs)
         catalog.isometry(isometry)
         dist, ra, dec = utils.cartesian_to_sky(catalog.position, degree=True, wrap=False)
-        if dradec is not None:
-            for name, array in zip(dradec, [dist, ra, dec]):
+        if rdd is not None:
+            for name, array in zip(rdd, [ra, dec, dist]):
                 catalog[name] = array
 
         if mask_radial is not None:
@@ -982,7 +986,7 @@ class BoxCatalog(ParticleCatalog):
             catalog = catalog[mask]
         return catalog
 
-    def cutsky(self, drange, rarange, decrange, external_margin=None, internal_margin=None, noutput=1, mask_radial=True, mask_angular=True, dradec=('Distance', 'RA', 'DEC')):
+    def cutsky(self, drange, rarange, decrange, external_margin=None, internal_margin=None, noutput=1, mask_radial=True, mask_angular=True, rdd=('RA', 'DEC', 'Distance')):
         """
         Cut box to sky geometry, starting from distance, RA, and Dec ranges.
         Basically a shortcut to :meth:`isometry_for_cutsky` and :meth:`cutsky_from_isometry`.
@@ -1019,9 +1023,9 @@ class BoxCatalog(ParticleCatalog):
         mask_angular : UniformAngularMask, default=None
             Whether to apply angular mask.
 
-        dradec : tuple or list of strings
-            Names of columns to store distance, RA and Dec in output catalog.
-            If ``None``, columns distance, RA and Dec are not added to output catalog.
+        rdd : tuple or list of strings
+            Names of columns to store RA, Dec and distance in output catalog.
+            If ``None``, columns RA, Dec and distance are not added to output catalog.
 
         Returns
         -------
@@ -1034,7 +1038,7 @@ class BoxCatalog(ParticleCatalog):
         isometry = result[0]
         mask_radial = result[1] if mask_radial else None
         mask_angular = result[2] if mask_angular else None
-        return self.cutsky_from_isometry(isometry, mask_radial=mask_radial, mask_angular=mask_angular)
+        return self.cutsky_from_isometry(isometry, mask_radial=mask_radial, mask_angular=mask_angular, rdd=rdd)
 
 
 class RandomBoxCatalog(BoxCatalog):

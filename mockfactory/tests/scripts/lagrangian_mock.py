@@ -10,13 +10,13 @@ def main():
     z = 1.
     # Loading DESI fiducial cosmology
     cosmo = DESI()
-    power = cosmo.get_fourier().pk_interpolator().to_1d(z=z)
+    pklin = cosmo.get_fourier().pk_interpolator().to_1d(z=z)
 
     dist = cosmo.comoving_radial_distance(z)
     f = cosmo.sigma8_z(z=z, of='theta_cb') / cosmo.sigma8_z(z=z, of='delta_cb')  # growth rate
-    bias, nbar, nmesh, size = 2.0, 1e-3, 256, 1000.
+    bias, nbar, nmesh, boxsize = 2.0, 1e-3, 256, 1000.
     boxcenter = [dist, 0, 0]
-    mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=size, boxcenter=boxcenter, seed=42, unitary_amplitude=False)
+    mock = LagrangianLinearMock(pklin, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, seed=42, unitary_amplitude=False)
     # this is Lagrangian bias, Eulerian bias - 1
     mock.set_real_delta_field(bias=bias - 1)
     mock.set_analytic_selection_function(nbar=nbar)
@@ -25,10 +25,10 @@ def main():
     data = mock.to_catalog()
 
     # We've got data, now turn to randoms
-    randoms = RandomBoxCatalog(nbar=4. * nbar, boxsize=size, seed=44)
+    randoms = RandomBoxCatalog(nbar=4. * nbar, boxsize=boxsize, seed=44)
 
     # Let us cut the above box to some geometry
-    drange = [dist - size / 3., dist + size / 3.]
+    drange = [dist - boxsize / 3., dist + boxsize / 3.]
     rarange = [10, 20]
     decrange = [20, 30]
 
