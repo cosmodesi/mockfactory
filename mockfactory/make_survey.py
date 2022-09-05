@@ -1358,7 +1358,7 @@ class TabulatedRadialMask(BaseRadialMask):
         self.z = np.asarray(z)
         self.nbar = np.asarray(nbar)
         if not np.all(self.nbar >= 0.):
-            raise ValueError('Provided nbar should be all positive.')
+            raise ValueError('Provided nbar must be all positive.')
         zmin, zmax = self.z[0], self.z[-1]
         if zrange is None: zrange = zmin, zmax
         super(TabulatedRadialMask, self).__init__(zrange=zrange, mpicomm=mpicomm)

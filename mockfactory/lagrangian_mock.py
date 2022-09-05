@@ -124,6 +124,8 @@ class LagrangianLinearMock(BaseGaussianMock):
         for iaxis, mesh_disp_r in enumerate(self.mesh_disp_r):
             self.disps[:, iaxis] = self.readout(self.position, field=mesh_disp_r, resampler=resampler, compensate=compensate)
         self.position += self.disps
+        offset = self.boxcenter - self.boxsize / 2.
+        self.position = (self.position - offset) % self.boxsize + offset
 
     def set_rsd(self, f, los=None):
         r"""
