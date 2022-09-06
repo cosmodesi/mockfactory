@@ -223,8 +223,8 @@ if __name__ == '__main__':
     """ Example of how go from Cubicbox simulation to DESI cutsky using MPI.
 
         Can be launch with MPI:
-            salloc -N 1 -C haswell -t 00:30:00 --qos interactive -L SCRATCH,project
-            srun -n 64 python from_box_to_desi_cutsky.py
+            salloc -N 4 -C haswell -t 00:30:00 --qos interactive -L SCRATCH,project
+            srun -n 256 python from_box_to_desi_cutsky.py
 
         For debbuging purpose only:
             mpirun -n 4 python from_box_to_desi_cutsky.py
