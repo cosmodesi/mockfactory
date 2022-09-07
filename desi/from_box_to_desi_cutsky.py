@@ -280,7 +280,7 @@ if __name__ == '__main__':
 
     # With the SAME realisation match North, Decalz_north and Decalz_south region
     # The three regions are not idependent. Usefull to test the geometrical effect / imaging systematic effect on each region
-    region_list = ['N']  # , 'SNGC', 'SSGC']
+    region_list = ['N', 'SNGC', 'SSGC']
 
     # Fix seed for reproductibility
     seed_nz, seed_nmock, seed_randoms = 79, 792, 4
