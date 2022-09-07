@@ -266,9 +266,6 @@ if __name__ == '__main__':
     mock.poisson_sample(seed=792)
     box = mock.to_catalog()
 
-    # for debug --> to be deleted
-    box.write('box-before-remap', filetype='bigfile', group=f'{release}-{program}/', overwrite=True)
-
     # The following code request a mockfactory.BoxCatalog to work.
     # mockfactory.BoxCatalog proposes different way to read catalog in different format with MPI
     # We can also directly build BoxCatalog from an array (similar as dtype numpy array) splitted in different ranks
@@ -283,7 +280,7 @@ if __name__ == '__main__':
 
     # With the SAME realisation match North, Decalz_north and Decalz_south region
     # The three regions are not idependent. Usefull to test the geometrical effect / imaging systematic effect on each region
-    region_list = ['N']  # ‡, 'SNGC', 'SSGC']
+    region_list = ['N']  # , 'SNGC', 'SSGC']
 
     # Fix seed for reproductibility
     seed_nz, seed_nmock, seed_randoms = 79, 792, 4
@@ -297,14 +294,8 @@ if __name__ == '__main__':
         add_ra, add_dec = photometric_region_center(region)
         if rank == 0: logger.info(f'Rotation to match region: {region} with add_ra: {add_ra} and add_dec: {add_dec}')
 
-        # for debug --> to be deleted
-        box.write('data-box', filetype='bigfile', group=f'{release}-{program}-{region}/', overwrite=True)
-
         # create the cutsky
         cutsky = apply_rsd_and_cutsky(box, z_to_chi(zmin, cosmo=cosmo), z_to_chi(zmax, cosmo=cosmo), f, add_ra=add_ra, add_dec=add_dec)
-
-        # for debug --> to be deleted
-        cutsky.write('data-test', filetype='bigfile', group=f'{release}-{program}-{region}/', overwrite=True)
 
         # convert distance to redshift
         cutsky['Z'] = chi_to_z(cutsky['DISTANCE'], cosmo=cosmo)
@@ -316,16 +307,15 @@ if __name__ == '__main__':
         start = MPI.Wtime()
         desi_cutsky = match_dr9_desi_footprint(cutsky, region, release, program, rank)
 
-        # # collect only maskbits, see mockfactory/desi/brick_pixel_quantities for other quantities as PSFSIZE_R or LRG_mask
-        # # this step can be long. Large sky coverage need several nodes to be executed in small amounts of time ( ~50 bricks per process)
-        # columns = {'maskbits': {'fn': '/global/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', 'dtype': 'i2', 'default': 1}}
-        # desi_cutsky['MASKBITS'] = get_brick_pixel_quantities(desi_cutsky['RA'], desi_cutsky['DEC'], columns, mpicomm=mpicomm)['maskbits']
-        # if rank == 0: logger.info(f"Match region: {region} and release footprint: {release} + apply DR9 maskbits done in {MPI.Wtime() - start:2.2f} s.")
+        # collect only maskbits, see mockfactory/desi/brick_pixel_quantities for other quantities as PSFSIZE_R or LRG_mask
+        # this step can be long. Large sky coverage need several nodes to be executed in small amounts of time ( ~50 bricks per process)
+        columns = {'maskbits': {'fn': '/global/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', 'dtype': 'i2', 'default': 1}}
+        desi_cutsky['MASKBITS'] = get_brick_pixel_quantities(desi_cutsky['RA'], desi_cutsky['DEC'], columns, mpicomm=mpicomm)['maskbits']
+        if rank == 0: logger.info(f"Match region: {region} and release footprint: {release} + apply DR9 maskbits done in {MPI.Wtime() - start:2.2f} s.")
 
         # save desi_cutsky into the same bigfile --> N / SNGC / SSGC
         start = MPI.Wtime()
-        desi_cutsky.write('data-cutsky', columns=['RA', 'DEC', 'Z', 'DISTANCE'], filetype='bigfile', group=f'{release}-{program}-{region}/', overwrite=True)
-        # desi_cutsky.write('data-cutsky', columns=['RA', 'DEC', 'Z', 'MASKBITS', 'DISTANCE', 'HPX'], filetype='bigfile', group=f'{release}-{program}-{region}/')
+        desi_cutsky.write('data-cutsky', columns=['RA', 'DEC', 'Z', 'MASKBITS', 'DISTANCE', 'HPX'], filetype='bigfile', group=f'{release}-{program}-{region}/', overwrite=True)
         if rank == 0: logger.info(f"Save done in {MPI.Wtime() - start:2.2f} s.\n")
 
         if generate_randoms:
@@ -356,7 +346,7 @@ if __name__ == '__main__':
 
             # save randoms
             start = MPI.Wtime()
-            randoms.write('randoms-cutsky', columns=['RA', 'DEC', 'Z', 'MASKBITS', 'HPX'], filetype='bigfile', group=f'{release}-{program}-{region}/')
+            randoms.write('randoms-cutsky', columns=['RA', 'DEC', 'Z', 'MASKBITS', 'HPX'], filetype='bigfile', group=f'{release}-{program}-{region}/', overwrite=True)
             if rank == 0: logger.info(f"Save done in {MPI.Wtime() - start:2.2f} s.\n")
 
     if rank == 0: logger.info(f"Make survey took {MPI.Wtime() - start_ini:2.2f} s.")
