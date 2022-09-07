@@ -58,7 +58,7 @@ def orthogonalize(u1, u2, u3):
 
 class Plane(BaseClass):
 
-    """Plane in 3-D cartesian space."""
+    """Plane in 3-D Cartesian space."""
 
     def __init__(self, p, n):
         """
@@ -158,16 +158,16 @@ class Cuboid(BaseClass):
 
         Parameters
         ----------
-        u1 : array_like of shape (3,)
+        u1 : array_like of shape (3,), default=(1, 0, 0)
             Lattice vector.
 
-        u2 : array_like of shape (3,)
+        u2 : array_like of shape (3,), default=(0, 1, 0)
             Lattice vector.
 
-        u3 : array_like of shape (3,)
+        u3 : array_like of shape (3,), default=(0, 0, 1)
             Lattice vector.
 
-        boxsize : float, array_like of shape (3,)
+        boxsize : float, array_like of shape (3,), default=1.
             Size of the initial box.
 
         Note
@@ -329,16 +329,16 @@ class Cuboid(BaseClass):
 
         Parameters
         ----------
-        maxint : int
+        maxint : int, default=2
             Maximum integer coordinate.
 
         maxcomb : int, default=None
             Maximum number of combinations of lattice vectors for each cuboid size.
 
-        boxsize : float, array_like of shape (3,)
+        boxsize : float, array_like of shape (3,), default=1.
             Size of the initial box.
 
-        cuboidranges : array_like
+        cuboidranges : array_like, default=None
             List of 3 ranges (min, max) for the cuboid size.
             If ``None``, no selection is performed.
 

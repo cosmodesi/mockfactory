@@ -578,8 +578,8 @@ class ParticleCatalog(Catalog):
         Parameters
         ----------
         f : callable, float
-            Relation between the velocity and the RSD displacement.
-            If a callable, take the (flattened) distance to the observer as input, i.e. :math:`f(r) \psi'.
+            Factor to apply to :attr:`velocity` to obtain the RSD displacement in :attr:`position` units.
+            If a callable, take the (flattened) distance to the observer as input, i.e. displacement is given by :math:`f(r) \psi'.
             Else, a float to multiply the velocity.
 
         los : 'x', 'y', 'z'; int, 3-vector of int, default=None
@@ -1256,8 +1256,8 @@ class BaseRadialMask(BaseMask):
 
         distance : callable
             Callable that provides distance as a function of redshift (array).
-            Redshifts are sampled by applying :meth:`__call__` distribution with constant volume-density
-            (i.e. distance-density following distance**2).
+            Redshifts are sampled by applying :meth:`__call__` distribution to a constant volume-density
+            (i.e. density following distance**2), as e.g. simulation boxes.
 
         seed : int, default=None
             The global random seed, used to set the seeds across all ranks.
@@ -1501,7 +1501,7 @@ class TabulatedRadialMask(BaseRadialMask):
 
         zedges : array, default=None
             The original redshift edges in case of binned :attr:`nbar` where shell volumes were proportional
-            to ``distance_self(zedges[1:])**3-distance_self(dedges[:-1])**3``, in which case a perfect rescaling is achieved.
+            to ``distance_self(zedges[1:])**3 - distance_self(dedges[:-1])**3``, in which case a perfect rescaling is achieved.
             Defaults to edges falling in the middle of :attr:`z` points.
         """
         if zedges is None:
