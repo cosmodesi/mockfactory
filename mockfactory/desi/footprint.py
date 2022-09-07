@@ -1,80 +1,88 @@
 import numpy as np
-import pandas as pd
 
 import desimodel.io
 import desimodel.footprint
 
 
-def is_in_desi_footprint(ra, dec, release='da02', program='dark', survey='main'):
+def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', survey='main', tiles_fn='/global/cfs/cdirs/desi/spectro/redux/{redux}/tiles-{redux}.csv'):
     """
-        Return mask for objects in the considered DESI footprint.
+    Return mask for the requested DESI footprint.
 
-        **Remark:** Y1 is for the moment define with the daily catalog. Y1 DR is expected to be everything before the fire.
+    Note
+    ----
+    Y1 is for the moment defined with the daily catalog, before the fire (20220613).
 
-        Parameters
-        ----------
-        ra : array
-            Right ascension (degree).
+    Parameters
+    ----------
+    ra : array
+        Right ascension (degree).
 
-        dec : array
-            Declination (degree).
+    dec : array
+        Declination (degree).
 
-        release : str
-            Name of the survey. Available now: sv1, sv2, sv3, da02, y1, y1-3pass, y5.
+    release : string, default='m3'
+        Name of the survey. Available: onepercent, m3, y1, y5.
 
-        program : str
-            Name of the program. Either dark for LRG/ELG/QSO or bright for BGS.
+    npasses : int, default=None
+        Number of passes; ``None`` for all passes.
 
-        survey : str
-            Type of the survey. Let main for standard DESI analysis.
+    program : string, default='dark'
+        Name of the program. Either 'dark' for LRG/ELG/QSO or 'bright' for BGS.
 
-        Returns
-        -------
-        bool array of the same size than ra.
+    survey : string, default='main'
+        Type of the survey, 'main' for the standard DESI clustering analysis.
+
+    tiles_fn : string
+        Template path to csv file of tiles.
+
+    Returns
+    -------
+    mask : array
+        Boolean array of the same size than ra, dec, with ``True`` if in footprint, ``False`` otherwise.
     """
-    if release in ['sv1', 'sv2', 'sv3']:
-        tiles = pd.read_csv('/global/cfs/cdirs/desi/spectro/redux/fuji/tiles-fuji.csv')
-        tiles = tiles[(tiles['SURVEY'] == survey) & (tiles['FAPRGRM'] == program)]
-        tiles['RA'], tiles['DEC'] = tiles['TILERA'], tiles['TILEDEC']
+    lastnight = None
+    release = release.lower()
+    if release in ['sv3', 'onepercent']:
+        redux = 'fuji'
+    elif release in ['da02', 'm3']:
+        redux = 'guadalupe'
+    elif release  == 'y1':
+        redux = 'daily'
+        lastnight = 20220613
+    elif release == 'y5':
+        redux = None
+    else:
+        raise ValueError('Unknown release {}'.format(release))
 
-    if release == 'da02':
-        tiles = pd.read_csv('/global/cfs/cdirs/desi/spectro/redux/guadalupe/tiles-guadalupe.csv')
-        tiles = tiles[(tiles['SURVEY'] == survey) & (tiles['FAPRGRM'] == program)]
-        tiles['RA'], tiles['DEC'] = tiles['TILERA'], tiles['TILEDEC']
-
-    if release == 'y1':
-        tiles = pd.read_csv('/global/cfs/cdirs/desi/spectro/redux/daily/tiles-daily.csv')
-        tiles = tiles[(tiles['SURVEY'] == survey) & (tiles['FAPRGRM'] == program)]
-        # keep all the observation before the fire --> expect to be the definition of Y1
-        tiles = tiles[tiles['LASTNIGHT'] <= 20220613]
-        tiles['RA'], tiles['DEC'] = tiles['TILERA'], tiles['TILEDEC']
-
-    if release == 'y1-3pass':
-        tiles = pd.read_csv('/global/cfs/cdirs/desi/spectro/redux/daily/tiles-daily.csv')
-        tiles = tiles[(tiles['SURVEY'] == survey) & (tiles['FAPRGRM'] == program)]
-        # keep all the observation before the fire --> expect to be the definition of Y1
-        tiles = tiles[tiles['LASTNIGHT'] <= 20220613]
-        tiles['RA'], tiles['DEC'] = tiles['TILERA'], tiles['TILEDEC']
-
-        return np.array([len(tt) >= 3 for tt in desimodel.footprint.find_tiles_over_point(tiles, ra, dec)])
-
-    if release == 'y5':
+    if redux is None:
         tiles = desimodel.io.load_tiles()
+    else:
+        import pandas as pd
+        tiles_fn = tiles_fn.format(redux=redux)
+        tiles = pd.read_csv(tiles_fn)
+        tiles = tiles[(tiles['SURVEY'] == survey) & (tiles['FAPRGRM'] == program)]
+        if lastnight is not None:
+            tiles = tiles[tiles['LASTNIGHT'] <= lastnight]
+        tiles['RA'], tiles['DEC'] = tiles['TILERA'], tiles['TILEDEC']
+
+    if npasses is not None:
+        return np.array([len(tt) >= npasses for tt in desimodel.footprint.find_tiles_over_point(tiles, ra, dec)], dtype='?')
 
     return desimodel.footprint.is_point_in_desi(tiles, ra, dec)
 
 
 if __name__ == '__main__':
 
-    from mockfactory import RandomCutskyCatalog
     import time
+    from mockfactory import RandomCutskyCatalog
 
     # Generate example cutsky catalog, scattered on all processes
     cutsky = RandomCutskyCatalog(rarange=(200, 250), decrange=(15, 45), size=10000, seed=44)
     ra, dec = cutsky['RA'], cutsky['DEC']
 
-    t0 = time.time()
-    is_in_desi = is_in_desi_footprint(ra, dec, release='y1-3pass', program='dark')
-    print(f'Mask build for {ra.size} objects in {time.time() - t0:2.2f}s')
-
-    print(f'There is {is_in_desi.sum() / is_in_desi.size:2.2%} objects in the desi footprint')
+    for release in ['SV3', 'DA02', 'Y1', 'Y5']:
+        for npasses in [None, 1]:
+            t0 = time.time()
+            is_in_desi = is_in_desi_footprint(ra, dec, release=release, npasses=npasses, program='dark')
+            print(f'Mask build for {ra.size} objects in {time.time() - t0:2.2f}s')
+            print(f'There are {is_in_desi.sum() / is_in_desi.size:2.2%} objects in {release} with {npasses} passes')
