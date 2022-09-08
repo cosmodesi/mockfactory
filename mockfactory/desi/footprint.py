@@ -1,10 +1,24 @@
+import os
+import logging
+
 import numpy as np
 
 import desimodel.io
 import desimodel.footprint
 
 
-def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', survey='main', tiles_fn='/global/cfs/cdirs/desi/spectro/redux/{redux}/tiles-{redux}.csv'):
+logger = logging.getLogger('DESI footprint')
+
+
+# check if the env variable DESI_SPECTRO_REDUX is defined, otherwise load default path
+try:
+    redux_path = os.environ['DESI_SPECTRO_REDUX']
+except KeyError:
+    logger.warning("$DESI_SPECTRO_REDUX is not set in the current environment. No assurance for the existence of files. Default path will be used: /global/cfs/cdirs/desi/spectro/redux")
+    redux_path = '/global/cfs/cdirs/desi/spectro/redux'
+
+
+def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', survey='main', tiles_fn=os.path.join(redux_path, '{redux}/tiles-{redux}.csv')):
     """
     Return mask for the requested DESI footprint.
 
@@ -46,7 +60,7 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
         redux = 'fuji'
     elif release in ['da02', 'm3']:
         redux = 'guadalupe'
-    elif release  == 'y1':
+    elif release == 'y1':
         redux = 'daily'
         lastnight = 20220613
     elif release == 'y5':
@@ -74,15 +88,17 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
 if __name__ == '__main__':
 
     import time
-    from mockfactory import RandomCutskyCatalog
+    from mockfactory import RandomCutskyCatalog, setup_logging
+
+    setup_logging()
 
     # Generate example cutsky catalog, scattered on all processes
     cutsky = RandomCutskyCatalog(rarange=(200, 250), decrange=(15, 45), size=10000, seed=44)
     ra, dec = cutsky['RA'], cutsky['DEC']
 
     for release in ['SV3', 'DA02', 'Y1', 'Y5']:
-        for npasses in [None, 1]:
+        for npasses in [None, 3]:
             t0 = time.time()
             is_in_desi = is_in_desi_footprint(ra, dec, release=release, npasses=npasses, program='dark')
-            print(f'Mask build for {ra.size} objects in {time.time() - t0:2.2f}s')
-            print(f'There are {is_in_desi.sum() / is_in_desi.size:2.2%} objects in {release} with {npasses} passes')
+            logger.info(f'Mask build for {ra.size} objects in {time.time() - t0:2.2f}s')
+            logger.info(f'There are {is_in_desi.sum() / is_in_desi.size:2.2%} objects in {release} with {npasses} passes')
