@@ -237,6 +237,18 @@ def test_mpi():
         assert np.allclose(positions, ref_positions)
 
 
+def test_poisson():
+    mock = LagrangianLinearMock(power, nmesh=256, boxsize=5500, boxcenter=[0, 0, 0], seed=42, unitary_amplitude=False)
+    mock.set_real_delta_field(bias=(2 - 1))  # This is Lagrangian bias, Eulerian bias - 1
+    mock.set_analytic_selection_function(nbar=1e-4)
+    mock.poisson_sample(seed=792)
+    box = mock.to_catalog()
+    position = box.cget('Position')
+    if mock.mpicomm.rank == 0:
+        plt.hist2d(position[:, 0], position[:, 1], bins=100)
+        plt.show()
+
+
 if __name__ == '__main__':
 
     setup_logging()

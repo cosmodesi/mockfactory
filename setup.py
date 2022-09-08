@@ -16,5 +16,5 @@ setup(name=package_basename,
       description='pmesh-based package to produce Gaussian mocks for validation of clustering pipelines',
       license='BSD3',
       url='http://github.com/cosmodesi/mockfactory',
-      install_requires=['numpy', 'scipy', 'pmesh', 'mpytools'],
+      install_requires=['numpy', 'scipy', 'pmesh', 'mpytools @ git+https://github.com/adematti/mpytools'],
       packages=[package_basename])
