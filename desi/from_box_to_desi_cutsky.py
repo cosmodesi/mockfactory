@@ -1,5 +1,4 @@
 import os
-import sys
 import logging
 
 import numpy as np
@@ -22,7 +21,7 @@ def remap_the_box(catalog):
     from mockfactory.remap import Cuboid
     # Remap the box, see nb/remap_examples.ipynb to see how we choose the vector:
     lattice = Cuboid.generate_lattice_vectors(maxint=1, maxcomb=1, sort=False,
-                                              boxsize=catalog.boxsize,
+                                              boxsize=[5500, 5500, 5500],
                                               cuboidranges=[[8000, 10000], [4000, 5000], [2000, 4000]])
     # Collect the desired lattice.values:
     u = list(lattice.values())[1][0]
@@ -141,7 +140,7 @@ def apply_radial_mask(cutsky, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', 
 
 def generate_redshifts(size, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', cosmo=None, seed=145):
     """
-    Generate redshifts following the input n(z) distribution between ``zmin`` and ``zmax``. 
+    Generate redshifts following the input n(z) distribution between ``zmin`` and ``zmax``.
 
     Note
     ----
@@ -204,15 +203,15 @@ def photometric_region_center(region):
 
 
 def is_in_photometric_region(ra, dec, region, rank=0):
+    """ DN=NNGC and DS = SNGC """
     region = region.upper()
-    assert region in ['N', 'DN', 'DS', 'DES']
+    assert region in ['N', 'DN', 'DS', 'SNGC', 'SSGC', 'DES']
 
     DR9Footprint = None
     try:
         from regressis import DR9Footprint
     except ImportError:
-        if rank == 0: logger.info(f'Regressis not found, falling back to RA/Dec cuts')
-    #DR9Footprint = None
+        if rank == 0: logger.info('Regressis not found, falling back to RA/Dec cuts')
 
     if DR9Footprint is None:
         mask = np.ones_like(ra, dtype='?')
@@ -238,7 +237,7 @@ def is_in_photometric_region(ra, dec, region, rank=0):
         nside = 256
         _, cutsky['HPX'] = build_healpix_map(nside, ra, dec, return_pix=True)
 
-         # Load DR9 footprint and create corresponding mask
+        # Load DR9 footprint and create corresponding mask
         dr9_footprint = DR9Footprint(nside, mask_lmc=False, clear_south=False, mask_around_des=False, cut_desi=False, verbose=(rank == 0))
         convert_dict = {'N': 'north', 'DN': 'south_mid_ngc', 'DS': 'south_mid_sgc', 'DES': 'des'}
         return dr9_footprint(convert_dict[region])[cutsky['HPX']]
@@ -275,8 +274,8 @@ if __name__ == '__main__':
     from mockfactory.desi import get_brick_pixel_quantities
 
     # To remove the following warning from pmesh (no need for pmesh version in cosmodesiconda)
-    #import warnings
-    #warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
+    # import warnings
+    # warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
 
     from cosmoprimo.fiducial import DESI
 
@@ -287,19 +286,27 @@ if __name__ == '__main__':
 
     # Output directory
     outdir = '_tests'
+
     # n(z)
     zmin, zmax, nz_filename = 0.8, 2.65, 'nz_qso_final.dat'
+
     # Choose the footprint: DA02, Y1, Y5 for dark or bight time
     release, program, npasses = 'y1', 'dark', 3
     programpasses = f'{program}-{npasses}' if npasses is not None else program
+
     # Do you want also to generate randoms?
     generate_randoms = True
+
     # Add maskbits?
     # This step can be long. Large sky coverage need several nodes to be executed in small amounts of time ( ~50 bricks per process)
-    add_brick_quantities = {'maskbits': {'fn': '/global/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', 'dtype': 'i2', 'default': 1}}  # collect only maskbits, see mockfactory/desi/brick_pixel_quantities for other quantities as PSFSIZE_R or LRG_mask
+    # collect only maskbits, see mockfactory/desi/brick_pixel_quantities for other quantities as PSFSIZE_R or LRG_mask
+    add_brick_quantities = {'maskbits': {'fn': '/global/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', 'dtype': 'i2', 'default': 1}}
+    # Set as False to save time.
     add_brick_quantities = False
+
+    # output format. For large dataset, fits is not always the best...
     fmt = 'fits'
-    #fmt = 'bigfile'
+    # fmt = 'bigfile'
 
     # Load DESI fiducial cosmology
     cosmo = DESI(engine='class')
@@ -335,9 +342,8 @@ if __name__ == '__main__':
 
     # Fix random seed for reproductibility
     seed_mock, seed_randoms = 79, 792
-    all_regions = ['N', 'DN', 'DS']
-    seeds_data_nz = {region: seed_mock + i for i, region in enumerate(all_regions)}
-    seeds_randoms = {region: seed_randoms + i for i, region in enumerate(all_regions)}
+    seeds_data_nz = {region: seed_mock + i for i, region in enumerate(regions)}
+    seeds_randoms = {region: seed_randoms + i for i, region in enumerate(regions)}
 
     from mockfactory import DistanceToRedshift
     d2z = DistanceToRedshift(cosmo.comoving_radial_distance)
@@ -360,8 +366,7 @@ if __name__ == '__main__':
 
         # Match the desi footprint and apply the DR9 mask
         start = MPI.Wtime()
-        desi_cutsky = match_photo_desi_footprint(cutsky, region, release, program, npasses=npasses, rank=rank) 
-
+        desi_cutsky = match_photo_desi_footprint(cutsky, region, release, program, npasses=npasses, rank=rank)
         if add_brick_quantities:
             tmp = get_brick_pixel_quantities(desi_cutsky['RA'], desi_cutsky['DEC'], add_brick_quantities, mpicomm=mpicomm)
             for key, value in tmp.items(): desi_cutsky[key.upper()] = value
@@ -395,8 +400,8 @@ if __name__ == '__main__':
 
             # Match the desi footprint and apply the DR9 mask
             start = MPI.Wtime()
+            randoms = match_photo_desi_footprint(randoms, region, release, program, npasses=npasses, rank=rank)
             if add_brick_quantities:
-                randoms = match_photo_desi_footprint(randoms, region, release, program, npasses=npasses, rank=rank)
                 tmp = get_brick_pixel_quantities(randoms['RA'], randoms['DEC'], add_brick_quantities, mpicomm=mpicomm)
                 for key, value in tmp.items(): randoms[key.upper()] = value
             if rank == 0: logger.info(f'Match region: {region} and release footprint: {release} + bricks done in {MPI.Wtime() - start:2.2f} s.')
