@@ -193,9 +193,9 @@ def generate_redshifts(size, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', c
 def photometric_region_center(region):
     if region == 'N':
         ra, dec = 192.3, 56.0
-    elif region == 'DN':
+    elif region in ['DN', 'SNGC']:
         ra, dec = 192, 13.0
-    elif region == 'DS':
+    elif region in ['DS', 'SSGC']:
         ra, dec = 6.4, 5.3
     else:
         ValueError(f'photometric_region_center is not defined for region={region}')
@@ -222,10 +222,10 @@ def is_in_photometric_region(ra, dec, region, rank=0):
             mask &= dec > dec_cut
         else:  # S
             mask &= dec < dec_cut
-        if region in ['DN', 'DS']:
+        if region in ['DN', 'DS', 'SNGC', 'SSGC']:
             mask_ra = (ra > 100 - dec)
             mask_ra &= (ra < 280 + dec)
-            if region == 'DN':
+            if region in ['DN', 'SNGC']:
                 mask &= mask_ra
             else:  # DS
                 mask &= dec > -25
@@ -239,7 +239,7 @@ def is_in_photometric_region(ra, dec, region, rank=0):
 
         # Load DR9 footprint and create corresponding mask
         dr9_footprint = DR9Footprint(nside, mask_lmc=False, clear_south=False, mask_around_des=False, cut_desi=False, verbose=(rank == 0))
-        convert_dict = {'N': 'north', 'DN': 'south_mid_ngc', 'DS': 'south_mid_sgc', 'DES': 'des'}
+        convert_dict = {'N': 'north', 'DN': 'south_mid_ngc', 'SNGC': 'south_mid_ngc', 'DS': 'south_mid_sgc', 'SSGC': 'south_mid_sgc', 'DES': 'des'}
         return dr9_footprint(convert_dict[region])[cutsky['HPX']]
 
 
