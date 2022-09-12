@@ -1,22 +1,25 @@
 """
 Script to read brick pixel-level quantities, such as maskbits.
-This example can be run with srun -n 16 python brick_pixel_quantities.py,
+
+This example can be run with `srun -n 16 python brick_pixel_quantities.py`,
 but one will typically import:
+
 ```
 from mockfactory.desi import get_brick_pixel_quantities
 ```
+
+For an example, see desi/from_box_to_desi_cutsky script.
 """
 
 import os
 import logging
-import importlib
 
 import fitsio
 import numpy as np
 from mpi4py import MPI
 
 
-logger = logging.getLogger('bricks')
+logger = logging.getLogger('Bricks')
 
 
 def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD):
@@ -98,7 +101,7 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD):
     from astropy import wcs
     bricks = brick.Bricks()
 
-     # Create unique identification as index column
+    # Create unique identification as index column
     cumsize = np.cumsum([0] + mpicomm.allgather(ra.size))[mpicomm.rank]
     index = cumsize + np.arange(ra.size)
     brickid_data = _dict_to_array({'ra': ra, 'dec': dec, 'brickname': bricks.brickname(ra, dec), 'brickid': bricks.brickid(ra, dec), 'index': index})
@@ -201,9 +204,11 @@ if __name__ == '__main__':
     if mpicomm.rank == 1: ra, dec = [], []
 
     start = MPI.Wtime()
+    # to collect only maskbits, uncomment columns['maskbits'] and comment the rest
     columns = {}
-    #columns['maskbits'] = {'fn': '/global/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', 'dtype': 'i2', 'default': 1}  # default = outside brick primary
-    #columns['elg_mask'] = {'fn': '/global/cfs/cdirs/desi/survey/catalogs/brickmasks/ELG/v1/{region}/coadd/{brickname:.3s}/{brickname}/{brickname}-elgmask.fits.gz', 'dtype': 'i2', 'default': 0}
+    # default = outside brick primary
+    # columns['maskbits'] = {'fn': '/global/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', 'dtype': 'i2', 'default': 1}
+    # columns['elg_mask'] = {'fn': '/global/cfs/cdirs/desi/survey/catalogs/brickmasks/ELG/v1/{region}/coadd/{brickname:.3s}/{brickname}/{brickname}-elgmask.fits.gz', 'dtype': 'i2', 'default': 0}
     columns['lrg_mask'] = {'fn': '/global/cfs/cdirs/desi/survey/catalogs/brickmasks/LRG/v1.1/{region}/coadd/{brickname:.3s}/{brickname}/{brickname}-lrgmask.fits.gz', 'dtype': 'i2', 'default': 0}
     from desitarget import randoms
     columns[randoms.quantities_at_positions_in_a_brick] = {'drdir': '/global/project/projectdirs/cosmo/data/legacysurvey/dr9/{region}/', 'aprad': 1e-9}  # skip apflux
