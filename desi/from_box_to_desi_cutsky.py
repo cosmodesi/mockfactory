@@ -263,6 +263,13 @@ if __name__ == '__main__':
     """
     Example of how to go from cubic box simulation to DESI cutsky using MPI.
 
+    If you want to include these functions in your script you can loaded with:
+        import os
+        import sys
+        import mockfactory
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(mockfactory.__file__)), 'desi'))
+        from from_box_to_desi_cutsky import remap_the_box
+
     Can be launched with MPI:
         salloc -N 4 -C haswell -t 00:30:00 --qos interactive -L SCRATCH,project
         srun -n 256 python from_box_to_desi_cutsky.py
