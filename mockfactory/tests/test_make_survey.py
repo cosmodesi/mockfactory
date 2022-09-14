@@ -70,7 +70,7 @@ def test_remap():
 
 
 def test_randoms():
-    catalog = RandomBoxCatalog(size=1000, boxsize=10., boxcenter=3., attrs={'name': 'randoms'})
+    catalog = RandomBoxCatalog(csize=1000, boxsize=10., boxcenter=3., attrs={'name': 'randoms'})
     test = BoxCatalog(data=catalog, columns=catalog.columns(), boxsize=catalog.boxsize)
     assert np.allclose(test['Position'], catalog['Position'])
     position = catalog.position
@@ -93,14 +93,14 @@ def test_randoms():
     assert np.all(test.position >= test.boxcenter - test.boxsize / 2.) & np.all(test.position <= test.boxcenter + test.boxsize / 2.)
 
     rarange, decrange = [0., 30.], [-10., 10.]
-    catalog = RandomCutskyCatalog(size=1000, rarange=rarange, decrange=decrange)
+    catalog = RandomCutskyCatalog(csize=1000, rarange=rarange, decrange=decrange)
     assert np.all((catalog['RA'] >= rarange[0]) & (catalog['RA'] <= rarange[1]))
     assert np.all((catalog['DEC'] >= decrange[0]) & (catalog['DEC'] <= decrange[1]))
     assert np.all(catalog['Distance'] == 1.)
     assert catalog.csize == 1000
 
     drange = [1000., 2000.]
-    catalog = RandomCutskyCatalog(size=1000, rarange=rarange, decrange=decrange, drange=drange)
+    catalog = RandomCutskyCatalog(csize=1000, rarange=rarange, decrange=decrange, drange=drange)
     assert np.all((catalog['RA'] >= rarange[0]) & (catalog['RA'] <= rarange[1]))
     assert np.all((catalog['DEC'] >= decrange[0]) & (catalog['DEC'] <= decrange[1]))
     assert np.all((catalog['Distance'] >= drange[0]) & (catalog['Distance'] <= drange[1]))
@@ -109,7 +109,7 @@ def test_randoms():
 
 def test_io():
 
-    catalog = RandomBoxCatalog(size=1000, boxsize=10., boxcenter=3.)
+    catalog = RandomBoxCatalog(csize=1000, boxsize=10., boxcenter=3.)
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_dir = '_tests'
         fn = os.path.join(tmp_dir, 'tmp.bigfile')
@@ -173,7 +173,7 @@ def test_cutsky():
     assert np.allclose(drange2, drange, rtol=1e-7, atol=1e-7)
     assert np.allclose(abs(rarange2[1] - rarange2[0]), abs(rarange[1] - rarange[0]), rtol=1e-7, atol=1e-7)
     assert np.allclose(abs(decrange2[1] - decrange2[0]), abs(decrange[1] - decrange[0]), rtol=1e-7, atol=1e-7)
-    catalog = RandomBoxCatalog(boxsize=boxsize * 1.1, size=10000, boxcenter=10000., seed=42)
+    catalog = RandomBoxCatalog(boxsize=boxsize * 1.1, csize=10000, boxcenter=10000., seed=42)
     cutsky = catalog.cutsky(drange=drange, rarange=rarange, decrange=decrange)
     assert cutsky.csize
     rarange = utils.wrap_angle(rarange, degree=True)
@@ -184,7 +184,7 @@ def test_cutsky():
     dist, ra, dec = utils.cartesian_to_sky(cutsky['Position'], wrap=False)
     assert np.all((dist >= drange[0]) & (dist <= drange[1]) & (ra >= rarange[0]) & (ra < rarange[1]) & (dec >= decrange[0]) & (dec <= decrange[1]))
 
-    catalog = RandomBoxCatalog(boxsize=boxsize * 2.1, size=10000, boxcenter=10000., seed=42)
+    catalog = RandomBoxCatalog(boxsize=boxsize * 2.1, csize=10000, boxcenter=10000., seed=42)
     csize = catalog.cutsky(drange=drange, rarange=rarange, decrange=decrange, noutput=1).csize
     cutsky = catalog.cutsky(drange=drange, rarange=rarange, decrange=decrange, noutput=None)
     assert isinstance(cutsky, list)
@@ -194,7 +194,7 @@ def test_cutsky():
     catalog['Velocity'] = catalog.zeros(3, dtype='f8')
     assert np.allclose(catalog.position, catalog.rsd_position(f=1., los=None))
 
-    catalog = RandomBoxCatalog(boxsize=1000., size=10000, boxcenter=10000., seed=42)
+    catalog = RandomBoxCatalog(boxsize=1000., csize=10000, boxcenter=10000., seed=42)
     catalog.translate(1000.)
     catalog.recenter()
     rposition = np.array([catalog['Position'][:, 0], -catalog['Position'][:, 2], catalog['Position'][:, 1]]).T

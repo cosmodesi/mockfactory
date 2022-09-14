@@ -198,7 +198,7 @@ if __name__ == '__main__':
     if mpicomm.rank == 0: logger.info('Run simple example to illustrate how to get pixel-level quantities.')
 
     # Generate example cutsky catalog, scattered on all processes
-    cutsky = RandomCutskyCatalog(rarange=(25., 30.), decrange=(1., 2.), size=10000, seed=44, mpicomm=mpicomm)
+    cutsky = RandomCutskyCatalog(rarange=(25., 30.), decrange=(1., 2.), csize=10000, seed=44, mpicomm=mpicomm)
     ra, dec = cutsky['RA'], cutsky['DEC']
     # to test when empty catalog is given with MPI
     if mpicomm.rank == 1: ra, dec = [], []

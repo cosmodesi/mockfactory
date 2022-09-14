@@ -1046,7 +1046,7 @@ class RandomBoxCatalog(BoxCatalog):
     """A catalog of random particles, with a box geometry."""
 
     @CurrentMPIComm.enable
-    def __init__(self, boxsize=None, boxcenter=0., size=None, nbar=None, seed=None, **kwargs):
+    def __init__(self, boxsize=None, boxcenter=0., csize=None, nbar=None, seed=None, **kwargs):
         """
         Initialize :class:`RandomBoxCatalog`, with a random sampling in 3D space.
         Set column ``position``.
@@ -1059,7 +1059,7 @@ class RandomBoxCatalog(BoxCatalog):
         boxcenter : float, 3-vector of floats, default=0.
             Box center.
 
-        size : float, default=None
+        csize : float, default=None
             Collective catalog size.
 
         nbar : float, default=None
@@ -1072,12 +1072,17 @@ class RandomBoxCatalog(BoxCatalog):
         kwargs : dict
             Other optional arguments, see :class:`ParticleCatalog`.
         """
+        if csize is None and 'size' in kwargs:
+            import warnings
+            warnings.warn('Argument "size" in {} is deprecated. Use "csize" instead.'.format(self.__class__.__name__))
+            csize = kwargs.pop('size')
+
         super(RandomBoxCatalog, self).__init__(data={}, boxsize=boxsize, boxcenter=boxcenter, **kwargs)
         self.attrs['seed'] = seed
 
-        if size is None:
-            size = int(nbar * np.prod(self.boxsize) + 0.5)
-        size = mpy.core.local_size(size, mpicomm=self.mpicomm)
+        if csize is None:
+            csize = int(nbar * np.prod(self.boxsize) + 0.5)
+        size = mpy.core.local_size(csize, mpicomm=self.mpicomm)
         rng = mpy.random.MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
 
         self[self._position] = self.boxsize * rng.uniform(-0.5, 0.5, itemshape=3) + self.boxcenter
@@ -1088,7 +1093,7 @@ class RandomCutskyCatalog(CutskyCatalog):
     """A catalog of random particles, with a cutsky geometry."""
 
     @CurrentMPIComm.enable
-    def __init__(self, rarange=(0., 360.), decrange=(-90., 90.), drange=None, size=None, nbar=None, seed=None, **kwargs):
+    def __init__(self, rarange=(0., 360.), decrange=(-90., 90.), drange=None, csize=None, nbar=None, seed=None, **kwargs):
         """
         Initialize :class:`RandomCutskyCatalog`, with a uniform sampling on the sky and as a function of distance.
         Set columns 'RA' (degree), 'DEC' (degree), 'Distance' and ``position``.
@@ -1105,7 +1110,7 @@ class RandomCutskyCatalog(CutskyCatalog):
             Range (min, max) of distance.
             If ``None``, positions will be on the unit sphere (at distance 1).
 
-        size : float, default=None
+        csize : float, default=None
             Collective catalog size.
 
         nbar : float, default=None
@@ -1118,14 +1123,19 @@ class RandomCutskyCatalog(CutskyCatalog):
         kwargs : dict
             Other optional arguments, see :class:`ParticleCatalog`.
         """
+        if csize is None and 'size' in kwargs:
+            import warnings
+            warnings.warn('Argument "size" in {} is deprecated. Use "csize" instead.'.format(self.__class__.__name__))
+            csize = kwargs.pop('size')
+
         super(RandomCutskyCatalog, self).__init__(data={}, **kwargs)
         area = utils.radecbox_area(rarange, decrange)
-        if size is None:
-            size = int(nbar * area + 0.5)
+        if csize is None:
+            csize = int(nbar * area + 0.5)
         self.attrs['seed'] = seed
         self.attrs['area'] = area
 
-        size = mpy.core.local_size(size, mpicomm=self.mpicomm)
+        size = mpy.core.local_size(csize, mpicomm=self.mpicomm)
 
         seed1, seed2 = mpy.random.bcast_seed(seed=seed, size=2, mpicomm=self.mpicomm)
         mask = UniformAngularMask(rarange=rarange, decrange=decrange, mpicomm=self.mpicomm)

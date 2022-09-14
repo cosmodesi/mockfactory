@@ -402,7 +402,7 @@ if __name__ == '__main__':
             if rank == 0: logger.info(f'Generate randoms for region: {region} with seed: {seeds_randoms[region]}')
 
             start = MPI.Wtime()
-            randoms = RandomCutskyCatalog(rarange=add_ra + np.array(rarange), decrange=add_dec + np.array(decrange), size=nbr_randoms, seed=seeds_randoms[region], mpicomm=mpicomm)
+            randoms = RandomCutskyCatalog(rarange=add_ra + np.array(rarange), decrange=add_dec + np.array(decrange), csize=nbr_randoms, seed=seeds_randoms[region], mpicomm=mpicomm)
             if rank == 0: logger.info(f'Randoms generated in {MPI.Wtime() - start:2.2f} s.')
 
             # Match the desi footprint and apply the DR9 mask
