@@ -263,7 +263,7 @@ if __name__ == '__main__':
     """
     Example of how to go from cubic box simulation to DESI cutsky using MPI.
 
-    If you want to include these functions in your script you can loaded with:
+    If you want to include these functions in your script you can import them with:
         import os
         import sys
         import mockfactory

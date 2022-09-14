@@ -1060,7 +1060,7 @@ class RandomBoxCatalog(BoxCatalog):
             Box center.
 
         size : float, default=None
-            Global catalog size.
+            Collective catalog size.
 
         nbar : float, default=None
             If ``size`` is ``None``, global catalog size is obtained as the nearest integer to ``nbar * volume``
@@ -1106,7 +1106,7 @@ class RandomCutskyCatalog(CutskyCatalog):
             If ``None``, positions will be on the unit sphere (at distance 1).
 
         size : float, default=None
-            Global catalog size.
+            Collective catalog size.
 
         nbar : float, default=None
             If ``size`` is ``None``, global catalog size is obtained as the nearest integer to ``nbar * area``
@@ -1151,9 +1151,6 @@ class BaseMask(BaseClass):
 
         Parameters
         ----------
-        zrange : tuple, list
-            Redshift range.
-
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
         """
