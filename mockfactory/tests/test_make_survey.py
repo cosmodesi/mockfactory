@@ -2,13 +2,15 @@ import os
 import tempfile
 
 import numpy as np
+from matplotlib import pyplot as plt
 
 from mockfactory.remap import Cuboid
 from mockfactory.make_survey import (EuclideanIsometry, DistanceToRedshift, RedshiftDensityInterpolator,
                                      BoxCatalog, RandomBoxCatalog, RandomCutskyCatalog,
                                      rotation_matrix_from_vectors, cutsky_to_box, box_to_cutsky,
                                      MaskCollection, UniformRadialMask, TabulatedRadialMask,
-                                     UniformAngularMask, HealpixAngularMask)
+                                     UniformAngularMask, HealpixAngularMask,
+                                     TabulatedPDF2DRedshiftSmearing, RVS2DRedshiftSmearing)
 
 from mockfactory import utils, setup_logging
 
@@ -70,7 +72,7 @@ def test_remap():
 
 
 def test_randoms():
-    catalog = RandomBoxCatalog(size=1000, boxsize=10., boxcenter=3., attrs={'name': 'randoms'})
+    catalog = RandomBoxCatalog(csize=1000, boxsize=10., boxcenter=3., attrs={'name': 'randoms'})
     test = BoxCatalog(data=catalog, columns=catalog.columns(), boxsize=catalog.boxsize)
     assert np.allclose(test['Position'], catalog['Position'])
     position = catalog.position
@@ -93,14 +95,14 @@ def test_randoms():
     assert np.all(test.position >= test.boxcenter - test.boxsize / 2.) & np.all(test.position <= test.boxcenter + test.boxsize / 2.)
 
     rarange, decrange = [0., 30.], [-10., 10.]
-    catalog = RandomCutskyCatalog(size=1000, rarange=rarange, decrange=decrange)
+    catalog = RandomCutskyCatalog(csize=1000, rarange=rarange, decrange=decrange)
     assert np.all((catalog['RA'] >= rarange[0]) & (catalog['RA'] <= rarange[1]))
     assert np.all((catalog['DEC'] >= decrange[0]) & (catalog['DEC'] <= decrange[1]))
     assert np.all(catalog['Distance'] == 1.)
     assert catalog.csize == 1000
 
     drange = [1000., 2000.]
-    catalog = RandomCutskyCatalog(size=1000, rarange=rarange, decrange=decrange, drange=drange)
+    catalog = RandomCutskyCatalog(csize=1000, rarange=rarange, decrange=decrange, drange=drange)
     assert np.all((catalog['RA'] >= rarange[0]) & (catalog['RA'] <= rarange[1]))
     assert np.all((catalog['DEC'] >= decrange[0]) & (catalog['DEC'] <= decrange[1]))
     assert np.all((catalog['Distance'] >= drange[0]) & (catalog['Distance'] <= drange[1]))
@@ -109,7 +111,7 @@ def test_randoms():
 
 def test_io():
 
-    catalog = RandomBoxCatalog(size=1000, boxsize=10., boxcenter=3.)
+    catalog = RandomBoxCatalog(csize=1000, boxsize=10., boxcenter=3.)
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_dir = '_tests'
         fn = os.path.join(tmp_dir, 'tmp.bigfile')
@@ -173,7 +175,7 @@ def test_cutsky():
     assert np.allclose(drange2, drange, rtol=1e-7, atol=1e-7)
     assert np.allclose(abs(rarange2[1] - rarange2[0]), abs(rarange[1] - rarange[0]), rtol=1e-7, atol=1e-7)
     assert np.allclose(abs(decrange2[1] - decrange2[0]), abs(decrange[1] - decrange[0]), rtol=1e-7, atol=1e-7)
-    catalog = RandomBoxCatalog(boxsize=boxsize * 1.1, size=10000, boxcenter=10000., seed=42)
+    catalog = RandomBoxCatalog(boxsize=boxsize * 1.1, csize=10000, boxcenter=10000., seed=42)
     cutsky = catalog.cutsky(drange=drange, rarange=rarange, decrange=decrange)
     assert cutsky.csize
     rarange = utils.wrap_angle(rarange, degree=True)
@@ -184,7 +186,7 @@ def test_cutsky():
     dist, ra, dec = utils.cartesian_to_sky(cutsky['Position'], wrap=False)
     assert np.all((dist >= drange[0]) & (dist <= drange[1]) & (ra >= rarange[0]) & (ra < rarange[1]) & (dec >= decrange[0]) & (dec <= decrange[1]))
 
-    catalog = RandomBoxCatalog(boxsize=boxsize * 2.1, size=10000, boxcenter=10000., seed=42)
+    catalog = RandomBoxCatalog(boxsize=boxsize * 2.1, csize=10000, boxcenter=10000., seed=42)
     csize = catalog.cutsky(drange=drange, rarange=rarange, decrange=decrange, noutput=1).csize
     cutsky = catalog.cutsky(drange=drange, rarange=rarange, decrange=decrange, noutput=None)
     assert isinstance(cutsky, list)
@@ -194,7 +196,7 @@ def test_cutsky():
     catalog['Velocity'] = catalog.zeros(3, dtype='f8')
     assert np.allclose(catalog.position, catalog.rsd_position(f=1., los=None))
 
-    catalog = RandomBoxCatalog(boxsize=1000., size=10000, boxcenter=10000., seed=42)
+    catalog = RandomBoxCatalog(boxsize=1000., csize=10000, boxcenter=10000., seed=42)
     catalog.translate(1000.)
     catalog.recenter()
     rposition = np.array([catalog['Position'][:, 0], -catalog['Position'][:, 2], catalog['Position'][:, 1]]).T
@@ -203,6 +205,7 @@ def test_cutsky():
 
 
 def test_masks():
+
     zrange = (0.6, 1.1)
 
     selection = UniformRadialMask(zrange=zrange, nbar=1.)
@@ -260,6 +263,50 @@ def test_masks():
         assert np.all(selection.prob(ra, dec) == 0.)
 
 
+def test_redshift_smearing():
+
+    from scipy import stats
+
+    nz = 10
+    z = np.linspace(0.5, 1.5, nz)
+    dz = np.linspace(-20., 20., 1000)
+    sigmas = np.linspace(1., 2., nz)
+    rvs_gaussian = [stats.norm(0., sigma) for sigma in sigmas]
+    rvs_laplace = [stats.laplace(0., sigma) for sigma in sigmas]
+    list_rs = []
+    list_rs.append((rvs_gaussian, TabulatedPDF2DRedshiftSmearing(dz, z, np.column_stack([rv.pdf(dz) for rv in rvs_gaussian]))))
+    list_rs.append((rvs_gaussian, RVS2DRedshiftSmearing(z, rvs_gaussian)))
+    list_rs.append((rvs_gaussian, RVS2DRedshiftSmearing(z, rvs_gaussian, dzsize=1000)))
+    list_rs.append((rvs_laplace, RVS2DRedshiftSmearing(z, rvs_laplace, dzsize=1000)))
+    list_rs.append((rvs_laplace, TabulatedPDF2DRedshiftSmearing(dz, z, np.column_stack([rv.pdf(dz) for rv in rvs_laplace]))))
+
+    for rvs, rs in list_rs:
+        fig, lax = plt.subplots(2, 5, figsize=(20, 10))
+        lax = lax.flatten()
+        for iz, zz in enumerate(z):
+            s = rs.sample(np.full(100000, zz), seed=42)
+            lax[iz].hist(s, density=True, histtype='step', color='k', bins=40)
+            lax[iz].plot(dz, rvs[iz].pdf(dz), color='r')
+        if rs.mpicomm.rank == 0:
+            plt.show()
+
+    la = np.linspace(0., 0.1, nz)
+    rvs_gaussian = [stats.norm(0., sigma) for sigma in sigmas]
+    rvs_laplace = [stats.laplace(0., sigma) for sigma in sigmas]
+    rs_gaussian = RVS2DRedshiftSmearing(z, rvs_gaussian, dzsize=10000)
+    rs_laplace = RVS2DRedshiftSmearing(z, rvs_laplace, dzsize=10000)
+    rs = RVS2DRedshiftSmearing.average([rs_gaussian, rs_laplace], weights=[1. - la, la])
+
+    fig, lax = plt.subplots(2, 5, figsize=(20, 10))
+    lax = lax.flatten()
+    for iz, zz in enumerate(z):
+        s = rs.sample(np.full(100000, zz), seed=42)
+        lax[iz].hist(s, density=True, histtype='step', color='k', bins=40)
+        lax[iz].plot(dz, (1. - la[iz]) * rvs_gaussian[iz].pdf(dz) + la[iz] * rvs_laplace[iz].pdf(dz), color='r')
+    if rs.mpicomm.rank == 0:
+        plt.show()
+
+
 def test_redshift_array():
 
     from cosmoprimo.fiducial import DESI
@@ -305,6 +352,7 @@ if __name__ == '__main__':
 
     setup_logging()
 
+    test_redshift_smearing()
     test_remap()
     test_isometry()
     test_randoms()

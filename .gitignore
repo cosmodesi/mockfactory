@@ -16,6 +16,7 @@ doc/_build/
 **/_catalog
 **/*.png
 **/bak
+**/*.pyc
 
 # Unit test / coverage reports
 **/.coverage

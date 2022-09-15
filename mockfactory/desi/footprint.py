@@ -93,7 +93,7 @@ if __name__ == '__main__':
     setup_logging()
 
     # Generate example cutsky catalog, scattered on all processes
-    cutsky = RandomCutskyCatalog(rarange=(200, 250), decrange=(15, 45), size=10000, seed=44)
+    cutsky = RandomCutskyCatalog(rarange=(200, 250), decrange=(15, 45), csize=10000, seed=44)
     ra, dec = cutsky['RA'], cutsky['DEC']
 
     for release in ['SV3', 'DA02', 'Y1', 'Y5']:

@@ -263,6 +263,13 @@ if __name__ == '__main__':
     """
     Example of how to go from cubic box simulation to DESI cutsky using MPI.
 
+    If you want to include these functions in your script you can import them with:
+        import os
+        import sys
+        import mockfactory
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(mockfactory.__file__)), 'desi'))
+        from from_box_to_desi_cutsky import remap_the_box
+
     Can be launched with MPI:
         salloc -N 4 -C haswell -t 00:30:00 --qos interactive -L SCRATCH,project
         srun -n 256 python from_box_to_desi_cutsky.py
@@ -395,7 +402,7 @@ if __name__ == '__main__':
             if rank == 0: logger.info(f'Generate randoms for region: {region} with seed: {seeds_randoms[region]}')
 
             start = MPI.Wtime()
-            randoms = RandomCutskyCatalog(rarange=add_ra + np.array(rarange), decrange=add_dec + np.array(decrange), size=nbr_randoms, seed=seeds_randoms[region], mpicomm=mpicomm)
+            randoms = RandomCutskyCatalog(rarange=add_ra + np.array(rarange), decrange=add_dec + np.array(decrange), csize=nbr_randoms, seed=seeds_randoms[region], mpicomm=mpicomm)
             if rank == 0: logger.info(f'Randoms generated in {MPI.Wtime() - start:2.2f} s.')
 
             # Match the desi footprint and apply the DR9 mask
