@@ -1567,7 +1567,7 @@ class BaseAngularMask(BaseMask):
 
     def sample(self, size, seed=None):
         """
-        Draw ra, dec from angular selection function.
+        Draw RA, Dec from angular selection function.
         This is a very naive implementation, drawing uniform samples and masking them with :meth:`__call__`.
 
         Parameters
@@ -1581,7 +1581,10 @@ class BaseAngularMask(BaseMask):
         Returns
         -------
         ra : array of shape (size,)
-            Array of sampled RA, Dec.
+            Array of sampled RA.
+
+        dec : array of shape (size,)
+            Array of sampled Dec.
         """
         def sample(size, seed=None):
             rng = mpy.random.MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
@@ -1745,3 +1748,203 @@ class HealpixAngularMask(BaseAngularMask):
         mask = self._mask_ranges(ra, dec)
         prob[~mask] = 0.
         return prob
+
+
+class Base2DRedshiftSmearing(BaseClass):
+
+    r"""Base template class to sample redshift errors :math:`dz` as a function of :math:`z` (or any variable)."""
+
+    @CurrentMPIComm.enable
+    def __init__(self, mpicomm=None):
+        """
+        Initialize :class:`Base2DRedshiftSmearing`.
+
+        Parameters
+        ----------
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
+        """
+        self.mpicomm = mpicomm
+        self.mpiroot = 0
+        self.transform_dz = lambda x: x
+
+    def _set_interp(self):
+        u = np.linspace(0., 1., self.dz.shape[0])
+        ppf = np.empty_like(self.cdf)
+        for iz, cdfz in enumerate(self.cdf.T):
+            ppf[:, iz] = interpolate.UnivariateSpline(cdfz, self.dz[:, iz] if self.dz.ndim == 2 else self.dz, k=3, s=0, ext='raise')(u)
+        self.interp_ppf = interpolate.RectBivariateSpline(u, self.z, ppf, kx=3, ky=3, s=0)
+
+    def ppf(self, u, z):
+        """Percent point function (inverse of cdf) at u, and given redshift z."""
+        u, z = (np.asarray(xx) for xx in (u, z))
+        return self.transform_dz(self.interp_ppf(u, z, grid=False))
+
+    def is_mpi_root(self):
+        """Whether current rank is root."""
+        return self.mpicomm.rank == self.mpiroot
+
+    def sample(self, z, seed=None):
+        """
+        Draw redshift errors ``dz`` at input ``z``.
+
+        Parameters
+        ----------
+        z : array
+            Redshifts.
+
+        seed : int, default=None
+            The global random seed, used to set the seeds across all ranks.
+
+        Returns
+        -------
+        dz : array
+            Array of redshift errors ``dz``, of same shape as ``z``.
+        """
+        z = np.asarray(z)
+        self.rng = mpy.random.MPIRandomState(size=z.size, seed=seed, mpicomm=self.mpicomm)
+        u = self.rng.uniform(0., 1.)
+        return self.ppf(u, z)
+
+    @classmethod
+    def average(cls, *others, weights=None):
+        """Average redshift smearings (their cdf), with optional input (:math:`z`-dependent) ``weights``."""
+        if len(others) == 1 and utils.is_sequence(others[0]):
+            others = others[0]
+        if weights is None:
+            weights = np.ones(len(others), dtype='f8')
+        else:
+            weights = np.asarray(weights, dtype='f8')
+        weigths = weights / np.sum(weights, axis=0)
+        new = others[0].copy()
+        for other in others:
+            if not np.allclose(other.dz, new.dz):
+                raise ValueError('Input redshift smearing pdfs must have same support to be averaged')
+            if not np.allclose(other.transform_dz(other.dz), new.transform_dz(new.dz)):
+                raise ValueError('Input redshift smearing pdfs must have same support transform to be averaged')
+        new.dz = new.dz.copy()
+        new.cdf = sum(other.cdf * weight for other, weight in zip(others, weights))
+        new._set_interp()
+        return new
+
+
+class TabulatedPDF2DRedshiftSmearing(Base2DRedshiftSmearing):
+
+    """Redshift smearing based on tabulated :math:`(dz, z) \rightarrow p(dz, z)` probability."""
+
+    def __init__(self, dz, z, pdf, mpicomm=None):
+        """
+        Initialize :class:`TabulatedPDF2DRedshiftSmearing`.
+
+        Parameters
+        ----------
+        dz : 1D or 2D array
+            :math:`dz` redshift errors.
+            If 1D, should be the same size as ``pdf.shape[0]``; else of the same shape as ``pdf``.
+
+        z : 1D array
+            Redshift (or any other variable) array, of which the redshift error distribution depends upon.
+            Should be of the same size as ``pdf.shape[1]``.
+
+        pdf : 2D array
+            Probability density of redshift error.
+
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
+        """
+        super(TabulatedPDF2DRedshiftSmearing, self).__init__(mpicomm=mpicomm)
+        self.dz = mpy.bcast(np.asarray(dz, dtype='f8') if self.is_mpi_root() else None, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
+        self.z = mpy.bcast(np.asarray(z, dtype='f8') if self.is_mpi_root() else None, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
+        pdf = mpy.bcast(np.asarray(pdf, dtype='f8') if self.is_mpi_root() else None, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
+        cdf = np.cumsum(pdf, axis=0)
+        cdf = (cdf - cdf[0]) / (cdf[-1] - cdf[0])
+        mask = np.all((cdf > 0.) & (cdf < 1.), axis=-1)
+        self.dz = np.pad(self.dz[mask], ((1, 1),) + ((0, 0),) * (self.z.ndim == 2), mode='constant', constant_values=(self.dz[0], self.dz[-1]))
+        self.cdf = np.pad(cdf[mask], ((1, 1), (0, 0)), mode='constant', constant_values=(0., 1.))
+        self._set_interp()
+
+
+class RVS2DRedshiftSmearing(Base2DRedshiftSmearing):
+
+    """Redshift smearing based on list of :class:`scipy.stats.rv_continuous` for each redshift."""
+
+    def __init__(self, z, rvs, dzsize=1000, transform_dz='auto', mpicomm=None):
+        """
+        Initialize :class:`RVS2DRedshiftSmearing`.
+
+        Parameters
+        ----------
+        z : 1D array
+            Redshift (or any other variable) array, of which the redshift error distribution depends upon.
+            Should be of the same size as ``len(rvs)``.
+
+        rvs : list
+            List of :class:`scipy.stats.rv_continuous`, one for each redshift in ``z``.
+
+        dzsize : int, default=1000
+            Length of ``dz`` arrays to use internally.
+
+        transform_dz : string, default='auto'
+            Either 'ppf', in which case the pdf is tabulated at ``rv.ppf(np.linspace(0., 1., dzsize))``
+            (this requires all input rvs to have same support).
+            Or 'auto', in which case:
+            if infinite limit on both sides, the pdf is tabulated at ``np.atanh(2. * np.linspace(0., 1., dzsize) - 1)``.
+            if finite right limit ``b``, the pdf is tabulated at ``np.log(np.linspace(np.exp(b), 0, dzsize))``.
+            if finite left limit ``a``, the pdf is tabulated at ``np.log(np.linspace(0, np.exp(-a), dzsize))``.
+
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
+        """
+        super(RVS2DRedshiftSmearing, self).__init__(mpicomm=mpicomm)
+        self.z = mpy.bcast(np.asarray(z, dtype='f8') if self.is_mpi_root() else None, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
+        dzranges = np.array([rv.support() for rv in rvs])
+        same_dzranges = np.allclose(dzranges, dzranges[0])
+        if np.all(np.isfinite(dzranges)):
+            if same_dzranges:
+                self.dz = np.linspace(*dzranges[0], num=dzsize)
+            else:
+                self.dz = np.column_stack([np.linspace(*dzrange, num=dsize) for dzrange in dzranges])
+                cdf = np.column_stack([rv.cdf(dz) for rv, dz in zip(rvs, self.dz)])
+            u = self.dz
+            transform_dz = lambda x: x
+        else:
+            lowinf, upinf = ~np.isfinite(dzranges[0])
+            if not np.all(~np.isfinite(dzranges) == (lowinf, upinf)):
+                raise ValueError('limits must be all finite or inf')
+            if transform_dz == 'ppf':
+                transform_dz = rvs[0].ppf
+                cdf = np.column_stack([np.linspace(0., 1., num=dzsize)] * len(self.z))
+                self.dz = np.linspace(0., 1., num=dzsize)
+                if not same_dzranges:
+                    raise ValueError('limits must be all the same to use "transform_dz = ppf"')
+                u = transform_dz(self.dz)
+            elif transform_dz == 'auto':
+                if lowinf and upinf:
+                    self.dz = np.linspace(0., 1., num=dzsize)
+                    transform_dz = lambda x: np.arctanh(2. * x - 1.)
+                    u = np.full_like(self.dz, np.inf)
+                    u[..., 1:-1] = transform_dz(self.dz[..., 1:-1])
+                    u[..., 0] = -np.inf
+                elif lowinf:
+                    transform_u = lambda x: np.exp(x)
+                    transform_dz = lambda x: np.log(x)
+                    if same_dzranges:
+                        self.dz = np.linspace(0, transform_u(dzranges[0][1]), num=dzsize)
+                    else:
+                        self.dz = np.column_stack([np.linspace(0, transform_u(dzrange[1]), num=dzsize) for dzrange in dzranges])
+                    u = np.full_like(self.dz, -np.inf)
+                    u[..., 1:] = transform_dz(self.dz[..., 1:])
+                else:  # upinf
+                    transform_u = lambda x: np.exp(-x)
+                    transform_dz = lambda x: - np.log(x)
+                    if same_dzranges:
+                        self.dz = np.linspace(transform_u(dzranges[0][0]), 0., num=dzsize)
+                    else:
+                        self.dz = np.column_stack([np.linspace(transform_u(dzrange[0]), 0, num=dzsize) for dzrange in dzranges])
+                    u = np.full_like(self.dz, np.inf)
+                    u[..., :1] = transform_dz(self.dz[..., :1])
+            else:
+                raise ValueError('Unknown transform_dz = {}'.format(transform_dz))
+        self.cdf = np.column_stack([rv.cdf(u[:, iz] if u.ndim == 2 else u) for iz, rv in enumerate(rvs)])
+        self.transform_dz = transform_dz
+        self._set_interp()

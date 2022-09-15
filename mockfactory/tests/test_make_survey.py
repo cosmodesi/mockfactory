@@ -2,13 +2,15 @@ import os
 import tempfile
 
 import numpy as np
+from matplotlib import pyplot as plt
 
 from mockfactory.remap import Cuboid
 from mockfactory.make_survey import (EuclideanIsometry, DistanceToRedshift, RedshiftDensityInterpolator,
                                      BoxCatalog, RandomBoxCatalog, RandomCutskyCatalog,
                                      rotation_matrix_from_vectors, cutsky_to_box, box_to_cutsky,
                                      MaskCollection, UniformRadialMask, TabulatedRadialMask,
-                                     UniformAngularMask, HealpixAngularMask)
+                                     UniformAngularMask, HealpixAngularMask,
+                                     TabulatedPDF2DRedshiftSmearing, RVS2DRedshiftSmearing)
 
 from mockfactory import utils, setup_logging
 
@@ -203,6 +205,7 @@ def test_cutsky():
 
 
 def test_masks():
+
     zrange = (0.6, 1.1)
 
     selection = UniformRadialMask(zrange=zrange, nbar=1.)
@@ -260,6 +263,50 @@ def test_masks():
         assert np.all(selection.prob(ra, dec) == 0.)
 
 
+def test_redshift_smearing():
+
+    from scipy import stats
+
+    nz = 10
+    z = np.linspace(0.5, 1.5, nz)
+    dz = np.linspace(-20., 20., 1000)
+    sigmas = np.linspace(1., 2., nz)
+    rvs_gaussian = [stats.norm(0., sigma) for sigma in sigmas]
+    rvs_laplace = [stats.laplace(0., sigma) for sigma in sigmas]
+    list_rs = []
+    list_rs.append((rvs_gaussian, TabulatedPDF2DRedshiftSmearing(dz, z, np.column_stack([rv.pdf(dz) for rv in rvs_gaussian]))))
+    list_rs.append((rvs_gaussian, RVS2DRedshiftSmearing(z, rvs_gaussian)))
+    list_rs.append((rvs_gaussian, RVS2DRedshiftSmearing(z, rvs_gaussian, dzsize=1000)))
+    list_rs.append((rvs_laplace, RVS2DRedshiftSmearing(z, rvs_laplace, dzsize=1000)))
+    list_rs.append((rvs_laplace, TabulatedPDF2DRedshiftSmearing(dz, z, np.column_stack([rv.pdf(dz) for rv in rvs_laplace]))))
+
+    for rvs, rs in list_rs:
+        fig, lax = plt.subplots(2, 5, figsize=(20, 10))
+        lax = lax.flatten()
+        for iz, zz in enumerate(z):
+            s = rs.sample(np.full(100000, zz), seed=42)
+            lax[iz].hist(s, density=True, histtype='step', color='k', bins=40)
+            lax[iz].plot(dz, rvs[iz].pdf(dz), color='r')
+        if rs.mpicomm.rank == 0:
+            plt.show()
+
+    la = np.linspace(0., 0.1, nz)
+    rvs_gaussian = [stats.norm(0., sigma) for sigma in sigmas]
+    rvs_laplace = [stats.laplace(0., sigma) for sigma in sigmas]
+    rs_gaussian = RVS2DRedshiftSmearing(z, rvs_gaussian, dzsize=10000)
+    rs_laplace = RVS2DRedshiftSmearing(z, rvs_laplace, dzsize=10000)
+    rs = RVS2DRedshiftSmearing.average([rs_gaussian, rs_laplace], weights=[1. - la, la])
+
+    fig, lax = plt.subplots(2, 5, figsize=(20, 10))
+    lax = lax.flatten()
+    for iz, zz in enumerate(z):
+        s = rs.sample(np.full(100000, zz), seed=42)
+        lax[iz].hist(s, density=True, histtype='step', color='k', bins=40)
+        lax[iz].plot(dz, (1. - la[iz]) * rvs_gaussian[iz].pdf(dz) + la[iz] * rvs_laplace[iz].pdf(dz), color='r')
+    if rs.mpicomm.rank == 0:
+        plt.show()
+
+
 def test_redshift_array():
 
     from cosmoprimo.fiducial import DESI
@@ -305,6 +352,7 @@ if __name__ == '__main__':
 
     setup_logging()
 
+    test_redshift_smearing()
     test_remap()
     test_isometry()
     test_randoms()
