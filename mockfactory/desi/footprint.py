@@ -3,9 +3,6 @@ import logging
 
 import numpy as np
 
-import desimodel.io
-import desimodel.footprint
-
 
 logger = logging.getLogger('DESI footprint')
 
@@ -54,6 +51,8 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
     mask : array
         Boolean array of the same size than ra, dec, with ``True`` if in footprint, ``False`` otherwise.
     """
+    import desimodel.footprint
+
     lastnight = None
     release = release.lower()
     if release in ['sv3', 'onepercent']:
@@ -69,6 +68,7 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
         raise ValueError('Unknown release {}'.format(release))
 
     if redux is None:
+        import desimodel.io
         tiles = desimodel.io.load_tiles()
     else:
         import pandas as pd
@@ -88,6 +88,7 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
 if __name__ == '__main__':
 
     import time
+
     from mockfactory import RandomCutskyCatalog, setup_logging
 
     setup_logging()

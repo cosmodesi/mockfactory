@@ -34,10 +34,12 @@ def QSORedshiftSmearing(fn='data/qso_redshift_smearing.ecsv'):
 
 if __name__ == '__main__':
 
-    from mockfactory import setup_logging
     from matplotlib import pyplot as plt
 
+    from mockfactory import setup_logging
+
     setup_logging()
+
     fn = 'data/qso_redshift_smearing.ecsv'
     z, rvs, weights, dztransform = QSORedshiftSmearingRVS(fn=fn)
     dz = np.linspace(-5e4, 5e4, 1000)

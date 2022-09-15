@@ -17,4 +17,5 @@ setup(name=package_basename,
       license='BSD3',
       url='http://github.com/cosmodesi/mockfactory',
       install_requires=['numpy', 'scipy', 'pmesh', 'mpytools @ git+https://github.com/adematti/mpytools'],
-      packages=[package_basename])
+      package_data={package_basename + '.desi': ['data/*.ecsv']},
+      packages=[package_basename, package_basename + '.desi'])
