@@ -230,17 +230,17 @@ def is_in_photometric_region(ra, dec, region, rank=0):
             else:  # DS
                 mask &= dec > -25
                 mask &= ~mask_ra
-        return mask
+        return np.nan * np.ones(ra.size), mask
     else:
         from regressis.utils import build_healpix_map
         # Precompute the healpix number
         nside = 256
-        _, cutsky['HPX'] = build_healpix_map(nside, ra, dec, return_pix=True)
+        _, pixels = build_healpix_map(nside, ra, dec, return_pix=True)
 
         # Load DR9 footprint and create corresponding mask
         dr9_footprint = DR9Footprint(nside, mask_lmc=False, clear_south=False, mask_around_des=False, cut_desi=False, verbose=(rank == 0))
         convert_dict = {'N': 'north', 'DN': 'south_mid_ngc', 'SNGC': 'south_mid_ngc', 'DS': 'south_mid_sgc', 'SSGC': 'south_mid_sgc', 'DES': 'des'}
-        return dr9_footprint(convert_dict[region])[cutsky['HPX']]
+        return pixels, dr9_footprint(convert_dict[region])[pixels]
 
 
 def match_photo_desi_footprint(cutsky, region, release, program='dark', npasses=None, rank=0):
@@ -254,7 +254,7 @@ def match_photo_desi_footprint(cutsky, region, release, program='dark', npasses=
     is_in_desi = is_in_desi_footprint(cutsky['RA'], cutsky['DEC'], release=release, program=program, npasses=npasses)
     if rank == 0: logger.info(f'Create DESI {release}-{program} footprint mask')
 
-    is_in_photo = is_in_photometric_region(cutsky['RA'], cutsky['DEC'], region, rank=rank)
+    cutsky['HPX'], is_in_photo = is_in_photometric_region(cutsky['RA'], cutsky['DEC'], region, rank=rank)
     if rank == 0: logger.info(f'Create photometric footprint mask for {region} region')
     return cutsky[is_in_desi & is_in_photo]
 
