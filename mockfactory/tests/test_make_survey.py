@@ -274,10 +274,11 @@ def test_redshift_smearing():
     rvs_gaussian = [stats.norm(0., sigma) for sigma in sigmas]
     rvs_laplace = [stats.laplace(0., sigma) for sigma in sigmas]
     list_rs = []
+
     list_rs.append((rvs_gaussian, TabulatedPDF2DRedshiftSmearing(dz, z, np.column_stack([rv.pdf(dz) for rv in rvs_gaussian]))))
     list_rs.append((rvs_gaussian, RVS2DRedshiftSmearing(z, rvs_gaussian)))
     list_rs.append((rvs_gaussian, RVS2DRedshiftSmearing(z, rvs_gaussian, dzsize=1000)))
-    list_rs.append((rvs_laplace, RVS2DRedshiftSmearing(z, rvs_laplace, dzsize=1000)))
+    list_rs.append((rvs_laplace, RVS2DRedshiftSmearing(z, rvs_laplace, dzsize=len(dz), dzscale=5.)))
     list_rs.append((rvs_laplace, TabulatedPDF2DRedshiftSmearing(dz, z, np.column_stack([rv.pdf(dz) for rv in rvs_laplace]))))
 
     for rvs, rs in list_rs:
@@ -285,23 +286,23 @@ def test_redshift_smearing():
         lax = lax.flatten()
         for iz, zz in enumerate(z):
             s = rs.sample(np.full(100000, zz), seed=42)
-            lax[iz].hist(s, density=True, histtype='step', color='k', bins=40)
+            lax[iz].hist(s, density=True, histtype='step', color='k', bins=100)
             lax[iz].plot(dz, rvs[iz].pdf(dz), color='r')
         if rs.mpicomm.rank == 0:
             plt.show()
 
-    la = np.linspace(0., 0.1, nz)
+    la = np.linspace(0.3, 0.7, nz)
     rvs_gaussian = [stats.norm(0., sigma) for sigma in sigmas]
     rvs_laplace = [stats.laplace(0., sigma) for sigma in sigmas]
-    rs_gaussian = RVS2DRedshiftSmearing(z, rvs_gaussian, dzsize=10000)
-    rs_laplace = RVS2DRedshiftSmearing(z, rvs_laplace, dzsize=10000)
+    rs_gaussian = RVS2DRedshiftSmearing(z, rvs_gaussian, dzsize=1000, dzscale=5.)
+    rs_laplace = RVS2DRedshiftSmearing(z, rvs_laplace, dzsize=1000, dzscale=5.)
     rs = RVS2DRedshiftSmearing.average([rs_gaussian, rs_laplace], weights=[1. - la, la])
 
     fig, lax = plt.subplots(2, 5, figsize=(20, 10))
     lax = lax.flatten()
     for iz, zz in enumerate(z):
         s = rs.sample(np.full(100000, zz), seed=42)
-        lax[iz].hist(s, density=True, histtype='step', color='k', bins=40)
+        lax[iz].hist(s, density=True, histtype='step', color='k', bins=100)
         lax[iz].plot(dz, (1. - la[iz]) * rvs_gaussian[iz].pdf(dz) + la[iz] * rvs_laplace[iz].pdf(dz), color='r')
     if rs.mpicomm.rank == 0:
         plt.show()
