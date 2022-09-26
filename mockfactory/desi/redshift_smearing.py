@@ -2,16 +2,27 @@ import numpy as np
 from scipy import constants, stats
 
 from mockfactory.utils import BaseClass
+from mockfactory import utils
 from mockfactory import RVS2DRedshiftSmearing
 
 
-def QSORedshiftSmearingRVS(fn='data/qso_redshift_smearing.ecsv'):
+def QSORedshiftSmearingRVS(fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')):
     """
     Return redshifts ``z``, list of continuous random variates (Laplace and Gaussian) for ``z``,
-    weights, and optional ``dz`` transform, given input tabulated file of redshift errors.
+    weights, and optional ``dz`` transform, given input tabulated file(s) of redshift errors.
     """
-    from astropy.table import Table
-    table = Table.read(fn)
+    from astropy.table import Table, vstack
+    if not utils.is_sequence(fn): fn = [fn]
+
+    # Concatenate, keeping unique redshifts
+    table = Table()
+    for ff in fn:
+        tt = Table.read(ff)
+        tt.sort('mean_z')
+        if len(table):
+            table = vstack([table[table['mean_z'] < tt['mean_z'][0]], tt])
+        else:
+            table = tt
     rvs_laplace, rvs_gaussian, laz = [], [], []
     for iz, z in enumerate(table['mean_z']):
         A0, x0, s0, sg, la = table['val_fit'][iz]
@@ -19,11 +30,11 @@ def QSORedshiftSmearingRVS(fn='data/qso_redshift_smearing.ecsv'):
         rvs_gaussian.append(stats.norm(x0, sg))
         laz.append(la)
     laz = np.array(laz)
-    dztransform = lambda z, dz: dz / constants.c / (1. + z)
+    dztransform = lambda z, dz: dz / (constants.c / 1e3) / (1. + z)  # file units was km / s
     return np.asarray(table['mean_z']), [rvs_laplace, rvs_gaussian], [laz, 1. - laz], dztransform
 
 
-def QSORedshiftSmearing(fn='data/qso_redshift_smearing.ecsv'):
+def QSORedshiftSmearing(fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')):
     """
     Return :class:`RVS2DRedshiftSmearing` instance given input tabulate file of redshift errors.
     Redshift errors can be sampled through: ``dz = rs.sample(z, seed=42)``.
@@ -40,17 +51,24 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    fn = 'data/qso_redshift_smearing.ecsv'
+    fn = ('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')
     z, rvs, weights, dztransform = QSORedshiftSmearingRVS(fn=fn)
     dz = np.linspace(-5e4, 5e4, 1000)
     rs = QSORedshiftSmearing(fn=fn)
 
-    fig, lax = plt.subplots(2, 5, figsize=(20, 10))
+    lz = np.linspace(z[0], z[-1], 15)
+    fig, lax = plt.subplots(3, 5, figsize=(20, 10))
     lax = lax.flatten()
-    for iz, zz in enumerate(z):
+    for zz, ax in zip(lz, lax):
         s = rs.sample(np.full(100000, zz), seed=42)
-        lax[iz].hist(s, density=True, histtype='step', color='k', bins=100)
-        lax[iz].plot(dztransform(zz, dz), constants.c * (1. + zz) * sum(weight[iz] * rv[iz].pdf(dz) for rv, weight in zip(rvs, weights)), color='r')
-        lax[iz].set_xlabel('$dz$')
+        ax.hist(s, density=True, histtype='step', color='k', bins=100)
+        # Compute interpolated pdf
+        iz = np.searchsorted(z, zz, side='right') - 1
+        alpha = (zz - z[iz]) / (z[iz + 1] - z[iz]) if iz < len(z) - 1 else 0.
+        pdf = (1. - alpha) * sum(weight[iz] * rv[iz].pdf(dz) for rv, weight in zip(rvs, weights))
+        if alpha != 0.:
+            pdf += alpha * sum(weight[iz + 1] * rv[iz + 1].pdf(dz) for rv, weight in zip(rvs, weights))
+        ax.plot(dztransform(zz, dz), constants.c / 1e3 * (1. + zz) * pdf, color='r')
+        ax.set_xlabel('$dz$')
     if rs.mpicomm.rank == 0:
         plt.show()

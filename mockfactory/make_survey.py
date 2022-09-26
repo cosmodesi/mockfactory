@@ -500,7 +500,7 @@ class ParticleCatalog(Catalog):
     """A catalog of particles, with 'Position' and 'Velocity'."""
 
     @CurrentMPIComm.enable
-    def __init__(self, data=None, columns=None, position='Position', velocity='Velocity', vectors=None, translational_invariants=None, **kwargs):
+    def __init__(self, data=None, columns=None, position='Position', velocity='Velocity', vectors=None, translational_invariants=None, attrs=None):
         """
         Initialize :class:`ParticleCatalog`.
 
@@ -526,10 +526,10 @@ class ParticleCatalog(Catalog):
         translational_invariants : list, tuple, set, default=None
             Names of columns (of ``vectors``) which are invariant under translation, e.g. velocities.
 
-        kwargs : dict
-            Other optional arguments, see :class:`ParticleCatalog`.
+        attrs : dict, default=None
+            Dictionary of other attributes.
         """
-        super(ParticleCatalog, self).__init__(data=data, columns=columns, **kwargs)
+        super(ParticleCatalog, self).__init__(data=data, columns=columns, attrs=attrs)
         self._position = position
         self._velocity = velocity
         self._vectors = set(vectors or [])
