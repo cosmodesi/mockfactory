@@ -193,6 +193,8 @@ def generate_redshifts(size, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', c
 def photometric_region_center(region):
     if region == 'N':
         ra, dec = 192.3, 56.0
+    elif region in ['N+DN', 'N+SNGC']:
+        ra, dec = 192, 35
     elif region in ['DN', 'SNGC']:
         ra, dec = 192, 13.0
     elif region in ['DS', 'SSGC']:
