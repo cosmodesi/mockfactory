@@ -15,7 +15,8 @@ except KeyError:
     redux_path = '/global/cfs/cdirs/desi/spectro/redux'
 
 
-def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', survey='main', tiles_fn=os.path.join(redux_path, '{redux}/tiles-{redux}.csv')):
+def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', survey='main',
+                         tiles_fn=os.path.join(redux_path, '{redux}/tiles-{redux}.csv'), return_tile_index=False):
     """
     Return mask for the requested DESI footprint.
 
@@ -44,7 +45,7 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
         Type of the survey, 'main' for the standard DESI clustering analysis.
 
     tiles_fn : string
-        Template path to csv file of tiles.
+        Template path to csv or fits file of tiles.
 
     Returns
     -------

@@ -7,7 +7,7 @@ from matplotlib import pyplot as plt
 from mockfactory.remap import Cuboid
 from mockfactory.make_survey import (EuclideanIsometry, DistanceToRedshift, RedshiftDensityInterpolator,
                                      BoxCatalog, RandomBoxCatalog, RandomCutskyCatalog,
-                                     rotation_matrix_from_vectors, cutsky_to_box, box_to_cutsky,
+                                     rotation_matrix_from_two_vectors, cutsky_to_box, box_to_cutsky,
                                      MaskCollection, UniformRadialMask, TabulatedRadialMask,
                                      UniformAngularMask, HealpixAngularMask,
                                      TabulatedPDF2DRedshiftSmearing, RVS2DRedshiftSmearing)
@@ -112,6 +112,7 @@ def test_randoms():
 def test_io():
 
     catalog = RandomBoxCatalog(csize=1000, boxsize=10., boxcenter=3.)
+
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_dir = '_tests'
         fn = os.path.join(tmp_dir, 'tmp.bigfile')
@@ -330,10 +331,10 @@ def test_redshift_density():
     from cosmoprimo.fiducial import DESI
     cosmo = DESI()
     distance = cosmo.comoving_radial_distance
-    density_ref = RedshiftDensityInterpolator(distance(z), weights=None, bins=cosmo.comoving_radial_distance(zbins), fsky=fsky, radial_distance=None, interp_order=1)
-    density = RedshiftDensityInterpolator(z, weights=2. * weights, bins=zbins, fsky=2. * fsky, radial_distance=distance, interp_order=1)
+    density_ref = RedshiftDensityInterpolator(distance(z), weights=None, bins=cosmo.comoving_radial_distance(zbins), fsky=fsky, distance=None, interp_order=1)
+    density = RedshiftDensityInterpolator(z, weights=2. * weights, bins=zbins, fsky=2. * fsky, distance=distance, interp_order=1)
     assert np.allclose(density(zeval), density_ref(distance(zeval)), atol=1e-7, rtol=0.1)
-    density = RedshiftDensityInterpolator(z, weights=2. * weights, bins=None, fsky=2. * fsky, radial_distance=distance, interp_order=1)
+    density = RedshiftDensityInterpolator(z, weights=2. * weights, bins=None, fsky=2. * fsky, distance=distance, interp_order=1)
     assert np.all((density.z >= z.min()) & (density.z <= z.max() + density.z[-1] - density.z[-2]))
 
 
@@ -344,8 +345,8 @@ def test_rotation_matrix():
 
     a = [1819.25599061, 340.48034526, 2.1809526]
     b = [0., 0., 1.]
-    rot = rotation_matrix_from_vectors(a, b)
-    rot = rotation_matrix_from_vectors(a, a)
+    rot = rotation_matrix_from_two_vectors(a, b)
+    rot = rotation_matrix_from_two_vectors(a, a)
     assert np.allclose(rot, np.eye(3))
 
 

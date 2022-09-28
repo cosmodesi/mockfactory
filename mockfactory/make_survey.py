@@ -14,13 +14,13 @@ from . import utils
 from .utils import BaseClass
 
 
-def rotation_matrix_from_vectors(a, b):
+def rotation_matrix_from_two_vectors(a, b):
     """
     Return rotation matrix transforming 3D vector ``a`` to 3D vector ``b``.
 
     >>> a = np.array([0., 1., 2.])
     >>> b = np.array([0., 2., 1.])
-    >>> rot = rotation_matrix_from_vectors(a, b):
+    >>> rot = rotation_matrix_from_two_vectors(a, b):
     >>> assert np.allclose(rot.dot(a), b)
     """
     a = np.asarray(a)
@@ -30,11 +30,23 @@ def rotation_matrix_from_vectors(a, b):
     v = np.cross(a, b)
     c = np.dot(a, b)
     s = utils.distance(v)
-    eye = np.identity(3, dtype='f8')
-    k = np.array([[0., -v[2], v[1]], [v[2], 0., -v[0]], [-v[1], v[0], 0.]])
+    eye = np.eye(3, dtype='f8')
     if s == 0.:
         return eye
+    k = np.array([[0., -v[2], v[1]], [v[2], 0., -v[0]], [-v[1], v[0], 0.]], dtype='f8')
     return eye + k + np.matmul(k, k) * ((1. - c) / (s ** 2))
+
+
+def rotation_matrix_from_vector_angle(axis, angle):
+    """Return matrix corresponding to rotation of ``angle`` degrees around ``axis`` vector."""
+    v = _get_los(axis)
+    angle = angle * np.pi / 180.
+    eye = np.eye(3, dtype='f8')
+    if angle == 0.:
+        return eye
+    p = v[:, None] * v
+    q = np.array([[0., -v[2], v[1]], [v[2], 0., -v[0]], [-v[1], v[0], 0.]], dtype='f8')
+    return p + np.cos(angle) * (eye - p) + np.sin(angle) * q
 
 
 def _make_array(value, shape, dtype='f8'):
@@ -53,6 +65,7 @@ def _get_los(los):
         los = np.zeros(3, dtype='f8')
         los[ilos] = 1.
     los = _make_array(los, 3, dtype='f8')
+    los /= utils.distance(los)
     return los
 
 
@@ -99,13 +112,28 @@ class EuclideanIsometry(BaseClass):
         if not translational_invariant: toret += self._translation
         return toret
 
-    @staticmethod
-    def _get_axis(axis):
-        if axis not in range(3):
-            axis = 'xyz'.index(axis)
-        return axis
+    def dot(self, matrix, frame='origin'):
+        """
+        Register general rotation matrix.
 
-    def rotation(self, angle=0., axis=None, degree=True, frame='origin'):
+        Parameters
+        ----------
+        matrix : array
+            3 x 3 rotation matrix.
+
+        frame : string, default='origin'
+            Either 'origin', in which case rotation is w.r.t. origin :math:`(0, 0, 0)`,
+            or 'current', in which case rotation is w.r.t. current position.
+        """
+        matrix = np.asarray(matrix, dtype='f8')
+        self._rotation = matrix.dot(self._rotation)
+        if frame == 'origin':
+            self._translation = matrix.dot(self._translation)
+        elif frame != 'current':
+            raise EuclideanIsometryError('center must be "origin" or "current"')
+        return self
+
+    def rotation(self, angle=0., axis='z', degree=True, frame='origin'):
         """
         Register rotation around axis.
 
@@ -114,34 +142,21 @@ class EuclideanIsometry(BaseClass):
         angle : float, array, default=0.
             (Signed) angle (around ``axis``).
 
-        axis : int, string, default=None
+        axis : int, string, default='z'
             Axis number, or 'x' (0), 'y' (1) or 'z' (2),
-            or ``None``, in which case ``angle`` is applied to all axes.
+            or (unit) 3-vector.
 
         degree : bool, default=True
             Whether input ``angle`` is in degree.
 
         frame : string, default='origin'
-            Either 'origin', in which case rotation is w.r.t. origin :math:`(0,0,0)`,
+            Either 'origin', in which case rotation is w.r.t. origin :math:`(0, 0, 0)`,
             or 'current', in which case rotation is w.r.t. current position.
         """
-        if degree: angle = angle * np.pi / 180.
-        if axis is not None:
-            axis = self._get_axis(axis)
-            angle = [angle if ax == axis else 0. for ax in range(3)]
-        angles = _make_array(angle, 3, dtype='f8')
-        matrix = np.eye(3, dtype='f8')
-        for axis, angle in enumerate(angles):
-            c, s = np.cos(angle), np.sin(angle)
-            if axis == 0: mat = [[1., 0., 0.], [0., c, -s], [0., s, c]]
-            if axis == 1: mat = [[c, 0., s], [0, 1., 0.], [-s, 0., c]]
-            if axis == 2: mat = [[c, -s, 0.], [s, c, 0.], [0., 0., 1.]]
-            matrix = np.asarray(mat).dot(matrix)
-        self._rotation = matrix.dot(self._rotation)
-        if frame == 'origin':
-            self._translation = matrix.dot(self._translation)
-        elif frame != 'current':
-            raise EuclideanIsometryError('center must be "origin" or "current"')
+        if not degree: angle = angle * 180. / np.pi
+        axis = _get_los(axis)
+        self.dot(rotation_matrix_from_vector_angle(axis, angle))
+        return self
 
     def translation(self, shift=0., axis=None, frame='origin'):
         """
@@ -154,21 +169,28 @@ class EuclideanIsometry(BaseClass):
 
         axis : int, string, default=None
             Axis number, or 'x' (0), 'y' (1) or 'z' (2),
-            or ``None``, in which case ``shift`` is applied to all axes.
+            or ``None``, in which case ``shift`` (3-vector)
+            is applied to all axes successively.
 
         frame : string, default='origin'
             Either 'origin', in which case translation is w.r.t. origin frame.
             or 'current', in which case translation is w.r.t. current rotation.
         """
         if axis is not None:
-            axis = self._get_axis(axis)
-            shift = [shift if ax == axis else 0. for ax in range(3)]
+            if np.ndim(shift) != 0:
+                raise EuclideanIsometryError('In case one axis is provided, shift must be scalar')
+            if isinstance(axis, str):
+                axis = 'xyz'.index(axis)
+            s = shift
+            shift = _make_array(0., 3)
+            shift[axis] = s
         shift = _make_array(shift, 3)
         if frame == 'current':
             shift = np.tensordot(shift, self._rotation, axes=((-1,), (1,)))
         elif frame != 'origin':
             raise EuclideanIsometryError('center must be "origin" or "current"')
         self._translation += shift
+        return self
 
     def reset_rotation(self, frame='origin'):
         """
@@ -185,10 +207,12 @@ class EuclideanIsometry(BaseClass):
         elif frame != 'current':
             raise EuclideanIsometryError('center must be "origin" or "current"')
         self._rotation = np.eye(self._rotation.shape[0], dtype=self._rotation.dtype)
+        return self
 
     def reset_translate(self):
         """Reset translation."""
         self._translation[:] = 0.
+        return self
 
     @classmethod
     def concatenate(cls, *others):
@@ -409,12 +433,12 @@ class RedshiftDensityInterpolator(BaseClass):
     nbar : array
         Tabulated density array.
 
-    spline : sp.interpolate.UnivariateSpline
+    interp : sp.interpolate.UnivariateSpline
         Spline interpolator.
     """
 
     @CurrentMPIComm.enable
-    def __init__(self, z, weights=None, bins=None, fsky=1., radial_distance=None, interp_order=1, mpicomm=None, mpiroot=None):
+    def __init__(self, z, weights=None, bins=None, fsky=1., distance=None, interp_order=3, mpicomm=None, mpiroot=None):
         r"""
         Initialize :class:`RedshiftDensityInterpolator`.
 
@@ -436,13 +460,14 @@ class RedshiftDensityInterpolator(BaseClass):
         fsky : float, default=1
             The sky area fraction, which is used in the volume calculation when normalizing :math:`n(z)`.
             ``1`` corresponds to full-sky: :math:`4 \pi` or :math:`\simeq 41253\; \mathrm{deg}^{2}`.
+            If ``None``, no volume normalization is applied to the histogram of binned redshifts.
 
-        radial_distance : callable, default=None
+        distance : callable, default=None
             Radial distance to use when converting redshifts into comoving distance.
             If ``None``, ``redshifts`` and optionally ``bins`` are assumed to be in distance units.
 
-        interp_order : int, default=1
-            Interpolation order, e.g. ``1`` for linear interpolation, ``3`` for cubic splines.
+        interp_order : int, default=3
+            Interpolation order, e.g. 1 for linear interpolation, 3 for cubic splines.
 
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
@@ -478,18 +503,21 @@ class RedshiftDensityInterpolator(BaseClass):
         counts = np.histogram(z, weights=weights, bins=bins)[0]
         counts = mpy.reduce(counts, op='sum', mpicomm=self.mpicomm, mpiroot=Ellipsis)
 
-        if radial_distance is not None:
-            dbins = radial_distance(bins)
+        if distance is not None:
+            dbins = distance(bins)
         else:
             dbins = bins
-        dvol = fsky * 4. / 3. * np.pi * (dbins[1:]**3 - dbins[:-1]**3)
+        if fsky is None:
+            dvol = 1.
+        else:
+            dvol = fsky * 4. / 3. * np.pi * (dbins[1:]**3 - dbins[:-1]**3)
         self.z = (bins[:-1] + bins[1:]) / 2.
         self.nbar = counts / dvol
-        self.spline = interpolate.UnivariateSpline(self.z, self.nbar, k=interp_order, s=0, ext='zeros')
+        self.interp = interpolate.UnivariateSpline(self.z, self.nbar, k=interp_order, s=0, ext='zeros')
 
     def __call__(self, z):
         """Return density at redshift ``z`` (scalar or array)."""
-        return self.spline(z)
+        return self.interp(z)
 
 
 class ParticleCatalog(Catalog):
@@ -500,7 +528,7 @@ class ParticleCatalog(Catalog):
     """A catalog of particles, with 'Position' and 'Velocity'."""
 
     @CurrentMPIComm.enable
-    def __init__(self, data=None, columns=None, position='Position', velocity='Velocity', vectors=None, translational_invariants=None, attrs=None):
+    def __init__(self, data=None, columns=None, position='Position', velocity='Velocity', vectors=None, translational_invariants=None, attrs=None, mpicomm=None):
         """
         Initialize :class:`ParticleCatalog`.
 
@@ -528,8 +556,11 @@ class ParticleCatalog(Catalog):
 
         attrs : dict, default=None
             Dictionary of other attributes.
+
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
         """
-        super(ParticleCatalog, self).__init__(data=data, columns=columns, attrs=attrs)
+        super(ParticleCatalog, self).__init__(data=data, columns=columns, attrs=attrs, mpicomm=mpicomm)
         self._position = position
         self._velocity = velocity
         self._vectors = set(vectors or [])
@@ -971,6 +1002,7 @@ class BoxCatalog(ParticleCatalog):
         catalog = CutskyCatalog(data=catalog.data, position=catalog._position, velocity=catalog._velocity, vectors=catalog.vectors,
                                 translational_invariants=catalog._translational_invariants, attrs=catalog.attrs)
         catalog.isometry(isometry)
+
         dist, ra, dec = utils.cartesian_to_sky(catalog.position, degree=True, wrap=False)
         if rdd is not None:
             for name, array in zip(rdd, [ra, dec, dist]):
@@ -1327,7 +1359,7 @@ class TabulatedRadialMask(BaseRadialMask):
     r"""Tabulated :math:`n(z)` selection."""
 
     @CurrentMPIComm.enable
-    def __init__(self, z, nbar=None, zrange=None, filename=None, norm=None, mpicomm=None):
+    def __init__(self, z, nbar=None, zrange=None, filename=None, norm=None, interp_order=3, mpicomm=None):
         """
         Initialize :class:`TabulatedRadialMask`.
 
@@ -1350,6 +1382,9 @@ class TabulatedRadialMask(BaseRadialMask):
             Normalization factor to apply to ``nbar``.
             See :meth:`prepare`.
 
+        interp_order : int, default=3
+            Interpolation order, e.g. 1 for linear interpolation, 3 for cubic splines.
+
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
         """
@@ -1371,9 +1406,9 @@ class TabulatedRadialMask(BaseRadialMask):
         super(TabulatedRadialMask, self).__init__(zrange=zrange, mpicomm=mpicomm)
         if not ((zmin <= self.zrange[0]) & (zmax >= self.zrange[1])):
             raise ValueError('Redshift range is {:.2f} - {:.2f} but the limiting range is {:.2f} - {:.2f}.'.format(zmin, zmax, self.zrange[0], self.zrange[1]))
-        self.prepare(norm=norm)
+        self.prepare(norm=norm, interp_order=interp_order)
 
-    def prepare(self, norm=None):
+    def prepare(self, norm=None, interp_order=None):
         """
         Set normalization factor :attr:`norm` and interpolation :attr:`interp`.
 
@@ -1381,9 +1416,39 @@ class TabulatedRadialMask(BaseRadialMask):
         ----------
         norm : float, default=None
             Factor to scale :attr:`nbar`.
-            Defaults to maximum :attr:`nbar` in redshift range.
+            Defaults to maximum of interpolated :attr:`nbar` in redshift range.
+
+        interp_order : int, default=None
+            If not ``None``, replace :attr:`interp_order`.
         """
-        if norm is None: norm = 1. / self.nbar[self.zmask].max(axis=0)
+        if interp_order is not None:
+            self.interp_order = int(interp_order)
+        elif getattr(self, 'interp_order', None) is None:
+            self.interp_order = 3
+
+        if norm is None:
+            self.norm = 1.
+            self._set_interp()
+
+            def solve_newton(x, fun, grad):
+                v = fun(x)
+                while (np.abs(v) > 1e-15):
+                    x -= v / grad(x)
+                    v = fun(x)
+                return x
+
+            grad = self.interp.derivative()
+            jac = grad.derivative()
+
+            # Finer binning to account for interpolation
+            z = np.linspace(self.z[0], self.z[-1], len(self.z) * self.interp_order)
+            nz = self.interp(z)
+            nbar_max = self.interp(solve_newton(z[np.argmax(nz)], grad, jac))
+            nbar_max = self.mpicomm.bcast(nbar_max, root=self.mpiroot)
+            if np.any(nbar_max < nz):
+                raise ValueError('Could not find maximum of nbar')
+            norm = 1. / nbar_max
+
         self.norm = norm
         self._set_interp()
         return self.norm
@@ -1391,7 +1456,7 @@ class TabulatedRadialMask(BaseRadialMask):
     def _set_interp(self):
         # Set :attr:`interp`, the end user does not need to call it
         prob = np.clip(self.norm * self.nbar, 0., 1.)
-        self.interp = interpolate.Akima1DInterpolator(self.z, prob, axis=0)
+        self.interp = interpolate.UnivariateSpline(self.z, prob, k=self.interp_order, s=0, ext='zeros')
 
     @property
     def zmask(self):
@@ -1436,7 +1501,7 @@ class TabulatedRadialMask(BaseRadialMask):
             if not self.mpicomm.bcast(weights is None, root=mpiroot):
                 weights = mpy.scatter(weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
         if z is None and weights is None:
-            return self.interp.integrate(self.zrange[0], self.zrange[1])
+            return self.interp.integral(self.zrange[0], self.zrange[1])
         if weights is not None and z is None:
             raise ValueError('Provide z when giving weights')
         if weights is None:

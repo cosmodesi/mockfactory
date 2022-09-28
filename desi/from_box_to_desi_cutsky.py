@@ -1,10 +1,12 @@
+"""Script by Edmond Chaussidon to transform cubic mock to DESI cutsky mock."""
+
 import os
 import logging
 
 import numpy as np
 
 
-logger = logging.getLogger('DESI Survey')
+logger = logging.getLogger('DESI survey')
 
 # To avoid error from NUMEXPR Package
 os.environ.setdefault('NUMEXPR_MAX_THREADS', os.environ.get('OMP_NUM_THREADS', '1'))
@@ -19,7 +21,7 @@ def remap_the_box(catalog):
     It is purely geometric.
     """
     from mockfactory.remap import Cuboid
-    # Remap the box, see nb/remap_examples.ipynb to see how we choose the vector:
+    # Remap the box, see nb/remap_examples.ipynb to see how we choose the vector
     lattice = Cuboid.generate_lattice_vectors(maxint=1, maxcomb=1, sort=False,
                                               boxsize=[5500, 5500, 5500],
                                               cuboidranges=[[8000, 10000], [4000, 5000], [2000, 4000]])
@@ -36,7 +38,7 @@ def remap_the_box(catalog):
     return catalog
 
 
-def apply_rsd_and_cutsky(catalog, dmin, dmax, rsd_factor, add_ra=0, add_dec=0):
+def apply_rsd_and_cutsky(catalog, dmin, dmax, rsd_factor, center_ra=0, center_dec=0):
     """
     Rotate the box to the final position, apply RSD and masks.
 
@@ -59,8 +61,8 @@ def apply_rsd_and_cutsky(catalog, dmin, dmax, rsd_factor, add_ra=0, add_dec=0):
         Factor to apply to ``catalog.velocity`` to obtain RSD displacement in positions units, to be added to ``catalog.position``.
         It depends on the choice of velocity units in ``catalog``.
 
-    add_ra, add_dec : float, default=0.
-        Add angles to rotate the box. The box is centered around (RA, Dec) = (add_ra, add_dec).
+    center_ra, center_dec : float, default=0.
+        Add angles to rotate the box. The box is centered around (RA, Dec) = (center_ra, center_dec).
 
     Returns
     -------
@@ -73,8 +75,8 @@ def apply_rsd_and_cutsky(catalog, dmin, dmax, rsd_factor, add_ra=0, add_dec=0):
     drange, rarange, decrange = box_to_cutsky(catalog.boxsize, dmax, dmin=dmin)
 
     # Slice rarange et decrange:
-    rarange = np.array(rarange) + add_ra
-    decrange = np.array(decrange) + add_dec
+    rarange = np.array(rarange) + center_ra
+    decrange = np.array(decrange) + center_dec
 
     # Collect isometry (transform) and masks to be applied
     isometry, mask_radial, mask_angular = catalog.isometry_for_cutsky(drange, rarange, decrange)
@@ -129,11 +131,13 @@ def apply_radial_mask(cutsky, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', 
     zedges = np.insert(zbin_max, 0, zbin_min[0])
     dedges = cosmo.comoving_radial_distance(zedges)
     volume = dedges[1:]**3 - dedges[:-1]**3
-    nz = interp1d(zbin_mid, n_z / volume, kind='quadratic', bounds_error=False, fill_value=(0, 0))
+
+    #nz = interp1d(zbin_mid, n_z / volume, kind='quadratic', bounds_error=False, fill_value=(0, 0))
 
     # Define radial mask
-    z = np.linspace(zmin, zmax, 51)
-    mask_radial = TabulatedRadialMask(z=z, nbar=nz(z))
+    #z = np.linspace(zmin, zmax, 51)
+    #mask_radial = TabulatedRadialMask(z=z, nbar=nz(z))
+    mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=3)
 
     return cutsky[mask_radial(cutsky['Z'], seed=seed)]
 
@@ -180,11 +184,12 @@ def generate_redshifts(size, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', c
     zedges = np.insert(zbin_max, 0, zbin_min[0])
     dedges = cosmo.comoving_radial_distance(zedges)
     volume = dedges[1:]**3 - dedges[:-1]**3
-    nz = interp1d(zbin_mid, n_z / volume, kind='quadratic', bounds_error=False, fill_value=(0, 0))
+    #nz = interp1d(zbin_mid, n_z / volume, kind='quadratic', bounds_error=False, fill_value=(0, 0))
 
     # Define radial mask:
-    z = np.linspace(zmin, zmax, 51)
-    mask_radial = TabulatedRadialMask(z=z, nbar=nz(z))
+    #z = np.linspace(zmin, zmax, 51)
+    #mask_radial = TabulatedRadialMask(z=z, nbar=nz(z))
+    mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=3)
 
     # We generate randomly points in redshift space directly, as this is the unit of n_z file
     return mask_radial.sample(size, cosmo.comoving_radial_distance, seed=seed)
@@ -205,7 +210,7 @@ def photometric_region_center(region):
 
 
 def is_in_photometric_region(ra, dec, region, rank=0):
-    """ DN=NNGC and DS = SNGC """
+    """DN=NNGC and DS = SNGC"""
     region = region.upper()
     assert region in ['N', 'DN', 'DS', 'SNGC', 'SSGC', 'DES']
 
@@ -245,7 +250,7 @@ def is_in_photometric_region(ra, dec, region, rank=0):
         return pixels, dr9_footprint(convert_dict[region])[pixels]
 
 
-def match_photo_desi_footprint(cutsky, region, release, program='dark', npasses=None, rank=0):
+def apply_photo_desi_footprint(cutsky, region, release, program='dark', npasses=None, rank=0):
     """
     Remove part of the cutsky to match as best as possible (precision is healpix map at nside)
     the DESI release (e.g. y1) footprint and DR9 photometric footprint.
@@ -277,9 +282,11 @@ if __name__ == '__main__':
         srun -n 256 python from_box_to_desi_cutsky.py
 
     For debbuging purpose only:
-        mpirun -n 4 python from_box_to_desi_cutsky.py
+        python from_box_to_desi_cutsky.py
     """
-    from mockfactory import LagrangianLinearMock, setup_logging
+    from mpi4py import MPI
+
+    from mockfactory import DistanceToRedshift, setup_logging
     from mockfactory.desi import get_brick_pixel_quantities
 
     # To remove the following warning from pmesh (no need for pmesh version in cosmodesiconda)
@@ -289,23 +296,24 @@ if __name__ == '__main__':
     from cosmoprimo.fiducial import DESI
 
     setup_logging()
-
-    from mpi4py import MPI
     start_ini = MPI.Wtime()
+
+    # Load DESI fiducial cosmology
+    cosmo = DESI()
+    d2z = DistanceToRedshift(cosmo.comoving_radial_distance)
 
     # Output directory
     outdir = '_tests'
 
+    ### Tracer-specific ###
     # n(z)
     zmin, zmax, nz_filename = 0.8, 2.65, 'nz_qso_final.dat'
-
     # Choose the footprint: DA02, Y1, Y5 for dark or bight time
     release, program, npasses = 'y1', 'dark', 3
     programpasses = f'{program}-{npasses}' if npasses is not None else program
 
     # Do you want also to generate randoms?
     generate_randoms = True
-
     # Add maskbits?
     # This step can be long. Large sky coverage need several nodes to be executed in small amounts of time ( ~50 bricks per process)
     # collect only maskbits, see mockfactory/desi/brick_pixel_quantities for other quantities as PSFSIZE_R or LRG_mask
@@ -317,24 +325,21 @@ if __name__ == '__main__':
     fmt = 'fits'
     # fmt = 'bigfile'
 
-    # Load DESI fiducial cosmology
-    cosmo = DESI(engine='class')
+    #### Lognormal mock as a placeholder ###
     z = (zmin + zmax) / 2.
     # Linear power spectrum at median z
     power = cosmo.get_fourier().pk_interpolator().to_1d(z=z)
-    f = cosmo.sigma8_z(z=z, of='theta_cb') / cosmo.sigma8_z(z=z, of='delta_cb')  # growth rate
-    bias = (2. - 1)  # this is Lagrangian bias, Eulerian bias - 1
-
-    # Generate a cubic lognormal mock:
+    from mockfactory import LagrangianLinearMock
     mock = LagrangianLinearMock(power, nmesh=512, boxsize=5500, boxcenter=[0, 0, 0], seed=42, unitary_amplitude=False)
     mpicomm, rank = mock.mpicomm, mock.mpicomm.rank
-    mock.set_real_delta_field(bias=bias)
+    mock.set_real_delta_field(bias=(2. - 1))  # this is Lagrangian bias, Eulerian bias - 1
     mock.set_analytic_selection_function(nbar=1e-5)
     mock.poisson_sample(seed=792)
     box = mock.to_catalog()
+    rsd_factor = cosmo.sigma8_z(z=z, of='theta_cb') / cosmo.sigma8_z(z=z, of='delta_cb')  # growth rate
 
     # The following code requests a mockfactory.BoxCatalog to work.
-    # mockfactory.BoxCatalog proposes different way to read catalog in different format with MPI
+    # mockfactory.BoxCatalog proposes different ways to read catalog in different formats with MPI
     # box = BoxCatalog.read(fn, filetype='fits', position='Position', velocity='Velocity', boxsize=[size_x, size_y, size_z], boxcenter=[x, y, z], mpicomm=mpicomm)
     # We can also directly build BoxCatalog from an array (similar as dtype numpy array, or dictionary of numpy arrays) split on different ranks
     # data['Position'] should be of shape (N, 3) in 3D, ect...
@@ -355,18 +360,15 @@ if __name__ == '__main__':
     seeds_data_nz = {region: seed_mock + i for i, region in enumerate(regions)}
     seeds_randoms = {region: seed_randoms + i for i, region in enumerate(regions)}
 
-    from mockfactory import DistanceToRedshift
-    d2z = DistanceToRedshift(cosmo.comoving_radial_distance)
-
     for region in regions:
         start = MPI.Wtime()
 
         # rotation of the box to match the best as possible each region
-        add_ra, add_dec = photometric_region_center(region)
-        if rank == 0: logger.info(f'Rotation to match region: {region} with add_ra: {add_ra} and add_dec: {add_dec}')
+        center_ra, center_dec = photometric_region_center(region)
+        if rank == 0: logger.info(f'Rotation to match region: {region} with center_ra: {center_ra} and center_dec: {center_dec}')
 
         # Create the cutsky
-        cutsky = apply_rsd_and_cutsky(box, cosmo.comoving_radial_distance(zmin), cosmo.comoving_radial_distance(zmax), f, add_ra=add_ra, add_dec=add_dec)
+        cutsky = apply_rsd_and_cutsky(box, cosmo.comoving_radial_distance(zmin), cosmo.comoving_radial_distance(zmax), rsd_factor, center_ra=center_ra, center_dec=center_dec)
 
         # Convert distance to redshift
         cutsky['Z'] = d2z(cutsky['DISTANCE'])
@@ -376,7 +378,7 @@ if __name__ == '__main__':
 
         # Match the desi footprint and apply the DR9 mask
         start = MPI.Wtime()
-        desi_cutsky = match_photo_desi_footprint(cutsky, region, release, program, npasses=npasses, rank=rank)
+        desi_cutsky = apply_photo_desi_footprint(cutsky, region, release, program, npasses=npasses, rank=rank)
         if add_brick_quantities:
             tmp = get_brick_pixel_quantities(desi_cutsky['RA'], desi_cutsky['DEC'], add_brick_quantities, mpicomm=mpicomm)
             for key, value in tmp.items(): desi_cutsky[key.upper()] = value
@@ -405,12 +407,12 @@ if __name__ == '__main__':
             if rank == 0: logger.info(f'Generate randoms for region: {region} with seed: {seeds_randoms[region]}')
 
             start = MPI.Wtime()
-            randoms = RandomCutskyCatalog(rarange=add_ra + np.array(rarange), decrange=add_dec + np.array(decrange), csize=nbr_randoms, seed=seeds_randoms[region], mpicomm=mpicomm)
+            randoms = RandomCutskyCatalog(rarange=center_ra + np.array(rarange), decrange=center_dec + np.array(decrange), csize=nbr_randoms, seed=seeds_randoms[region], mpicomm=mpicomm)
             if rank == 0: logger.info(f'Randoms generated in {MPI.Wtime() - start:2.2f} s.')
 
             # Match the desi footprint and apply the DR9 mask
             start = MPI.Wtime()
-            randoms = match_photo_desi_footprint(randoms, region, release, program, npasses=npasses, rank=rank)
+            randoms = apply_photo_desi_footprint(randoms, region, release, program, npasses=npasses, rank=rank)
             if add_brick_quantities:
                 tmp = get_brick_pixel_quantities(randoms['RA'], randoms['DEC'], add_brick_quantities, mpicomm=mpicomm)
                 for key, value in tmp.items(): randoms[key.upper()] = value
