@@ -208,7 +208,7 @@ def photometric_region_center(region):
 
 
 def is_in_photometric_region(ra, dec, region, rank=0):
-    """ DN=NNGC and DS = SNGC """
+    """DN=NNGC and DS = SNGC"""
     region = region.upper()
     assert region in ['N', 'DN', 'DS', 'SNGC', 'SSGC', 'DES']
 
@@ -280,11 +280,11 @@ if __name__ == '__main__':
         srun -n 256 python from_box_to_desi_cutsky.py
 
     For debbuging purpose only:
-        mpirun -n 4 python from_box_to_desi_cutsky.py
+        python from_box_to_desi_cutsky.py
     """
     from mpi4py import MPI
 
-    from mockfactory import LagrangianLinearMock, DistanceToRedshift, setup_logging
+    from mockfactory import DistanceToRedshift, setup_logging
     from mockfactory.desi import get_brick_pixel_quantities
 
     # To remove the following warning from pmesh (no need for pmesh version in cosmodesiconda)
@@ -327,14 +327,14 @@ if __name__ == '__main__':
     z = (zmin + zmax) / 2.
     # Linear power spectrum at median z
     power = cosmo.get_fourier().pk_interpolator().to_1d(z=z)
-    f = cosmo.sigma8_z(z=z, of='theta_cb') / cosmo.sigma8_z(z=z, of='delta_cb')  # growth rate
-    bias = (2. - 1)  # this is Lagrangian bias, Eulerian bias - 1
+    from mockfactory import LagrangianLinearMock
     mock = LagrangianLinearMock(power, nmesh=512, boxsize=5500, boxcenter=[0, 0, 0], seed=42, unitary_amplitude=False)
     mpicomm, rank = mock.mpicomm, mock.mpicomm.rank
-    mock.set_real_delta_field(bias=bias)
+    mock.set_real_delta_field(bias=(2. - 1))  # this is Lagrangian bias, Eulerian bias - 1
     mock.set_analytic_selection_function(nbar=1e-5)
     mock.poisson_sample(seed=792)
     box = mock.to_catalog()
+    rsd_factor = cosmo.sigma8_z(z=z, of='theta_cb') / cosmo.sigma8_z(z=z, of='delta_cb')  # growth rate
 
     # The following code requests a mockfactory.BoxCatalog to work.
     # mockfactory.BoxCatalog proposes different ways to read catalog in different formats with MPI
@@ -366,7 +366,7 @@ if __name__ == '__main__':
         if rank == 0: logger.info(f'Rotation to match region: {region} with center_ra: {center_ra} and center_dec: {center_dec}')
 
         # Create the cutsky
-        cutsky = apply_rsd_and_cutsky(box, cosmo.comoving_radial_distance(zmin), cosmo.comoving_radial_distance(zmax), f, center_ra=center_ra, center_dec=center_dec)
+        cutsky = apply_rsd_and_cutsky(box, cosmo.comoving_radial_distance(zmin), cosmo.comoving_radial_distance(zmax), rsd_factor, center_ra=center_ra, center_dec=center_dec)
 
         # Convert distance to redshift
         cutsky['Z'] = d2z(cutsky['DISTANCE'])

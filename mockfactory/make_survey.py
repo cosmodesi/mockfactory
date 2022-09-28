@@ -156,6 +156,7 @@ class EuclideanIsometry(BaseClass):
         if not degree: angle = angle * 180. / np.pi
         axis = _get_los(axis)
         self.dot(rotation_matrix_from_vector_angle(axis, angle))
+        return self
 
     def translation(self, shift=0., axis=None, frame='origin'):
         """
@@ -459,6 +460,7 @@ class RedshiftDensityInterpolator(BaseClass):
         fsky : float, default=1
             The sky area fraction, which is used in the volume calculation when normalizing :math:`n(z)`.
             ``1`` corresponds to full-sky: :math:`4 \pi` or :math:`\simeq 41253\; \mathrm{deg}^{2}`.
+            If ``None``, no volume normalization is applied to the histogram of binned redshifts.
 
         distance : callable, default=None
             Radial distance to use when converting redshifts into comoving distance.
@@ -505,7 +507,10 @@ class RedshiftDensityInterpolator(BaseClass):
             dbins = distance(bins)
         else:
             dbins = bins
-        dvol = fsky * 4. / 3. * np.pi * (dbins[1:]**3 - dbins[:-1]**3)
+        if fsky is None:
+            dvol = 1.
+        else:
+            dvol = fsky * 4. / 3. * np.pi * (dbins[1:]**3 - dbins[:-1]**3)
         self.z = (bins[:-1] + bins[1:]) / 2.
         self.nbar = counts / dvol
         self.interp = interpolate.UnivariateSpline(self.z, self.nbar, k=interp_order, s=0, ext='zeros')

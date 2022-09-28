@@ -74,7 +74,6 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
     else:
         import pandas as pd
         tiles_fn = tiles_fn.format(redux=redux)
-        if tiles_fn.endswith()
         tiles = pd.read_csv(tiles_fn)
         tiles = tiles[(tiles['SURVEY'] == survey) & (tiles['FAPRGRM'] == program)]
         if lastnight is not None:

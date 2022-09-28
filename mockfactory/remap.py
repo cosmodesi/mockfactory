@@ -361,7 +361,7 @@ class Cuboid(BaseClass):
             # Fill with unconstraining ranges
             cuboidranges += [(0, np.inf)] * (3 - len(cuboidranges))
         # We can restrict to coprimes, following from:
-        # i) determinant calculation (expansion following a culumn/line)
+        # i) determinant calculation (expansion following a column/row)
         # ii) unimodularity (determinant is 1)
         # iii) Bezout's theorem (for three integer)
         coprimes = coprime_triples(range(- maxint, maxint + 1))
