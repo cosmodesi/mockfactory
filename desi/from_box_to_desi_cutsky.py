@@ -335,9 +335,10 @@ if __name__ == '__main__':
 
     # The following code requests a mockfactory.BoxCatalog to work.
     # mockfactory.BoxCatalog proposes different way to read catalog in different format with MPI
+    # box = BoxCatalog.read(fn, filetype='fits', position='Position', velocity='Velocity', boxsize=[size_x, size_y, size_z], boxcenter=[x, y, z], mpicomm=mpicomm)
     # We can also directly build BoxCatalog from an array (similar as dtype numpy array, or dictionary of numpy arrays) split on different ranks
     # data['Position'] should be of shape (N, 3) in 3D, ect...
-    # box = BoxCatalog(data=data, columns=['Position', 'Velocity', 'Mass'], boxsize=[size_x, size_y, size_z], boxcenter=[x, y, z], mpicomm=mpicomm)
+    # box = BoxCatalog(data=data, columns=['Position', 'Velocity', 'Mass'], position='Position', velocity='Velocity', boxsize=[size_x, size_y, size_z], boxcenter=[x, y, z], mpicomm=mpicomm)
     # To ensure that the box is centered: box.recenter()
 
     # In order to increase the sky coverage, remap the box:
