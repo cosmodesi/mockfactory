@@ -25,7 +25,7 @@ if __name__ == '__main__':
     Can be launched with MPI:
         salloc -N 2 -C haswell -t 00:30:00 --qos interactive -L SCRATCH,project
         srun -n 64 python from_box_to_desi_sv3_cutsky.py
-    
+
     The first run will take a bit of time, to generate the set of lattice vectors for box remapping.
     Most time consuming step is reading maskbits.
 
@@ -40,7 +40,7 @@ if __name__ == '__main__':
     from mockfactory import utils, setup_logging
     from mpytools.random import MPIRandomState
     from cosmoprimo.fiducial import DESI
-    
+
     setup_logging()
 
     # Add maskbits?
@@ -130,12 +130,12 @@ if __name__ == '__main__':
     direction_rosettes = {rosette['ROSETTE_NUMBER']: (rosette['RA'], rosette['DEC']) for rosette in rosettes}
 
     ndata, rosettes_regions = {}, {}
-    
+
     def mask_region(dec, region):
         mask = dec > 32.375
         if region == 'S': mask = ~mask
         return mask
-    
+
     for region in regions:
 
         data = Catalog.read(ref_fn[region])
@@ -185,7 +185,7 @@ if __name__ == '__main__':
             # Apply tile selection
             mask_rosette, index_tile = desimodel.footprint.is_point_in_desi(tiles[np.isin(tiles['TILEID'], tiles_in_rosettes)], cutsky['RA'], cutsky['DEC'], return_tile_index=True)
             mask_rosette &= mask_radial(cutsky['Z'], seed=None)
-            
+
             if plot_debug:
                 from matplotlib import pyplot as plt
                 n = 2
@@ -197,7 +197,7 @@ if __name__ == '__main__':
                     fig = plt.gcf()
                     fig.savefig(catalog_fn(name, rosettes).replace('.fits', '.png'))
                     plt.close(fig)
-                
+
             cutsky = cutsky[mask_rosette]
 
             if add_brick_quantities:
