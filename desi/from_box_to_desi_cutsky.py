@@ -139,7 +139,7 @@ def apply_radial_mask(cutsky, zmin=0., zmax=6., nz_filename='nz_qso_final.dat',
     zedges = np.insert(zbin_max, 0, zbin_min[0])
     dedges = cosmo.comoving_radial_distance(zedges)
     volume = dedges[1:]**3 - dedges[:-1]**3
-    mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=2)
+    mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=2, zrange=(zmin, zmax))
 
     if apply_redshift_smearing:
         from mockfactory.desi import RedshiftSmearing
@@ -192,7 +192,7 @@ def generate_redshifts(size, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', c
     zedges = np.insert(zbin_max, 0, zbin_min[0])
     dedges = cosmo.comoving_radial_distance(zedges)
     volume = dedges[1:]**3 - dedges[:-1]**3
-    mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=3)
+    mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=2, zrange=(zmin, zmax))
 
     # We generate randomly points in redshift space directly, as this is the unit of n_z file
     return mask_radial.sample(size, cosmo.comoving_radial_distance, seed=seed)
