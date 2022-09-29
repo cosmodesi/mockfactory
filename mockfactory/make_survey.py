@@ -298,7 +298,7 @@ def box_to_cutsky(boxsize, dmax, dmin=0.):
         else:
             # Box is to small to have 360 survey
             if np.abs(dx) / dmax < 1:
-                deltaradec.append(np.arcsin(np.abs(dx) / dmax) + np.pi / 2)
+                deltaradec.append(np.arcsin(np.abs(dx) / dmax) + np.pi/2)
             # Box is large enough to have 360 survey
             else:
                 deltaradec.append(np.pi)
@@ -788,7 +788,7 @@ class BoxCatalog(ParticleCatalog):
                 new[name] = cuboid.transform(self[name], translational_invariant=True)
             else:
                 new[name] = cuboid.transform(self[name] - offset, translational_invariant=False) + cuboidoffset
-            # if name not in self._translational_invariants:
+            #if name not in self._translational_invariants:
             #    new[name] = cuboid.transform(self[name] - offset) + cuboidoffset
         return new
 
@@ -1177,7 +1177,7 @@ class RandomCutskyCatalog(CutskyCatalog):
         else:
             mask = UniformRadialMask(zrange=drange, mpicomm=self.mpicomm)
             self['Distance'] = mask.sample(size, distance=lambda z: z, seed=seed2)
-        # print(self.mpicomm.allreduce(self['RA'].sum()))
+        #print(self.mpicomm.allreduce(self['RA'].sum()))
         self['Position'] = utils.sky_to_cartesian(self['Distance'], self['RA'], self['DEC'], degree=True)
 
 
@@ -1677,7 +1677,7 @@ class BaseAngularMask(BaseMask):
         from mpytools.core import MPIScatteredSource
         sli = slice(*np.cumsum([0] + self.mpicomm.allgather(len(ra)))[self.mpicomm.rank:self.mpicomm.rank + 2], 1)
         source = MPIScatteredSource(sli)
-        sl = slice(*np.cumsum([0] + self.mpicomm.allgather(size))[self.mpicomm.rank:self.mpicomm.rank + 2], 1)
+        sli = slice(*np.cumsum([0] + self.mpicomm.allgather(size))[self.mpicomm.rank:self.mpicomm.rank + 2], 1)
         return source.get(ra, sli), source.get(dec, sli)
 
 
@@ -1841,14 +1841,15 @@ class Base2DRedshiftSmearing(BaseClass):
             mask = (cdfz > 1e-12) & (cdfz < 1. - 1e-12)
             dz = self.dz[:, iz] if self.dz.ndim == 2 else self.dz
             dz = np.pad(dz[mask], ((1, 1),), mode='constant', constant_values=(dz[0], dz[-1]))
-            cdfz = np.pad(cdfz[mask], ((1, 1),), mode='constant', constant_values=(0., 1.))
-            ppf[:, iz] = interpolate.UnivariateSpline(cdfz, dz, k=3, s=0, ext='raise')(u)
-        self.interp_ppf = interpolate.RectBivariateSpline(u, self.z, ppf, kx=3, ky=3, s=0)
+            cdfz = np.pad(cdfz[mask], ((1, 1),) , mode='constant', constant_values=(0., 1.))
+            ppf[:, iz] = np.clip(interpolate.UnivariateSpline(cdfz, dz, k=3, s=0, ext='raise')(u), dz[0], dz[-1])
+        self.interp_ppf = interpolate.RectBivariateSpline(u, self.z, ppf, kx=3, ky=1, s=0)
 
     def ppf(self, u, z):
         """Percent point function (inverse of cdf) at u, and given redshift z."""
         u, z = (np.asarray(xx) for xx in (u, z))
-        return self.dztransform(z, self._support_transform(self.interp_ppf(u, z, grid=False)))
+        dz = self.interp_ppf(u, z, grid=False)
+        return self.dztransform(z, self._support_transform(dz))
 
     def is_mpi_root(self):
         """Whether current rank is root."""
@@ -1890,7 +1891,8 @@ class Base2DRedshiftSmearing(BaseClass):
         for other in others:
             if not np.allclose(other.dz, new.dz):
                 raise ValueError('Input redshift smearing pdfs must have same support to be averaged')
-            if not np.allclose(other._support_transform(other.dz), new._support_transform(new.dz)):
+            # Remove first / end points (typically 0, 1) to avoid potential warning with infs in _support_transform
+            if not np.allclose(other._support_transform(other.dz[..., 1:-1]), new._support_transform(new.dz[..., 1:-1])):
                 raise ValueError('Input redshift smearing pdfs must have same support transform to be averaged')
             z, dz = [xx.ravel() for xx in np.meshgrid(new.z, new.dz, indexing='ij')]
             if not np.allclose(other.dztransform(z, dz), new.dztransform(z, dz)):
@@ -1983,7 +1985,8 @@ class RVS2DRedshiftSmearing(Base2DRedshiftSmearing):
             if same_dzranges:
                 self.dz = np.linspace(*dzranges[0], num=dzsize)
             else:
-                self.dz = np.column_stack([np.linspace(*dzrange, num=dzsize) for dzrange in dzranges])
+                self.dz = np.column_stack([np.linspace(*dzrange, num=dsize) for dzrange in dzranges])
+                cdf = np.column_stack([rv.cdf(dz) for rv, dz in zip(rvs, self.dz)])
             u = self.dz
             support_transform = lambda x: x
         else:
@@ -1999,7 +2002,7 @@ class RVS2DRedshiftSmearing(Base2DRedshiftSmearing):
             else:
                 if lowinf and upinf:
                     self.dz = np.linspace(0., 1., num=dzsize)
-                    support_transform = lambda x: dzscale * np.arctanh(2. * x - 1., where=(2. * x - 1.) != 1)
+                    support_transform = lambda x: dzscale * np.arctanh(2. * x - 1.)
                     u = np.full_like(self.dz, np.inf)
                     u[..., 1:-1] = support_transform(self.dz[..., 1:-1])
                     u[..., 0] = -np.inf
@@ -2021,6 +2024,7 @@ class RVS2DRedshiftSmearing(Base2DRedshiftSmearing):
                         self.dz = np.column_stack([np.linspace(utransform(dzrange[0]), 0, num=dzsize) for dzrange in dzranges])
                     u = np.full_like(self.dz, np.inf)
                     u[..., :1] = support_transform(self.dz[..., :1])
+
         self.cdf = np.column_stack([rv.cdf(u[:, iz] if u.ndim == 2 else u) for iz, rv in enumerate(rvs)])
         self._support_transform = support_transform
         self.dztransform = dztransform
