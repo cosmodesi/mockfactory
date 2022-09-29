@@ -92,7 +92,9 @@ def apply_rsd_and_cutsky(catalog, dmin, dmax, rsd_factor, center_ra=0, center_de
     return data_cutsky[mask]
 
 
-def apply_radial_mask(cutsky, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', cosmo=None, seed=145):
+def apply_radial_mask(cutsky, zmin=0., zmax=6., nz_filename='nz_qso_final.dat',
+                      apply_redshift_smearing=False, tracer_smearing='QSO',
+                      cosmo=None, seed=145):
     """
     Match the input n(z) distribution between ``zmin`` and ``zmax``.
     Here, we extract the largest number of galaxy as possible (as default).
@@ -111,6 +113,12 @@ def apply_radial_mask(cutsky, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', 
     nz_filename: string, default='nz_qso_final.dat'
         Where the n(z) is saved, in ``cutsky.position`` units, e.g. (Mpc/h)^(-3). For now, only the final TS format is accepted.
 
+    apply_redshift_smearing: bool, default=False
+        If true, apply redshift smearing as in https://github.com/echaussidon/mockfactory/blob/341d915bd37c725e10c0b2f490960efc916a56dd/mockfactory/desi/redshift_smearing.py
+
+    tracer_smearing: str, default='QSO'
+        What king of smearing you want to apply. Use the default filename used in mockfactory/desi/redshift_smearing.py
+
     cosmo : Cosmology
         Cosmology of the input mock, to convert n(z) in ``nz_filename`` to mock units.
 
@@ -122,22 +130,21 @@ def apply_radial_mask(cutsky, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', 
     cutsky : CutskyCatalog
         Catalog with matched n(z) distribution.
     """
-    from scipy.interpolate import interp1d
     from mockfactory import TabulatedRadialMask
 
     # Load nz
     zbin_min, zbin_max, n_z = np.loadtxt(nz_filename, skiprows=1).T
     zbin_mid = (zbin_min + zbin_max) / 2
+    # Compute comobile volume
     zedges = np.insert(zbin_max, 0, zbin_min[0])
     dedges = cosmo.comoving_radial_distance(zedges)
     volume = dedges[1:]**3 - dedges[:-1]**3
+    mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=2, zrange=(zmin, zmax))
 
-    #nz = interp1d(zbin_mid, n_z / volume, kind='quadratic', bounds_error=False, fill_value=(0, 0))
-
-    # Define radial mask
-    #z = np.linspace(zmin, zmax, 51)
-    #mask_radial = TabulatedRadialMask(z=z, nbar=nz(z))
-    mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=3)
+    if apply_redshift_smearing:
+        from mockfactory.desi import RedshiftSmearing
+        # Note: apply redshift smearing before the n(z) match since n(z) is what we observe (ie) containing the smearing
+        cutsky['Z'] = cutsky['Z'] + RedshiftSmearing(tracer=tracer_smearing).sample(cutsky['Z'], seed=seed + 13)
 
     return cutsky[mask_radial(cutsky['Z'], seed=seed)]
 
@@ -148,7 +155,8 @@ def generate_redshifts(size, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', c
 
     Note
     ----
-    This uses a naive implementation from `RadialMask`, can be improved if it takes too long.
+     * This uses a naive implementation from `RadialMask`, can be improved if it takes too long.
+     * Do not need to apply any redshift smearing since the generated redshift will follow the observed n(z) containing the smearing.
 
     Parameters
     ----------
@@ -175,21 +183,16 @@ def generate_redshifts(size, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', c
     z : array
         Array of size ``size`` of redshifts following the input tabulated n(z).
     """
-    from scipy.interpolate import interp1d
     from mockfactory import TabulatedRadialMask
 
     # Load nz
     zbin_min, zbin_max, n_z = np.loadtxt(nz_filename, skiprows=1).T
     zbin_mid = (zbin_min + zbin_max) / 2
+    # Compute comobile volume
     zedges = np.insert(zbin_max, 0, zbin_min[0])
     dedges = cosmo.comoving_radial_distance(zedges)
     volume = dedges[1:]**3 - dedges[:-1]**3
-    #nz = interp1d(zbin_mid, n_z / volume, kind='quadratic', bounds_error=False, fill_value=(0, 0))
-
-    # Define radial mask:
-    #z = np.linspace(zmin, zmax, 51)
-    #mask_radial = TabulatedRadialMask(z=z, nbar=nz(z))
-    mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=3)
+    mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=2, zrange=(zmin, zmax))
 
     # We generate randomly points in redshift space directly, as this is the unit of n_z file
     return mask_radial.sample(size, cosmo.comoving_radial_distance, seed=seed)
@@ -198,6 +201,8 @@ def generate_redshifts(size, zmin=0., zmax=6., nz_filename='nz_qso_final.dat', c
 def photometric_region_center(region):
     if region == 'N':
         ra, dec = 192.3, 56.0
+    elif region in ['N+DN', 'N+SNGC']:
+        ra, dec = 192, 35
     elif region in ['DN', 'SNGC']:
         ra, dec = 192, 13.0
     elif region in ['DS', 'SSGC']:
@@ -210,7 +215,7 @@ def photometric_region_center(region):
 def is_in_photometric_region(ra, dec, region, rank=0):
     """DN=NNGC and DS = SNGC"""
     region = region.upper()
-    assert region in ['N', 'DN', 'DS', 'SNGC', 'SSGC', 'DES']
+    assert region in ['N', 'DN', 'DS', 'N+SNGC', 'SNGC', 'SSGC', 'DES']
 
     DR9Footprint = None
     try:
@@ -235,17 +240,17 @@ def is_in_photometric_region(ra, dec, region, rank=0):
             else:  # DS
                 mask &= dec > -25
                 mask &= ~mask_ra
-        return mask
+        return np.nan * np.ones(ra.size), mask
     else:
         from regressis.utils import build_healpix_map
         # Precompute the healpix number
         nside = 256
-        _, cutsky['HPX'] = build_healpix_map(nside, ra, dec, return_pix=True)
+        _, pixels = build_healpix_map(nside, ra, dec, return_pix=True)
 
         # Load DR9 footprint and create corresponding mask
         dr9_footprint = DR9Footprint(nside, mask_lmc=False, clear_south=False, mask_around_des=False, cut_desi=False, verbose=(rank == 0))
-        convert_dict = {'N': 'north', 'DN': 'south_mid_ngc', 'SNGC': 'south_mid_ngc', 'DS': 'south_mid_sgc', 'SSGC': 'south_mid_sgc', 'DES': 'des'}
-        return dr9_footprint(convert_dict[region])[cutsky['HPX']]
+        convert_dict = {'N': 'north', 'DN': 'south_mid_ngc', 'N+SNGC': 'ngc', 'SNGC': 'south_mid_ngc', 'DS': 'south_mid_sgc', 'SSGC': 'south_mid_sgc', 'DES': 'des'}
+        return pixels, dr9_footprint(convert_dict[region])[pixels]
 
 
 def apply_photo_desi_footprint(cutsky, region, release, program='dark', npasses=None, rank=0):
@@ -259,7 +264,7 @@ def apply_photo_desi_footprint(cutsky, region, release, program='dark', npasses=
     is_in_desi = is_in_desi_footprint(cutsky['RA'], cutsky['DEC'], release=release, program=program, npasses=npasses)
     if rank == 0: logger.info(f'Create DESI {release}-{program} footprint mask')
 
-    is_in_photo = is_in_photometric_region(cutsky['RA'], cutsky['DEC'], region, rank=rank)
+    cutsky['HPX'], is_in_photo = is_in_photometric_region(cutsky['RA'], cutsky['DEC'], region, rank=rank)
     if rank == 0: logger.info(f'Create photometric footprint mask for {region} region')
     return cutsky[is_in_desi & is_in_photo]
 
@@ -303,7 +308,7 @@ if __name__ == '__main__':
     # Output directory
     outdir = '_tests'
 
-    ### Tracer-specific ###
+    # Tracer-specific #
     # n(z)
     zmin, zmax, nz_filename = 0.8, 2.65, 'nz_qso_final.dat'
     # Choose the footprint: DA02, Y1, Y5 for dark or bight time
@@ -323,7 +328,7 @@ if __name__ == '__main__':
     fmt = 'fits'
     # fmt = 'bigfile'
 
-    #### Lognormal mock as a placeholder ###
+    # Lognormal mock as a placeholder #
     z = (zmin + zmax) / 2.
     # Linear power spectrum at median z
     power = cosmo.get_fourier().pk_interpolator().to_1d(z=z)
@@ -371,7 +376,7 @@ if __name__ == '__main__':
         # Convert distance to redshift
         cutsky['Z'] = d2z(cutsky['DISTANCE'])
         # Match the nz distribution
-        cutsky = apply_radial_mask(cutsky, zmin, zmax, nz_filename=nz_filename, cosmo=cosmo, seed=seeds_data_nz[region])
+        cutsky = apply_radial_mask(cutsky, zmin, zmax, nz_filename=nz_filename, apply_redshift_smearing=True, tracer_smearing='QSO', cosmo=cosmo, seed=seeds_data_nz[region])
         if rank == 0: logger.info(f'Remap + cutsky + RSD + radial mask done in {MPI.Wtime() - start:2.2f} s.')
 
         # Match the desi footprint and apply the DR9 mask
