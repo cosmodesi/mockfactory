@@ -1677,7 +1677,7 @@ class BaseAngularMask(BaseMask):
         from mpytools.core import MPIScatteredSource
         sli = slice(*np.cumsum([0] + self.mpicomm.allgather(len(ra)))[self.mpicomm.rank:self.mpicomm.rank + 2], 1)
         source = MPIScatteredSource(sli)
-        sl = slice(*np.cumsum([0] + self.mpicomm.allgather(size))[self.mpicomm.rank:self.mpicomm.rank + 2], 1)
+        sli = slice(*np.cumsum([0] + self.mpicomm.allgather(size))[self.mpicomm.rank:self.mpicomm.rank + 2], 1)
         return source.get(ra, sli), source.get(dec, sli)
 
 
@@ -1842,13 +1842,14 @@ class Base2DRedshiftSmearing(BaseClass):
             dz = self.dz[:, iz] if self.dz.ndim == 2 else self.dz
             dz = np.pad(dz[mask], ((1, 1),), mode='constant', constant_values=(dz[0], dz[-1]))
             cdfz = np.pad(cdfz[mask], ((1, 1),) , mode='constant', constant_values=(0., 1.))
-            ppf[:, iz] = interpolate.UnivariateSpline(cdfz, dz, k=3, s=0, ext='raise')(u)
-        self.interp_ppf = interpolate.RectBivariateSpline(u, self.z, ppf, kx=3, ky=3, s=0)
+            ppf[:, iz] = np.clip(interpolate.UnivariateSpline(cdfz, dz, k=3, s=0, ext='raise')(u), dz[0], dz[-1])
+        self.interp_ppf = interpolate.RectBivariateSpline(u, self.z, ppf, kx=3, ky=1, s=0)
 
     def ppf(self, u, z):
         """Percent point function (inverse of cdf) at u, and given redshift z."""
         u, z = (np.asarray(xx) for xx in (u, z))
-        return self.dztransform(z, self._support_transform(self.interp_ppf(u, z, grid=False)))
+        dz = self.interp_ppf(u, z, grid=False)
+        return self.dztransform(z, self._support_transform(dz))
 
     def is_mpi_root(self):
         """Whether current rank is root."""
@@ -1890,7 +1891,8 @@ class Base2DRedshiftSmearing(BaseClass):
         for other in others:
             if not np.allclose(other.dz, new.dz):
                 raise ValueError('Input redshift smearing pdfs must have same support to be averaged')
-            if not np.allclose(other._support_transform(other.dz), new._support_transform(new.dz)):
+            # Remove first / end points (typically 0, 1) to avoid potential warning with infs in _support_transform
+            if not np.allclose(other._support_transform(other.dz[..., 1:-1]), new._support_transform(new.dz[..., 1:-1])):
                 raise ValueError('Input redshift smearing pdfs must have same support transform to be averaged')
             z, dz = [xx.ravel() for xx in np.meshgrid(new.z, new.dz, indexing='ij')]
             if not np.allclose(other.dztransform(z, dz), new.dztransform(z, dz)):
@@ -1993,7 +1995,6 @@ class RVS2DRedshiftSmearing(Base2DRedshiftSmearing):
                 raise ValueError('limits must be all finite or inf')
             if isinstance(dzscale, str) and dzscale == 'ppf':
                 support_transform = rvs[0].ppf
-                cdf = np.column_stack([np.linspace(0., 1., num=dzsize)] * len(self.z))
                 self.dz = np.linspace(0., 1., num=dzsize)
                 if not same_dzranges:
                     raise ValueError('limits must be all the same to use "dzscale = ppf"')
@@ -2023,6 +2024,7 @@ class RVS2DRedshiftSmearing(Base2DRedshiftSmearing):
                         self.dz = np.column_stack([np.linspace(utransform(dzrange[0]), 0, num=dzsize) for dzrange in dzranges])
                     u = np.full_like(self.dz, np.inf)
                     u[..., :1] = support_transform(self.dz[..., :1])
+
         self.cdf = np.column_stack([rv.cdf(u[:, iz] if u.ndim == 2 else u) for iz, rv in enumerate(rvs)])
         self._support_transform = support_transform
         self.dztransform = dztransform

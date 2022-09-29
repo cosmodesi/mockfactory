@@ -213,7 +213,9 @@ def test_masks():
     z = np.linspace(0.5, 1.5, 100)
     mask = selection(z)
     assert np.all(mask == (z >= zrange[0]) & (z <= zrange[1]))
-    z = selection.sample(10, distance=lambda z: z)
+    size = 3 * selection.mpicomm.rank + 10
+    z = selection.sample(size, distance=lambda z: z)
+    assert len(z) == size
     assert np.all((z >= zrange[0]) & (z <= zrange[1]))
     # assert np.allclose(selection.integral(), 1.)
 
@@ -242,7 +244,7 @@ def test_masks():
     decrange = (-10, 5)
     for rarange in [(300, 20), (10, 20)]:
         selection = UniformAngularMask(rarange=rarange, decrange=decrange)
-        size = 100
+        size = 3 * selection.mpicomm.rank + 100
         ra, dec = selection.sample(size=size)
         assert ra.size == dec.size == size
         assert np.all((dec >= decrange[0]) & (dec <= decrange[1]))
@@ -354,7 +356,6 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    test_redshift_smearing()
     test_remap()
     test_isometry()
     test_randoms()
@@ -364,3 +365,4 @@ if __name__ == '__main__':
     test_redshift_array()
     test_redshift_density()
     test_rotation_matrix()
+    test_redshift_smearing()
