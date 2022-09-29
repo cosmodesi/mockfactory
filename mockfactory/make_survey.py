@@ -298,7 +298,7 @@ def box_to_cutsky(boxsize, dmax, dmin=0.):
         else:
             # Box is to small to have 360 survey
             if np.abs(dx) / dmax < 1:
-                deltaradec.append(np.arcsin(np.abs(dx) / dmax) + np.pi/2)
+                deltaradec.append(np.arcsin(np.abs(dx) / dmax) + np.pi / 2)
             # Box is large enough to have 360 survey
             else:
                 deltaradec.append(np.pi)
@@ -788,7 +788,7 @@ class BoxCatalog(ParticleCatalog):
                 new[name] = cuboid.transform(self[name], translational_invariant=True)
             else:
                 new[name] = cuboid.transform(self[name] - offset, translational_invariant=False) + cuboidoffset
-            #if name not in self._translational_invariants:
+            # if name not in self._translational_invariants:
             #    new[name] = cuboid.transform(self[name] - offset) + cuboidoffset
         return new
 
@@ -1177,7 +1177,7 @@ class RandomCutskyCatalog(CutskyCatalog):
         else:
             mask = UniformRadialMask(zrange=drange, mpicomm=self.mpicomm)
             self['Distance'] = mask.sample(size, distance=lambda z: z, seed=seed2)
-        #print(self.mpicomm.allreduce(self['RA'].sum()))
+        # print(self.mpicomm.allreduce(self['RA'].sum()))
         self['Position'] = utils.sky_to_cartesian(self['Distance'], self['RA'], self['DEC'], degree=True)
 
 
@@ -1841,7 +1841,7 @@ class Base2DRedshiftSmearing(BaseClass):
             mask = (cdfz > 1e-12) & (cdfz < 1. - 1e-12)
             dz = self.dz[:, iz] if self.dz.ndim == 2 else self.dz
             dz = np.pad(dz[mask], ((1, 1),), mode='constant', constant_values=(dz[0], dz[-1]))
-            cdfz = np.pad(cdfz[mask], ((1, 1),) , mode='constant', constant_values=(0., 1.))
+            cdfz = np.pad(cdfz[mask], ((1, 1),), mode='constant', constant_values=(0., 1.))
             ppf[:, iz] = interpolate.UnivariateSpline(cdfz, dz, k=3, s=0, ext='raise')(u)
         self.interp_ppf = interpolate.RectBivariateSpline(u, self.z, ppf, kx=3, ky=3, s=0)
 
@@ -1983,8 +1983,7 @@ class RVS2DRedshiftSmearing(Base2DRedshiftSmearing):
             if same_dzranges:
                 self.dz = np.linspace(*dzranges[0], num=dzsize)
             else:
-                self.dz = np.column_stack([np.linspace(*dzrange, num=dsize) for dzrange in dzranges])
-                cdf = np.column_stack([rv.cdf(dz) for rv, dz in zip(rvs, self.dz)])
+                self.dz = np.column_stack([np.linspace(*dzrange, num=dzsize) for dzrange in dzranges])
             u = self.dz
             support_transform = lambda x: x
         else:
@@ -1993,7 +1992,6 @@ class RVS2DRedshiftSmearing(Base2DRedshiftSmearing):
                 raise ValueError('limits must be all finite or inf')
             if isinstance(dzscale, str) and dzscale == 'ppf':
                 support_transform = rvs[0].ppf
-                cdf = np.column_stack([np.linspace(0., 1., num=dzsize)] * len(self.z))
                 self.dz = np.linspace(0., 1., num=dzsize)
                 if not same_dzranges:
                     raise ValueError('limits must be all the same to use "dzscale = ppf"')
@@ -2001,7 +1999,7 @@ class RVS2DRedshiftSmearing(Base2DRedshiftSmearing):
             else:
                 if lowinf and upinf:
                     self.dz = np.linspace(0., 1., num=dzsize)
-                    support_transform = lambda x: dzscale * np.arctanh(2. * x - 1.)
+                    support_transform = lambda x: dzscale * np.arctanh(2. * x - 1., where=(2. * x - 1.) != 1)
                     u = np.full_like(self.dz, np.inf)
                     u[..., 1:-1] = support_transform(self.dz[..., 1:-1])
                     u[..., 0] = -np.inf
