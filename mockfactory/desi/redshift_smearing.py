@@ -1,4 +1,3 @@
-import sys
 import logging
 
 import numpy as np
@@ -54,8 +53,7 @@ def RedshiftSmearing(tracer='QSO', fn=None):
     Redshift errors can be sampled through: ``dz = rs.sample(z, seed=42)``.
     """
     if tracer in ['BGS', 'LRG', 'ELG']:
-        logger.error(f'Redshift Smearing is not ready for {tracer} tracer')
-        sys.exit(1)
+        raise ValueError(f'Redshift Smearing is not ready for {tracer} tracer')
 
     if tracer == 'QSO':
         if fn is None:
@@ -66,8 +64,7 @@ def RedshiftSmearing(tracer='QSO', fn=None):
         return QSORedshiftSmearing(fn=fn)
 
     else:
-        logger.error(f'{tracer} is not expected as tracer')
-        sys.exit(1)
+        raise ValueError(f'Redshift Smearing is not ready for {tracer} tracer')
 
 
 if __name__ == '__main__':
