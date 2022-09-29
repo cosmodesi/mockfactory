@@ -51,24 +51,31 @@ if __name__ == '__main__':
 
     setup_logging()
 
+    # Instantiate redshift smearing class
     fn = ('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')
-    z, rvs, weights, dztransform = QSORedshiftSmearingRVS(fn=fn)
-    dz = np.linspace(-5e4, 5e4, 1000)
     rs = QSORedshiftSmearing(fn=fn)
 
+    # Load random variates, to get pdf to compare to
+    z, rvs, weights, dztransform = QSORedshiftSmearingRVS(fn=fn)
+
+    # z slices where to plot distributions
     lz = np.linspace(z[0], z[-1], 15)
+    # Tabulated dz where to evaluate pdf
+    ldz = np.linspace(-5e4, 5e4, 1000)
+
     fig, lax = plt.subplots(3, 5, figsize=(20, 10))
     lax = lax.flatten()
     for zz, ax in zip(lz, lax):
-        s = rs.sample(np.full(100000, zz), seed=42)
-        ax.hist(s, density=True, histtype='step', color='k', bins=100)
+        # Generate dz at given z
+        dz = rs.sample(np.full(100000, zz), seed=42)
+        ax.hist(dz, density=True, histtype='step', color='k', bins=100)
         # Compute interpolated pdf
         iz = np.searchsorted(z, zz, side='right') - 1
         alpha = (zz - z[iz]) / (z[iz + 1] - z[iz]) if iz < len(z) - 1 else 0.
-        pdf = (1. - alpha) * sum(weight[iz] * rv[iz].pdf(dz) for rv, weight in zip(rvs, weights))
+        pdf = (1. - alpha) * sum(weight[iz] * rv[iz].pdf(ldz) for rv, weight in zip(rvs, weights))
         if alpha != 0.:
-            pdf += alpha * sum(weight[iz + 1] * rv[iz + 1].pdf(dz) for rv, weight in zip(rvs, weights))
-        ax.plot(dztransform(zz, dz), constants.c / 1e3 * (1. + zz) * pdf, color='r')
+            pdf += alpha * sum(weight[iz + 1] * rv[iz + 1].pdf(ldz) for rv, weight in zip(rvs, weights))
+        ax.plot(dztransform(zz, ldz), constants.c / 1e3 * (1. + zz) * pdf, color='r')
         ax.set_xlabel('$dz$')
     if rs.mpicomm.rank == 0:
         plt.show()
