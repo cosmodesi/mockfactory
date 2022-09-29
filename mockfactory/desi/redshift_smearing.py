@@ -1,9 +1,14 @@
+import sys
+import logging
+
 import numpy as np
 from scipy import constants, stats
 
-from mockfactory.utils import BaseClass
 from mockfactory import utils
 from mockfactory import RVS2DRedshiftSmearing
+
+
+logger = logging.getLogger('Redshift Smearing')
 
 
 def QSORedshiftSmearingRVS(fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')):
@@ -41,6 +46,28 @@ def QSORedshiftSmearing(fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_red
     """
     z, rvs, weights, dztransform = QSORedshiftSmearingRVS(fn=fn)
     return RVS2DRedshiftSmearing.average([RVS2DRedshiftSmearing(z, rv, dzsize=10000, dzscale=5e3, dztransform=dztransform) for rv in rvs], weights=weights)
+
+
+def RedshiftSmearing(tracer='QSO', fn=None):
+    """
+    Return :class:`RVS2DRedshiftSmearing` instance given the desired tracer and input tabulate file of redshift errors.
+    Redshift errors can be sampled through: ``dz = rs.sample(z, seed=42)``.
+    """
+    if tracer in ['BGS', 'LRG', 'ELG']:
+        logger.error(f'Redshift Smearing is not ready for {tracer} tracer')
+        sys.exit(1)
+
+    if tracer == 'QSO':
+        if fn is None:
+            import os
+            import mockfactory.desi
+            dir = os.path.dirname(mockfactory.desi.__file__)
+            fn = (os.path.join(dir, 'data/qso_redshift_smearing_sv1.ecsv'), os.path.join(dir, 'data/qso_redshift_smearing_sv3.ecsv'))
+        return QSORedshiftSmearing(fn=fn)
+
+    else:
+        logger.error(f'{tracer} is not expected as tracer')
+        sys.exit(1)
 
 
 if __name__ == '__main__':
