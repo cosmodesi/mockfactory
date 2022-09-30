@@ -23,7 +23,8 @@ def get_region(dec):
 
 
 def read_rosettes():
-    # Rosette coordinates
+    """Return {rosette: tiles}, {rosette: direction}, {rosette: region} mappings."""
+    from astropy.table import Table
     rosettes = Table.read('rosettes_sv3.ecsv')
     tiles_rosettes = {rosette['ROSETTE_NUMBER']: [int(tid) for tid in rosette['TILEID'].split(',')] for rosette in rosettes}
     direction_rosettes = {rosette['ROSETTE_NUMBER']: (rosette['RA'], rosette['DEC']) for rosette in rosettes}
@@ -31,8 +32,8 @@ def read_rosettes():
     return tiles_rosettes, direction_rosettes, region_rosettes
 
 
-def catalog_fn(name, rosettes imock=0):
-    # name is 'data', 'randoms'; rosettes is list of rosette numbers
+def catalog_fn(name, rosettes, imock=0):
+    """Return catalog file name."""
     return os.path.join(outdir, '{}_rosettes-{}_{:d}.fits'.format(name, '-'.join([str(rosette) for rosette in rosettes]), imock))
 
 
@@ -66,7 +67,7 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    parser = argparse.ArgumentParser(help='Generate DESI SV3 cutsky mocks')
+    parser = argparse.ArgumentParser(description='Generate DESI SV3 cutsky mocks')
     parser.add_argument('--start', type=int, required=False, default=0, help='First mock to generate')
     parser.add_argument('--stop', type=int, required=False, default=1, help='Last (exclusive) mock to generate')
     args = parser.parse_args()
@@ -132,9 +133,9 @@ if __name__ == '__main__':
     tiles_rosettes, direction_rosettes, region_rosettes = read_rosettes()
 
     # Check rosettes are grouped in the same region
-    rosettes_to_region = {rosettes: region_rosettes[rosettes[0]] for rosettes in all_rosettes}
-    for rosettes in all_rosettes:
-        if not all(region_rosettes[rosette] == rosettes_to_region[region]):
+    rosettes_to_region = {rosettes: region_rosettes[rosettes[0]] for rosettes in transform_rosettes}
+    for rosettes, region in rosettes_to_region.items():
+        if not all(region_rosettes[rosette] == region for rosette in rosettes):
             raise ValueError('Rosettes must be grouped by regions')
 
     ndata = {}
