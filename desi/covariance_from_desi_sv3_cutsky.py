@@ -15,10 +15,10 @@ def get_edges(corr_type='smu', bin_type='lin'):
     else:
         raise ValueError('bin_type must be one of ["log", "lin"]')
     if corr_type == 'smu':
-        edges = (sedges, np.linspace(-1., 1., 201)) #s is input edges and mu evenly spaced between -1 and 1
+        edges = (sedges, np.linspace(-1., 1., 201))  # s is input edges and mu evenly spaced between -1 and 1
     elif corr_type == 'rppi':
         if bin_type == 'lin':
-            edges = (sedges, np.linspace(-200., 200, 401)) #transverse and radial separations are coded to be the same here
+            edges = (sedges, np.linspace(-200., 200, 401))  # transverse and radial separations are coded to be the same here
         else:
             edges = (sedges, np.linspace(-40., 40., 81))
     elif corr_type == 'theta':
@@ -37,22 +37,21 @@ if __name__ == '__main__':
 
     Compute correlation functions:
 
-        python covariance_from_desi_sv3_cutsky.py --todo corr --start 0 --stop 1000
+        srun -n 1 python covariance_from_desi_sv3_cutsky.py --todo corr --start 0 --stop 1000
 
     Compute covariance matrix:
 
-        python covariance_from_desi_sv3_cutsky.py --todo cov --start 0 --stop 1000
+        srun -n 1 python covariance_from_desi_sv3_cutsky.py --todo cov --start 0 --stop 1000
 
     Plot:
 
-        python covariance_from_desi_sv3_cutsky.py --todo plot
+        srun -n 1 python covariance_from_desi_sv3_cutsky.py --todo plot
 
     """
     from mockfactory import Catalog
     from pycorr import TwoPointCorrelationFunction, setup_logging, utils
 
     from from_box_to_desi_sv3_cutsky import read_rosettes, catalog_fn
-
 
     setup_logging()
 
@@ -72,10 +71,7 @@ if __name__ == '__main__':
     ells = (0, 2, 4)
     pimax = 40.
     bin_type = 'log'
-
-    def catalog_fn(name, rosettes, imock=0):
-        # name is 'data', 'randoms'; rosettes is list of rosette numbers
-        return os.path.join(outdir, '{}_rosettes-{}_{:d}.fits'.format(name, '-'.join([str(rosette) for rosette in rosettes]), imock))
+    nran = 10  # how many random files
 
     def corr_fn(corr_type, rosettes, imock=0):
         return os.path.join(outdir, 'correlation_{}_rosettes-{}_{:d}.npy'.format(corr_type, '-'.join([str(rosette) for rosette in rosettes]), imock))
@@ -88,10 +84,14 @@ if __name__ == '__main__':
             R1R2 = None
             for imock in range(args.start, args.stop):
                 data = Catalog.read(catalog_fn('data', rosettes, imock=imock))
-                randoms = Catalog.read(catalog_fn('randoms', rosettes, imock=0))
                 edges = get_edges(corr_type=args.corr_type, bin_type=bin_type)
-                corr = TwoPointCorrelationFunction(args.corr_type, data_positions1=data['RSDPosition'], randoms_positions1=randoms['Position'],
-                                                   edges=edges, nthreads=64, position_type='pos', mpicomm=data.mpicomm, mpiroot=None, R1R2=R1R2)
+
+                corr = 0
+                D1D2 = None
+                for iran in range(nran):
+                    randoms = Catalog.read(catalog_fn('randoms', rosettes, imock=iran))
+                    corr += TwoPointCorrelationFunction(args.corr_type, data_positions1=data['RSDPosition'], randoms_positions1=randoms['Position'],
+                                                        edges=edges, nthreads=64, position_type='pos', mpicomm=data.mpicomm, mpiroot=None, D1D2=D1D2, R1R2=R1R2)
                 corr.save(corr_fn(args.corr_type, rosettes, imock=imock))
                 R1R2 = corr.R1R2
 
@@ -179,9 +179,9 @@ if __name__ == '__main__':
         for i in range(n):
             for j in range(n):
                 ax = plt.subplot(gs[n - 1 - i, j])
-                mesh = ax.pcolor(sep, sep, corrcoef[i*ns:(i+1)*ns,j*ns:(j+1)*ns].T, norm=norm, cmap=plt.get_cmap('jet_r'))
-                if i>0: ax.xaxis.set_visible(False)
-                if j>0: ax.yaxis.set_visible(False)
+                mesh = ax.pcolor(sep, sep, corrcoef[i * ns: (i + 1) * ns, j * ns: (j + 1) * ns].T, norm=norm, cmap=plt.get_cmap('jet_r'))
+                if i > 0: ax.xaxis.set_visible(False)
+                if j > 0: ax.yaxis.set_visible(False)
                 ax.set_xscale(bin_type)
                 ax.set_yscale(bin_type)
                 ax.set_xlim(xlim)

@@ -1,9 +1,9 @@
 """Script by Antoine Rocher to transform cubic mock to DESI cutsky mock."""
 
 import os
-import time
 import logging
 import argparse
+
 from itertools import chain
 
 import numpy as np
@@ -73,13 +73,13 @@ if __name__ == '__main__':
     parser.add_argument('--mock_fn', type=str, required=False, default=None, help='filename to load mocks, start, stop should correcpond to the phases of Abacus boxes')
     args = parser.parse_args()
 
-
     # Add maskbits?
     # This step can be long. Large sky coverage need several nodes to be executed in small amounts of time ( ~50 bricks per process)
     # collect only maskbits, see mockfactory/desi/brick_pixel_quantities for other quantities as PSFSIZE_R or LRG_mask
     add_brick_quantities = {'maskbits': {'fn': '/global/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', 'dtype': 'i2', 'default': 1}}
     # Set as False to save time.
-    #add_brick_quantities = False
+    add_brick_quantities = False
+
     plot_debug = False
 
     # Initialize cosmo
@@ -90,10 +90,12 @@ if __name__ == '__main__':
     outdir = '_tests'
     utils.mkdir(outdir)
 
-    ### Box-specific ###
+    # Box-specific:‡
     boxsize = 500.
     boxcenter = 0.
     nbar = 2e-3  # here we generate a mock; density (in (Mpc/h)^(-3)) must be larger than peak data density
+    wran_over_wdat = 20  # how many more randoms than data in each random file
+    nran = 20  # how many random files (< number of mocks = stop)
 
     lattice_fn = os.path.join(outdir, 'lattice_max3.npy')
     # Load lattice if precomputed
@@ -103,7 +105,7 @@ if __name__ == '__main__':
         lattice = Cuboid.generate_lattice_vectors(maxint=3, maxcomb=1, sort=False, boxsize=boxsize)
         np.save(lattice_fn, lattice)
 
-    ### Tracer-specific ###
+    # Tracer-specific:
     z = 1.175  # redshift of AbacusSummit snapshot
     regions = ['N', 'S']
     ref_fn = {region: '/global/cfs/cdirs/desi/survey/catalogs/SV3/LSS/fuji/LSScats/EDAbeta/ELG_{}_clustering.dat.fits'.format(region) for region in regions}
@@ -127,7 +129,7 @@ if __name__ == '__main__':
     for rosette in [7, 14, 6, 11, 5, 0, 3, 19]:
         transform_rosettes[(rosette,)] = (cuboidsize1, 0.)
 
-    randoms = RandomBoxCatalog(nbar=10. * nbar, boxsize=boxsize, boxcenter=boxcenter, seed=None)
+    randoms = RandomBoxCatalog(nbar=wran_over_wdat * nbar, boxsize=boxsize, boxcenter=boxcenter, seed=None)
 
     tiles = Table.read(tiles_fn)
     # Rosette coordinates
@@ -142,7 +144,6 @@ if __name__ == '__main__':
     ndata = {}
 
     for region in regions:
-
         data = Catalog.read(ref_fn[region])
         # Measure n(z) without weight and define radial mask
         # Radial mask normalizes nbar such that no object is mask at the top of n(z)
@@ -154,13 +155,12 @@ if __name__ == '__main__':
     dmax = cosmo.comoving_radial_distance(zlim[-1])
 
     for imock in range(args.start, args.stop):
-
-        if args.mock_fn is not None: 
-            #### Read mock catalog ####
+        if args.mock_fn is not None:
+            # Read mock catalog:
             box = BoxCatalog.read(args.mock_fn.format(imock), boxsize=boxsize, boxcenter=boxcenter)
             rsd_factor = 1 / (1 / (1 + z) * 100 * cosmo.efunc(z))
         else:
-            #### Lognormal mock as a placeholder ###
+            # Lognormal mock as a placeholder:
             power = cosmo.get_fourier().pk_interpolator().to_1d(z=z)
             from mockfactory import LagrangianLinearMock
             mock = LagrangianLinearMock(power, nmesh=256, boxsize=boxsize, boxcenter=boxcenter, seed=imock + 1, unitary_amplitude=False)
@@ -172,7 +172,7 @@ if __name__ == '__main__':
             # rsd_factor is the factor to multiply velocity with to get displacements (in position units)
             # For this mock it is just f, but it can be e.g. 1 / (a H); 1 / (100 a E) to use Mpc/h
             rsd_factor = cosmo.sigma8_z(z=z, of='theta_cb') / cosmo.sigma8_z(z=z, of='delta_cb')  # growth rate
-        
+
         # The following code requests a mockfactory.BoxCatalog to work.
         # mockfactory.BoxCatalog proposes different ways to read catalog in different formats with MPI
         # box = BoxCatalog.read(fn, filetype='fits', position='Position', velocity='Velocity', boxsize=boxsize, boxcenter=boxcenter, mpicomm=mpicomm)
@@ -195,7 +195,7 @@ if __name__ == '__main__':
             center_ra, center_dec = utils.cartesian_to_sky(los)[1:]
             los_rotation = EuclideanIsometry().rotation(los_rotation, axis=los)
 
-            for catalog, name in zip([box] + ([randoms] if imock == 0 else []), ['data', 'randoms']):
+            for catalog, name in zip([box] + ([randoms] if imock < nran else []), ['data', 'randoms']):
                 # Let's apply remapping to our catalog!
                 remapped = catalog.remap(*lattice[cuboidsize][0])
 
