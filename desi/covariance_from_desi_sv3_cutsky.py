@@ -37,15 +37,15 @@ if __name__ == '__main__':
 
     Compute correlation functions:
 
-        python covariance_from_desi_sv3_cutsky.py --todo corr --start 0 --stop 1000
+        srun -n 1 python covariance_from_desi_sv3_cutsky.py --todo corr --start 0 --stop 1000
 
     Compute covariance matrix:
 
-        python covariance_from_desi_sv3_cutsky.py --todo cov --start 0 --stop 1000
+        srun -n 1 python covariance_from_desi_sv3_cutsky.py --todo cov --start 0 --stop 1000
 
     Plot:
 
-        python covariance_from_desi_sv3_cutsky.py --todo plot
+        srun -n 1 python covariance_from_desi_sv3_cutsky.py --todo plot
 
     """
     from mockfactory import Catalog
@@ -72,6 +72,7 @@ if __name__ == '__main__':
     ells = (0, 2, 4)
     pimax = 40.
     bin_type = 'log'
+    nran = 10  # how many random files
 
     def catalog_fn(name, rosettes, imock=0):
         # name is 'data', 'randoms'; rosettes is list of rosette numbers
@@ -88,10 +89,14 @@ if __name__ == '__main__':
             R1R2 = None
             for imock in range(args.start, args.stop):
                 data = Catalog.read(catalog_fn('data', rosettes, imock=imock))
-                randoms = Catalog.read(catalog_fn('randoms', rosettes, imock=0))
                 edges = get_edges(corr_type=args.corr_type, bin_type=bin_type)
-                corr = TwoPointCorrelationFunction(args.corr_type, data_positions1=data['RSDPosition'], randoms_positions1=randoms['Position'],
-                                                   edges=edges, nthreads=64, position_type='pos', mpicomm=data.mpicomm, mpiroot=None, R1R2=R1R2)
+
+                corr = 0
+                D1D2 = None
+                for iran in range(nran):
+                    randoms = Catalog.read(catalog_fn('randoms', rosettes, imock=iran))
+                    corr += TwoPointCorrelationFunction(args.corr_type, data_positions1=data['RSDPosition'], randoms_positions1=randoms['Position'],
+                                                        edges=edges, nthreads=64, position_type='pos', mpicomm=data.mpicomm, mpiroot=None, D1D2=D1D2, R1R2=R1R2)
                 corr.save(corr_fn(args.corr_type, rosettes, imock=imock))
                 R1R2 = corr.R1R2
 

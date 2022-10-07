@@ -94,6 +94,8 @@ if __name__ == '__main__':
     boxsize = 500.
     boxcenter = 0.
     nbar = 2e-3  # here we generate a mock; density (in (Mpc/h)^(-3)) must be larger than peak data density
+    wran_over_wdat = 20  # how many more randoms than data in each random file
+    nran = 20  # how many random files (< number of mocks = stop)
 
     lattice_fn = os.path.join(outdir, 'lattice_max3.npy')
     # Load lattice if precomputed
@@ -127,7 +129,7 @@ if __name__ == '__main__':
     for rosette in [7, 14, 6, 11, 5, 0, 3, 19]:
         transform_rosettes[(rosette,)] = (cuboidsize1, 0.)
 
-    randoms = RandomBoxCatalog(nbar=10. * nbar, boxsize=boxsize, boxcenter=boxcenter, seed=None)
+    randoms = RandomBoxCatalog(nbar=wran_over_wdat * nbar, boxsize=boxsize, boxcenter=boxcenter, seed=None)
 
     tiles = Table.read(tiles_fn)
     # Rosette coordinates
@@ -195,7 +197,7 @@ if __name__ == '__main__':
             center_ra, center_dec = utils.cartesian_to_sky(los)[1:]
             los_rotation = EuclideanIsometry().rotation(los_rotation, axis=los)
 
-            for catalog, name in zip([box] + ([randoms] if imock == 0 else []), ['data', 'randoms']):
+            for catalog, name in zip([box] + ([randoms] if imock < nran else []), ['data', 'randoms']):
                 # Let's apply remapping to our catalog!
                 remapped = catalog.remap(*lattice[cuboidsize][0])
 
