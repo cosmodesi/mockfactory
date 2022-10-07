@@ -157,9 +157,7 @@ if __name__ == '__main__':
 
         if args.mock_fn is not None: 
             #### Read mock catalog ####
-            if not os.path.exists(args.mock_fn.format(imock)) : 
-                raise FileNotFoundError(f"File doesn't exist {args.mock_fn.format(imock)}")
-            box = BoxCatalog.read(args.mock_fn.format(imock), boxsize=500)
+            box = BoxCatalog.read(args.mock_fn.format(imock), boxsize=boxsize, boxcenter=boxcenter)
             rsd_factor = 1 / (1 / (1 + z) * 100 * cosmo.efunc(z))
         else:
             #### Lognormal mock as a placeholder ###
