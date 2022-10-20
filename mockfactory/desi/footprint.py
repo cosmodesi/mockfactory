@@ -49,7 +49,7 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
         Template path to csv or fits file of tiles.
 
     return_tile_index : bool
-        if true also the tile id for each entry (ra, dec)
+        if true also the tile id for each entry (ra, dec). If npasses is None, it gives only one tile id, otherwise it gives all the potential tile id for each targets.
 
     Returns
     -------
