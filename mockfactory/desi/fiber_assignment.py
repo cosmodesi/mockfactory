@@ -341,7 +341,7 @@ def apply_fiber_assignment(targets, tiles, npass, opts_for_fa, columns_for_fa, m
 
     for pass_id in range(npass):
         tiles_in_pass = tiles[tiles['PASS'] == pass_id]
-        if mpicomm.rank == 0: logger.info(f'Start pass {pass_id} with {tiles_in_pass.shape[0]} potential tiles')
+        if mpicomm.rank == 0: logger.info(f'Pass {pass_id} with {tiles_in_pass.shape[0]} potential tiles')
 
         # could be time consuming...
         targets_tile_in_pass = np.isin(targets['TILES'], tiles_in_pass)
@@ -406,6 +406,7 @@ if __name__ == '__main__':
 
     from mockfactory import RandomCutskyCatalog, setup_logging
     import desimodel.footprint
+    import mpytools as mpy
 
     os.environ['DESI_LOGLEVEL'] = 'ERROR'
 
@@ -417,7 +418,7 @@ if __name__ == '__main__':
     # program info:
     release = 'Y1'
     program = 'dark'
-    npasses = 2
+    npasses = 1
     use_sky_targets = True  # to debug: Use false to speed up the process
 
     # Collect tiles from surveyops directory on which the fiber assignment will be applied
@@ -458,7 +459,8 @@ if __name__ == '__main__':
 
     # Add requiered columns for F.A.
     cutsky['DESI_TARGET'] = 2 * np.ones(cutsky.size, dtype='i8')
-    cutsky['SUBPRIORITY'] = np.random.uniform(0, 1, cutsky.size)
+    # Warning: the reproducibility (ie) the choice of target when multi-targets are available is done via SUBPRIORITY. Need random generator invariant under MPI scaling !
+    cutsky['SUBPRIORITY'] = mpy.random.MPIRandomState(cutsky.size, seed=123).uniform(low=0, high=1, dtype='f8')
     cutsky['OBSCONDITIONS'] = 3 * np.ones(cutsky.size, dtype='i8')
     cutsky['NUMOBS_MORE'] = np.ones(cutsky.size, dtype='i8')
     cutsky['NUMOBS_INIT'] = np.ones(cutsky.size, dtype='i8')
@@ -473,7 +475,6 @@ if __name__ == '__main__':
     columns_for_fa = ['RA', 'DEC', 'TARGETID', 'DESI_TARGET', 'SUBPRIORITY', 'OBSCONDITIONS', 'NUMOBS_MORE', 'NUMOBS_INIT', 'NUMOBS', 'AVAILABLE', 'FIBER']
 
     # Let's do the F.A.:
-    if mpicomm.rank == 0: logger.warning("There is NO reproductibility for the moment np.random.seed() at fix number of process does not work")
     apply_fiber_assignment(cutsky, tiles, npasses, opts_for_fa, columns_for_fa, mpicomm, use_sky_targets=use_sky_targets)
 
     # Summarize and plot:
