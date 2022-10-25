@@ -8,7 +8,7 @@ but one will typically import:
 from mockfactory.fiber_assignment import apply_fiber_assignment
 ```
 
-For an example, see desi/from_box_to_desi_cutsky script.
+For an example, see desi/apply_fiber_assignment_example.py script.
 """
 
 import os
@@ -250,7 +250,8 @@ def _apply_mtl_one_pass(targets, tg_assign, tg_available):
     idx, idx2 = match(targets['TARGETID'], tg_assign['TARGETID'])
     targets["NUMOBS_MORE"][idx] -= 1
     targets["NUMOBS"][idx] += 1
-    targets["FIBER"][idx] = tg_assign["FIBER"][idx2]
+    targets["FIBER"][idx] = np.array(tg_assign["FIBER"][idx2], dtype='i8')
+    targets["OBS_PASS"][idx] = True
 
     idx, _ = match(targets['TARGETID'], tg_available['TARGETID'])
     targets['AVAILABLE'][idx] = True
@@ -281,7 +282,7 @@ def run_fiber_assignment_one_pass(tiles, targets, opts_for_fa, plate_radec=True,
     return targets
 
 
-def apply_fiber_assignment(targets, tiles, npass, opts_for_fa, columns_for_fa, mpicomm, use_sky_targets=True):
+def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa, mpicomm, use_sky_targets=True):
     """
     Apply fiber assignment with MPI parrallelisation on the number of tiles per pass.
 
@@ -299,7 +300,7 @@ def apply_fiber_assignment(targets, tiles, npass, opts_for_fa, columns_for_fa, m
     tiles : array
         Array containing surveyops info. Can be build with _build_tiles()
 
-    npass : int
+    npasses : int
         Number of passes during the fiber assignment.
 
     opts_for_fa : list
@@ -337,22 +338,26 @@ def apply_fiber_assignment(targets, tiles, npass, opts_for_fa, columns_for_fa, m
         for name in data: array[name] = data[name]
         return array
 
-    if mpicomm.rank == 0: logger.info(f'Start Fiber Assignment with {npass} (use sky targets? {use_sky_targets})')
+    if mpicomm.rank == 0: logger.info(f'Start Fiber Assignment with {npasses} pass(es) (use sky targets? {use_sky_targets})')
 
-    for pass_id in range(npass):
+    for pass_id in range(npasses):
         tiles_in_pass = tiles[tiles['PASS'] == pass_id]
         if mpicomm.rank == 0: logger.info(f'Pass {pass_id} with {tiles_in_pass.shape[0]} potential tiles')
 
         # could be time consuming...
-        targets_tile_in_pass = np.isin(targets['TILES'], tiles_in_pass)
+        targets_tile_in_pass = np.isin(targets['TILES'], tiles_in_pass)  # targets['TILES'].shape = (size, npasses)
+        # keep only targets in the correct pass to speed up the process
         sel_targets_in_pass = targets_tile_in_pass.sum(axis=1) > 0
-        targets_tileid_in_pass = np.array(targets['TILES'][targets_tile_in_pass], dtype='i8')
+        # keep only targets with potential observation to speed up the process
+        sel_numobs_more = targets["NUMOBS_MORE"] > 0
+        sel_targets_in_pass = sel_targets_in_pass & sel_numobs_more
+        targets_tileid_in_pass = np.array(targets['TILES'][targets_tile_in_pass & sel_targets_in_pass[:, None]], dtype='i8')
 
         # Create unique identification as index column
         cumsize = np.cumsum([0] + mpicomm.allgather(targets_tileid_in_pass.size))[mpicomm.rank]
         index = cumsize + np.arange(targets_tileid_in_pass.size)
         targets_in_pass = {name: targets[name][sel_targets_in_pass] for name in columns_for_fa}
-        targets_in_pass.update({'TILES': targets_tileid_in_pass, 'index': index})
+        targets_in_pass.update({'TILES': targets_tileid_in_pass, 'index': index, 'OBS_PASS': np.zeros(index.size, dtype='?')})
         targets_in_pass = _dict_to_array(targets_in_pass)
 
         # Let's group particles by tileid, with ~ similar number of tileid on each rank
@@ -382,24 +387,33 @@ def apply_fiber_assignment(targets, tiles, npass, opts_for_fa, columns_for_fa, m
         assert mpicomm.allreduce(nbr_particles) == mpicomm.allreduce(targets_in_pass.size), 'float in bincount messes up total particle counts'
 
         # Sort data to have same number of bricks in each rank
+        t_start = MPI.Wtime()
         targets_in_pass_tmp = np.empty_like(targets_in_pass, shape=nbr_particles)
         mpsort.sort(targets_in_pass, orderby='TILES', out=targets_in_pass_tmp)
+        mpicomm.Barrier()
+        if mpicomm.rank == 0: logger.info(f'Particle exchange between all the processes took: {MPI.Wtime() - t_start:2.2f} s.')
 
         # Which tiles are treated on the current process
+        t_start = MPI.Wtime()
         sel_tiles_in_process = np.isin(tiles_in_pass['TILEID'], targets_in_pass_tmp['TILES'])
         # run F.A. only on these tiles
         if sel_tiles_in_process.sum() != 0:
             targets_in_pass_tmp = run_fiber_assignment_one_pass(tiles_in_pass[sel_tiles_in_process], targets_in_pass_tmp, opts_for_fa, use_sky_targets=use_sky_targets)
+        mpicomm.Barrier()
+        if mpicomm.rank == 0: logger.info(f'Apply F.A. Pass {pass_id} took: {MPI.Wtime() - t_start:2.2f} s.')
 
         # Put the new data in the intial order
+        t_start = MPI.Wtime()
         targets_in_pass = np.empty_like(targets_in_pass_tmp, shape=targets_tileid_in_pass.size)
         mpsort.sort(targets_in_pass_tmp, orderby='index', out=targets_in_pass)
         # Check if we find the correct initial order
         assert np.all(targets_in_pass['index'] == index)
+        if mpicomm.rank == 0: logger.info(f'Particle exchange between all the processes took: {MPI.Wtime() - t_start:2.2f} s.')
 
         # Update the targets before starting a new pass
         for col in ['NUMOBS_MORE', 'NUMOBS', 'FIBER', 'AVAILABLE']:
             targets[col][sel_targets_in_pass] = targets_in_pass[col]
+        targets['OBS_PASS'][sel_targets_in_pass, pass_id] = targets_in_pass['OBS_PASS']
 
 
 if __name__ == '__main__':
@@ -418,7 +432,7 @@ if __name__ == '__main__':
     # program info:
     release = 'Y1'
     program = 'dark'
-    npasses = 1
+    npasses = 2
     use_sky_targets = True  # to debug: Use false to speed up the process
 
     # Collect tiles from surveyops directory on which the fiber assignment will be applied
@@ -464,9 +478,13 @@ if __name__ == '__main__':
     cutsky['OBSCONDITIONS'] = 3 * np.ones(cutsky.size, dtype='i8')
     cutsky['NUMOBS_MORE'] = np.ones(cutsky.size, dtype='i8')
     cutsky['NUMOBS_INIT'] = np.ones(cutsky.size, dtype='i8')
+
+    # Collect fiber assign output info
     cutsky['NUMOBS'] = np.zeros(cutsky.size, dtype='i8')
     cutsky['AVAILABLE'] = np.zeros(cutsky.size, dtype='?')
     cutsky['FIBER'] = np.nan * np.zeros(cutsky.size, dtype='i8')
+    cutsky['OBS_PASS'] = np.zeros((cutsky.size, npasses), dtype='?')  # Take care to the size --> with mpytools should be (size, X) and not (X, size)
+
     # take care with MPI ! TARGETID has to be unique !
     cumsize = np.cumsum([0] + mpicomm.allgather(cutsky.size))[mpicomm.rank]
     cutsky['TARGETID'] = cumsize + np.arange(cutsky.size)
@@ -480,12 +498,13 @@ if __name__ == '__main__':
     # Summarize and plot:
     ra, dec = cutsky.cget('RA', mpiroot=0), cutsky.cget('DEC', mpiroot=0)
     numobs, available = cutsky.cget('NUMOBS', mpiroot=0), cutsky.cget('AVAILABLE', mpiroot=0)
+    obs_pass = cutsky.cget('OBS_PASS', mpiroot=0)
 
     if mpicomm.rank == 0:
         import matplotlib.pyplot as plt
 
-        observed = (numobs >= 1)
-        logger.info(f"Nbr of targets observed: {observed.sum()} -- Nbr of targets available: {available.sum()} -- Nbr of targets: {ra.size}")
+        logger.info(f"Nbr of targets observed: {(numobs >= 1).sum()} -- per pass: {obs_pass.sum(axis=0)} -- Nbr of targets available: {available.sum()} -- Nbr of targets: {ra.size}")
+        logger.info(f"In percentage: Observed: {(numobs >= 1).sum()/ra.size:2.2%} -- Available: {available.sum()/ra.size:2.2%}")
 
         tiles = tiles[tiles['PASS'] < npasses]
         tile_id = np.unique(np.concatenate([tiles['TILEID'].values[np.array(idx, dtype='int64')] for idx in desimodel.footprint.find_tiles_over_point(tiles, ra, dec)]))
@@ -498,8 +517,8 @@ if __name__ == '__main__':
             c = plt.Circle((tile['RA'].values[0], tile['DEC'].values[0]), np.sqrt(8 / 3.14), color='lightgrey', alpha=1)
             ax.add_patch(c)
 
-        ax.scatter(ra_ini, dec_ini, c='red', s=0.5, label='random')
-        ax.scatter(ra, dec, c='green', s=0.5, label='in desi footprint')
+        ax.scatter(ra_ini, dec_ini, c='red', s=0.3, label='random')
+        ax.scatter(ra, dec, c='green', s=0.3, label='in desi footprint')
         ax.legend()
         ax.set_xlabel('R.A. [deg]')
         ax.set_ylabel('Dec. [deg]')
@@ -510,9 +529,14 @@ if __name__ == '__main__':
             c = plt.Circle((tile['RA'].values[0], tile['DEC'].values[0]), np.sqrt(8 / 3.14), color='lightgrey', alpha=1)
             ax.add_patch(c)
 
-        ax.scatter(ra, dec, c='red', s=0.5, label='targets')
-        ax.scatter(ra[available], dec[available], c='orange', s=0.5, label=f'available: {available.sum() / ra.size:2.2%}')
-        ax.scatter(ra[observed], dec[observed], c='green', s=0.5, label=f'observed: {observed.sum() / ra.size:2.2%}')
+        ax.scatter(ra, dec, c='red', s=0.3, label='targets')
+        ax.scatter(ra[available], dec[available], c='orange', s=0.3, label=f'available: {available.sum() / ra.size:2.2%}')
+
+        from matplotlib.axes._axes import _log as matplotlib_axes_logger
+        matplotlib_axes_logger.setLevel('ERROR')
+        colors = plt.cm.BuGn(np.linspace(0.6, 1, npasses))
+        for i in range(npasses):
+            ax.scatter(ra[obs_pass[:, i]], dec[obs_pass[:, i]], c=colors[i], s=0.3, label=f'Pass {i}: {obs_pass[:, i].sum() / ra.size:2.2%}')
 
         ax.legend()
         ax.set_xlabel('R.A. [deg]')
