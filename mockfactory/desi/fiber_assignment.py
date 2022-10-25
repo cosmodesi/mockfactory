@@ -295,7 +295,6 @@ def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa,
     ----------
     targets : array
         Array containing at least: columns_for_fa
-        and 'TILES' (list of potential tileid for each target). Expected to be scattered on all the process.
 
     tiles : array
         Array containing surveyops info. Can be build with _build_tiles()
@@ -319,6 +318,7 @@ def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa,
 
     import mpytools as mpy
     import mpsort
+    import desimodel.footprint
 
     def _dict_to_array(data):
         """
@@ -344,26 +344,23 @@ def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa,
         tiles_in_pass = tiles[tiles['PASS'] == pass_id]
         if mpicomm.rank == 0: logger.info(f'Pass {pass_id} with {tiles_in_pass.shape[0]} potential tiles')
 
-        # could be time consuming...
-        targets_tile_in_pass = np.isin(targets['TILES'], tiles_in_pass)  # targets['TILES'].shape = (size, npasses)
-        # keep only targets in the correct pass to speed up the process
-        sel_targets_in_pass = targets_tile_in_pass.sum(axis=1) > 0
-        # keep only targets with potential observation to speed up the process
-        sel_numobs_more = targets["NUMOBS_MORE"] > 0
-        sel_targets_in_pass = sel_targets_in_pass & sel_numobs_more
-        targets_tileid_in_pass = np.array(targets['TILES'][targets_tile_in_pass & sel_targets_in_pass[:, None]], dtype='i8')
+        # Since we consider only one pass at each time find_tiles_over_point can return only at least one tile for each target
+        tile_id = np.array([tiles_in_pass['TILEID'].values[idx[0]] if len(idx) != 0 else -1
+                            for idx in desimodel.footprint.find_tiles_over_point(tiles_in_pass, targets['RA'], targets['DEC'])])
+        # keep only targets in the correct pass and with potential observation
+        sel_targets_in_pass = (tile_id >= 0) & (targets["NUMOBS_MORE"] > 0)
 
         # Create unique identification as index column
-        cumsize = np.cumsum([0] + mpicomm.allgather(targets_tileid_in_pass.size))[mpicomm.rank]
-        index = cumsize + np.arange(targets_tileid_in_pass.size)
+        cumsize = np.cumsum([0] + mpicomm.allgather(sel_targets_in_pass.sum()))[mpicomm.rank]
+        index = cumsize + np.arange(sel_targets_in_pass.sum())
         targets_in_pass = {name: targets[name][sel_targets_in_pass] for name in columns_for_fa}
-        targets_in_pass.update({'TILES': targets_tileid_in_pass, 'index': index, 'OBS_PASS': np.zeros(index.size, dtype='?')})
+        targets_in_pass.update({'TILEID': tile_id[sel_targets_in_pass], 'index': index, 'OBS_PASS': np.zeros(index.size, dtype='?')})
         targets_in_pass = _dict_to_array(targets_in_pass)
 
         # Let's group particles by tileid, with ~ similar number of tileid on each rank
         # Caution: this may produce memory unbalance between different processes
         # hence potential memory error, which may be avoided using some criterion to rebalance load at the cost of less efficiency
-        unique_tileid, counts_tileid = np.unique(targets_tileid_in_pass, return_counts=True)
+        unique_tileid, counts_tileid = np.unique(targets_in_pass['TILEID'], return_counts=True)
 
         # Proceed rank-by-rank to save memory
         for irank in range(1, mpicomm.size):
@@ -389,13 +386,13 @@ def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa,
         # Sort data to have same number of bricks in each rank
         t_start = MPI.Wtime()
         targets_in_pass_tmp = np.empty_like(targets_in_pass, shape=nbr_particles)
-        mpsort.sort(targets_in_pass, orderby='TILES', out=targets_in_pass_tmp)
+        mpsort.sort(targets_in_pass, orderby='TILEID', out=targets_in_pass_tmp)
         mpicomm.Barrier()
         if mpicomm.rank == 0: logger.info(f'Particle exchange between all the processes took: {MPI.Wtime() - t_start:2.2f} s.')
 
         # Which tiles are treated on the current process
         t_start = MPI.Wtime()
-        sel_tiles_in_process = np.isin(tiles_in_pass['TILEID'], targets_in_pass_tmp['TILES'])
+        sel_tiles_in_process = np.isin(tiles_in_pass['TILEID'], targets_in_pass_tmp['TILEID'])
         # run F.A. only on these tiles
         if sel_tiles_in_process.sum() != 0:
             targets_in_pass_tmp = run_fiber_assignment_one_pass(tiles_in_pass[sel_tiles_in_process], targets_in_pass_tmp, opts_for_fa, use_sky_targets=use_sky_targets)
@@ -404,7 +401,7 @@ def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa,
 
         # Put the new data in the intial order
         t_start = MPI.Wtime()
-        targets_in_pass = np.empty_like(targets_in_pass_tmp, shape=targets_tileid_in_pass.size)
+        targets_in_pass = np.empty_like(targets_in_pass_tmp, shape=sel_targets_in_pass.sum())
         mpsort.sort(targets_in_pass_tmp, orderby='index', out=targets_in_pass)
         # Check if we find the correct initial order
         assert np.all(targets_in_pass['index'] == index)
@@ -457,16 +454,11 @@ if __name__ == '__main__':
     # Note: here for this small example, we emulate the F.A. for QSO targets. Since they have the highest priority we do not need to add other targets to mimic the real F.A.
     # To emulate the F.A. for ELG, we will want to add other targets (QSO / LRG) with correct DESI_TARGET column with random postions (it should be enought if no cross-correlation)
     # with the correct density (including the fluctuation from imaging systematics)
-    # For this tiny example, we do not use reobservation for QSO with z>2.1 (could be easly done with we have the redshift column)
-
-    # add all the tile_id for each target. One target could be in several tiles with different value of 'PASS'
-    tile_id = [tiles['TILEID'].values[np.array(idx, dtype='int64')].tolist() for idx in desimodel.footprint.find_tiles_over_point(tiles, cutsky['RA'], cutsky['DEC'])]
-    nbr_max_tiles = max(map(len, tile_id))
-    cutsky['TILES'] = np.array([id + [np.nan] * (nbr_max_tiles - len(id)) for id in tile_id])
+    # For this tiny example, we do not use reobservation for QSO with z>2.1 (could be easly done with the redshift column)
 
     # Remove targets without potential observation to mimic the desi footprint (Just to limit the cutsky to real desi cutsky)
-    # This step is not mandatory since the F.A. will not consider targets in any tiles
-    sel = np.nansum(cutsky['TILES'], axis=1) > 0
+    # Just to not consider targets outside the footprint --> not mandatory !!
+    sel = np.array([(tiles['TILEID'].values[np.array(idx, dtype='int64')].size > 0) for idx in desimodel.footprint.find_tiles_over_point(tiles, cutsky['RA'], cutsky['DEC'])])
     cutsky = cutsky[sel]
     nbr_targets = cutsky.csize
     if mpicomm.rank == 0: logger.info(f'Keep only objects which is in a tile. Working with {nbr_targets} targets')
