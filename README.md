@@ -113,4 +113,5 @@ python setup.py develop --user
 [nbodykit](https://github.com/bccp/nbodykit) for recipe for [lognormal mocks](https://github.com/bccp/nbodykit/blob/master/nbodykit/source/catalog/lognormal.py),
 and mpi helper functions.
 [cuboid_remap](https://github.com/duncandc/cuboid_remap) by Duncan Campbell, based on [Jordan Carlson and Martin White's algorithm](https://arxiv.org/abs/1003.3178).
-Edmond Chaussidon for box-to-cutsky debugging.
+Edmond Chaussidon for box-to-cutsky debugging and DESI cutsky script.
+Antoine Rocher for DESI SV3 cutsky script and debugging.
