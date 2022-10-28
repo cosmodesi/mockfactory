@@ -141,7 +141,7 @@ if __name__ == '__main__':
         if not all(region_rosettes[rosette] == region for rosette in rosettes):
             raise ValueError('Rosettes must be grouped by regions')
 
-    ndata = {}
+    mask_radial, ndata = {}, {}
 
     for region in regions:
         data = Catalog.read(ref_fn[region])
@@ -149,7 +149,7 @@ if __name__ == '__main__':
         # Radial mask normalizes nbar such that no object is mask at the top of n(z)
         step = 0.01
         density = RedshiftDensityInterpolator(data['Z'], bins=np.arange(zlim[0] - step, zlim[1] + step + 1e-3, step=step), fsky=1., distance=cosmo.comoving_radial_distance)
-        mask_radial = TabulatedRadialMask(z=density.z, nbar=density.nbar, zrange=zlim, interp_order=3)
+        mask_radial[region] = TabulatedRadialMask(z=density.z, nbar=density.nbar, zrange=zlim, interp_order=3)
         ndata[region] = ((data['Z'] > zlim[0]) & (data['Z'] < zlim[1])).csum()
 
     dmax = cosmo.comoving_radial_distance(zlim[-1])
@@ -185,7 +185,8 @@ if __name__ == '__main__':
         for rosettes, (cuboidsize, los_rotation) in transform_rosettes.items():
 
             # If rosettes are not all in required regions, continue
-            if rosettes_to_region[rosettes] not in regions: continue
+            region = rosettes_to_region[rosettes]
+            if region not in regions: continue
 
             if mpicomm.rank == 0: logger.info('Processing rosettes {}.'.format(rosettes))
             tiles_in_rosettes = list(chain(*(tiles_rosettes[rosette] for rosette in rosettes)))
@@ -213,10 +214,11 @@ if __name__ == '__main__':
 
                 distance, cutsky['RA'], cutsky['DEC'] = utils.cartesian_to_sky(position)
                 cutsky['Z'] = d2z(distance)
+                # print(rosettes, rosettes_to_region[rosettes], name, cutsky['Z'].min())
 
                 # Apply tile selection
                 mask_rosette, index_tile = desimodel.footprint.is_point_in_desi(tiles[np.isin(tiles['TILEID'], tiles_in_rosettes)], cutsky['RA'], cutsky['DEC'], return_tile_index=True)
-                mask_rosette &= mask_radial(cutsky['Z'], seed=None)
+                mask_rosette &= mask_radial[region](cutsky['Z'], seed=None)
 
                 if plot_debug:
                     from matplotlib import pyplot as plt
