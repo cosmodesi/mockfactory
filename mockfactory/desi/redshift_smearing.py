@@ -36,8 +36,8 @@ def RedshiftSmearingRVS(tracer = 'QSO',fn=('data/qso_redshift_smearing_sv1.ecsv'
             rvs_gaussian.append(stats.norm(x0, sg))
         else:
             sigma,x0, mu,p, la = table['val_fit'][iz]
-            rvs_nongaussian.append(stats.cauchy(p, mu))
-            rvs_gaussian.append(stats.norm(x0, sigma))
+            rvs_nongaussian.append(stats.cauchy(scale=p/2, loc=mu))
+            rvs_gaussian.append(stats.norm(scale=sigma,loc=x0))
         laz.append(la)
     laz = np.array(laz)
     dztransform = lambda z, dz: dz / (constants.c / 1e3) / (1. + z)  # file units was km / s
