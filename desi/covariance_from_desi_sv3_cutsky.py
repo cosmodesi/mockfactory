@@ -37,15 +37,15 @@ if __name__ == '__main__':
 
     Compute correlation functions:
 
-        python covariance_from_desi_sv3_cutsky.py --todo corr --start 0 --stop 1000
+        srun -n 1 python covariance_from_desi_sv3_cutsky.py --todo corr --start 0 --stop 1000
 
     Compute covariance matrix:
 
-        python covariance_from_desi_sv3_cutsky.py --todo cov --start 0 --stop 1000
+        srun -n 1 python covariance_from_desi_sv3_cutsky.py --todo cov --start 0 --stop 1000
 
     Plot:
 
-        python covariance_from_desi_sv3_cutsky.py --todo plot
+        srun -n 1 python covariance_from_desi_sv3_cutsky.py --todo plot
 
     """
     from mockfactory import Catalog
@@ -58,7 +58,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Generate DESI SV3 cutsky mocks')
     parser.add_argument('--todo', type=str, required=False, default='corr', choices=['corr', 'cov', 'plot'], help='What to do?')
-    parser.add_argument('--corr-type', type=str, required=False, default='smu', choices=['smu', 'rppi', 'theta'], help='Correlation type')
+    parser.add_argument('--corr_type', type=str, required=False, default='smu', choices=['smu', 'rppi', 'theta'], help='Correlation type')
     parser.add_argument('--start', type=int, required=False, default=0, help='First mock to compute correlation function of')
     parser.add_argument('--stop', type=int, required=False, default=1, help='Last (exclusive) mock to compute correlation function of')
     args = parser.parse_args()
@@ -71,6 +71,8 @@ if __name__ == '__main__':
 
     ells = (0, 2, 4)
     pimax = 40.
+    bin_type = 'log'
+    nran = 10  # how many random files
 
     def catalog_fn(name, rosettes, imock=0):
         # name is 'data', 'randoms'; rosettes is list of rosette numbers
@@ -87,10 +89,14 @@ if __name__ == '__main__':
             R1R2 = None
             for imock in range(args.start, args.stop):
                 data = Catalog.read(catalog_fn('data', rosettes, imock=imock))
-                randoms = Catalog.read(catalog_fn('randoms', rosettes, imock=0))
-                edges = get_edges(corr_type=args.corr_type, bin_type='log')
-                corr = TwoPointCorrelationFunction(args.corr_type, data_positions1=data['RSDPosition'], randoms_positions1=randoms['Position'],
-                                                   edges=edges, nthreads=64, position_type='pos', mpicomm=data.mpicomm, mpiroot=None, R1R2=R1R2)
+                edges = get_edges(corr_type=args.corr_type, bin_type=bin_type)
+
+                corr = 0
+                D1D2 = None
+                for iran in range(nran):
+                    randoms = Catalog.read(catalog_fn('randoms', rosettes, imock=iran))
+                    corr += TwoPointCorrelationFunction(args.corr_type, data_positions1=data['RSDPosition'], randoms_positions1=randoms['Position'],
+                                                        edges=edges, nthreads=64, position_type='pos', mpicomm=data.mpicomm, mpiroot=None, D1D2=D1D2, R1R2=R1R2)
                 corr.save(corr_fn(args.corr_type, rosettes, imock=imock))
                 R1R2 = corr.R1R2
 
@@ -106,6 +112,7 @@ if __name__ == '__main__':
         all_D1D2_wnorm = {rosettes: TwoPointCorrelationFunction.load(corr_fn(args.corr_type, rosettes, imock=args.start)).D1D2.wnorm for rosettes in all_rosettes}
         region_D1D2_wnorm = {region: sum(all_D1D2_wnorm[rosettes] for rosettes in all_rosettes if rosettes_to_region[rosettes] == region) for region in regions}
 
+        # We weight each rosette correlation function measurement by (R1R2 of this rosette) / (R1R2 summed over all rosettes)
         all_R1R2 = {rosettes: TwoPointCorrelationFunction.load(corr_fn(args.corr_type, rosettes, imock=args.start)).normalize().R1R2 for rosettes in all_rosettes}
         region_R1R2_wnorm = {region: sum(all_R1R2[rosettes].wnorm for rosettes in all_rosettes if rosettes_to_region[rosettes] == region) for region in regions}
         # Rescale random pairs by total number of data pairs in each region N and S
@@ -119,7 +126,14 @@ if __name__ == '__main__':
             all_corr = []
             for imock in range(args.start, args.stop):
                 result = TwoPointCorrelationFunction.load(corr_fn(args.corr_type, rosettes, imock=imock))
-                result.corr *= ratio  # a bit hacky (result.corr is not recomputed by result.get_corr)
+                for name in ['D1D2', 'D1S2', 'S1D2', 'S1S2']:  # these are in the numerator
+                    try:
+                        tmp = getattr(result, name).deepcopy()
+                    except AttributeError:
+                        continue
+                    tmp.wcounts *= ratio
+                    setattr(result, name, tmp)
+                result.run()  # recompute corr
                 if args.corr_type == 'smu':
                     corr = result.get_corr(ells=ells, return_cov=False)
                     attrs['ells'] = tuple(ells)
@@ -143,6 +157,7 @@ if __name__ == '__main__':
         result = np.load(cov_fn(args.corr_type), allow_pickle=True)[()]
         sep = (result['edges'][0][:-1] + result['edges'][0][1:]) / 2.
         std = np.diag(result['cov'])**0.5
+        xlim = (result['edges'][0].min(), result['edges'][0].max())
         fig = plt.figure(figsize=(10, 5))
         gs = gridspec.GridSpec(ncols=2, nrows=1)
         n = 1
@@ -151,10 +166,16 @@ if __name__ == '__main__':
             n = len(result['ells'])
             std = np.array_split(std, n)
             for ill, ell in enumerate(result['ells']):
-                ax.errorbar(sep, sep**2 * result['mean'][ill], yerr=sep**2 * std[ill], color='C{:d}'.format(ill), label=r'$\ell = {:d}$'.format(ell))
+                ax.errorbar(sep, sep * result['mean'][ill], yerr=sep * std[ill], color='C{:d}'.format(ill), label=r'$\ell = {:d}$'.format(ell))
+            ax.set_xlabel(r'$s$ [$\mathrm{Mpc}/h$]')
+            ax.set_ylabel(r'$s \xi_{\ell}(s)$ [$\mathrm{Mpc}/h$]')
+            ax.legend()
         elif 'pimax' in result:
-            ax.errorbar(sep, sep**2 * result['mean'], yerr=sep**2 * std)
-        ax.legend()
+            ax.errorbar(sep, sep * result['mean'], yerr=sep * std)
+            ax.set_xlabel(r'$r_{p}$ [$\mathrm{Mpc}/h$]')
+            ax.set_ylabel(r'$r_{p} w_{p}$ [$(\mathrm{{Mpc}}/h)^{{2}}$]')
+        ax.set_xscale(bin_type)
+        ax.set_xlim(xlim)
         corrcoef = utils.cov_to_corrcoef(result['cov'])
         ns = len(sep)
         gs = gridspec.GridSpecFromSubplotSpec(n, n, subplot_spec=gs[1], wspace=0.1, hspace=0.1)
@@ -166,4 +187,8 @@ if __name__ == '__main__':
                 mesh = ax.pcolor(sep, sep, corrcoef[i*ns:(i+1)*ns,j*ns:(j+1)*ns].T, norm=norm, cmap=plt.get_cmap('jet_r'))
                 if i>0: ax.xaxis.set_visible(False)
                 if j>0: ax.yaxis.set_visible(False)
+                ax.set_xscale(bin_type)
+                ax.set_yscale(bin_type)
+                ax.set_xlim(xlim)
+                ax.set_ylim(xlim)
         fig.savefig(os.path.splitext(cov_fn(args.corr_type))[0] + '.png')

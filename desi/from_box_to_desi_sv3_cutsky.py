@@ -70,6 +70,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate DESI SV3 cutsky mocks')
     parser.add_argument('--start', type=int, required=False, default=0, help='First mock to generate')
     parser.add_argument('--stop', type=int, required=False, default=1, help='Last (exclusive) mock to generate')
+    parser.add_argument('--mock_fn', type=str, required=False, default=None, help='filename to load mocks, start, stop should correcpond to the phases of Abacus boxes')
     args = parser.parse_args()
 
 
@@ -93,6 +94,8 @@ if __name__ == '__main__':
     boxsize = 500.
     boxcenter = 0.
     nbar = 2e-3  # here we generate a mock; density (in (Mpc/h)^(-3)) must be larger than peak data density
+    wran_over_wdat = 20  # how many more randoms than data in each random file
+    nran = 20  # how many random files (< number of mocks = stop)
 
     lattice_fn = os.path.join(outdir, 'lattice_max3.npy')
     # Load lattice if precomputed
@@ -126,7 +129,7 @@ if __name__ == '__main__':
     for rosette in [7, 14, 6, 11, 5, 0, 3, 19]:
         transform_rosettes[(rosette,)] = (cuboidsize1, 0.)
 
-    randoms = RandomBoxCatalog(nbar=10. * nbar, boxsize=boxsize, boxcenter=boxcenter, seed=None)
+    randoms = RandomBoxCatalog(nbar=wran_over_wdat * nbar, boxsize=boxsize, boxcenter=boxcenter, seed=None)
 
     tiles = Table.read(tiles_fn)
     # Rosette coordinates
@@ -138,7 +141,7 @@ if __name__ == '__main__':
         if not all(region_rosettes[rosette] == region for rosette in rosettes):
             raise ValueError('Rosettes must be grouped by regions')
 
-    ndata = {}
+    mask_radial, ndata = {}, {}
 
     for region in regions:
 
@@ -147,25 +150,31 @@ if __name__ == '__main__':
         # Radial mask normalizes nbar such that no object is mask at the top of n(z)
         step = 0.01
         density = RedshiftDensityInterpolator(data['Z'], bins=np.arange(zlim[0] - step, zlim[1] + step + 1e-3, step=step), fsky=1., distance=cosmo.comoving_radial_distance)
-        mask_radial = TabulatedRadialMask(z=density.z, nbar=density.nbar, zrange=zlim, interp_order=3)
+        mask_radial[region] = TabulatedRadialMask(z=density.z, nbar=density.nbar, zrange=zlim, interp_order=3)
         ndata[region] = ((data['Z'] > zlim[0]) & (data['Z'] < zlim[1])).csum()
 
     dmax = cosmo.comoving_radial_distance(zlim[-1])
 
     for imock in range(args.start, args.stop):
-        #### Lognormal mock as a placeholder ###
-        power = cosmo.get_fourier().pk_interpolator().to_1d(z=z)
-        from mockfactory import LagrangianLinearMock
-        mock = LagrangianLinearMock(power, nmesh=256, boxsize=boxsize, boxcenter=boxcenter, seed=imock + 1, unitary_amplitude=False)
-        mpicomm, rank = mock.mpicomm, mock.mpicomm.rank
-        mock.set_real_delta_field(bias=1.2 - 1.)  # Lagrangian bias
-        mock.set_analytic_selection_function(nbar=nbar)
-        mock.poisson_sample(seed=None)
-        box = mock.to_catalog()
-        # rsd_factor is the factor to multiply velocity with to get displacements (in position units)
-        # For this mock it is just f, but it can be e.g. 1 / (a H); 1 / (100 a E) to use Mpc/h
-        rsd_factor = cosmo.sigma8_z(z=z, of='theta_cb') / cosmo.sigma8_z(z=z, of='delta_cb')  # growth rate
 
+        if args.mock_fn is not None: 
+            #### Read mock catalog ####
+            box = BoxCatalog.read(args.mock_fn.format(imock), boxsize=boxsize, boxcenter=boxcenter)
+            rsd_factor = 1 / (1 / (1 + z) * 100 * cosmo.efunc(z))
+        else:
+            #### Lognormal mock as a placeholder ###
+            power = cosmo.get_fourier().pk_interpolator().to_1d(z=z)
+            from mockfactory import LagrangianLinearMock
+            mock = LagrangianLinearMock(power, nmesh=256, boxsize=boxsize, boxcenter=boxcenter, seed=imock + 1, unitary_amplitude=False)
+            mpicomm, rank = mock.mpicomm, mock.mpicomm.rank
+            mock.set_real_delta_field(bias=1.2 - 1.)  # Lagrangian bias
+            mock.set_analytic_selection_function(nbar=nbar)
+            mock.poisson_sample(seed=None)
+            box = mock.to_catalog()
+            # rsd_factor is the factor to multiply velocity with to get displacements (in position units)
+            # For this mock it is just f, but it can be e.g. 1 / (a H); 1 / (100 a E) to use Mpc/h
+            rsd_factor = cosmo.sigma8_z(z=z, of='theta_cb') / cosmo.sigma8_z(z=z, of='delta_cb')  # growth rate
+        
         # The following code requests a mockfactory.BoxCatalog to work.
         # mockfactory.BoxCatalog proposes different ways to read catalog in different formats with MPI
         # box = BoxCatalog.read(fn, filetype='fits', position='Position', velocity='Velocity', boxsize=boxsize, boxcenter=boxcenter, mpicomm=mpicomm)
@@ -178,7 +187,8 @@ if __name__ == '__main__':
         for rosettes, (cuboidsize, los_rotation) in transform_rosettes.items():
 
             # If rosettes are not all in required regions, continue
-            if rosettes_to_region[rosettes] not in regions: continue
+            region = rosettes_to_region[rosettes]
+            if region not in regions: continue
 
             if mpicomm.rank == 0: logger.info('Processing rosettes {}.'.format(rosettes))
             tiles_in_rosettes = list(chain(*(tiles_rosettes[rosette] for rosette in rosettes)))
@@ -188,7 +198,7 @@ if __name__ == '__main__':
             center_ra, center_dec = utils.cartesian_to_sky(los)[1:]
             los_rotation = EuclideanIsometry().rotation(los_rotation, axis=los)
 
-            for catalog, name in zip([box] + ([randoms] if imock == 0 else []), ['data', 'randoms']):
+            for catalog, name in zip([box] + ([randoms] if imock < nran else []), ['data', 'randoms']):
                 # Let's apply remapping to our catalog!
                 remapped = catalog.remap(*lattice[cuboidsize][0])
 
@@ -206,10 +216,11 @@ if __name__ == '__main__':
 
                 distance, cutsky['RA'], cutsky['DEC'] = utils.cartesian_to_sky(position)
                 cutsky['Z'] = d2z(distance)
+                # print(rosettes, rosettes_to_region[rosettes], name, cutsky['Z'].min())
 
                 # Apply tile selection
                 mask_rosette, index_tile = desimodel.footprint.is_point_in_desi(tiles[np.isin(tiles['TILEID'], tiles_in_rosettes)], cutsky['RA'], cutsky['DEC'], return_tile_index=True)
-                mask_rosette &= mask_radial(cutsky['Z'], seed=None)
+                mask_rosette &= mask_radial[region](cutsky['Z'], seed=None)
 
                 if plot_debug:
                     from matplotlib import pyplot as plt
