@@ -109,7 +109,7 @@ def test_randoms():
     assert catalog.csize == 1000
 
 
-def test_io():
+def test_misc():
 
     catalog = RandomBoxCatalog(csize=1000, boxsize=10., boxcenter=3.)
 
@@ -119,6 +119,10 @@ def test_io():
         catalog.write(fn)
         catalog = BoxCatalog.read(fn, boxsize=1.)
         assert np.allclose(catalog.boxsize, 1.)
+
+    catalog['index'] = catalog.cindex()
+    csort = catalog.csort('index')
+    assert np.all(np.diff(csort['index']) > 0)
 
 
 def test_isometry():
@@ -359,7 +363,7 @@ if __name__ == '__main__':
     test_remap()
     test_isometry()
     test_randoms()
-    test_io()
+    test_misc()
     test_cutsky()
     test_masks()
     test_redshift_array()
