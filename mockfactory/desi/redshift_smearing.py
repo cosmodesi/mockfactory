@@ -141,7 +141,6 @@ if __name__ == '__main__':
             pdf += alpha * sum(weight[iz + 1] * rv[iz + 1].pdf(ldz) for rv, weight in zip(rvs, weights))
         ax.plot(dztransform(zz, ldz), constants.c / 1e3 * (1. + zz) * pdf, color='r')
         ax.set_xlabel('$dz$')
-    plt.savefig(tracer+'_dz')
-    plt.close()
-    #if rs.mpicomm.rank == 0:
-    #    plt.show()
+
+    if rs.mpicomm.rank == 0:
+        plt.show()
