@@ -35,7 +35,7 @@ def RedshiftSmearingRVS(tracer = 'QSO',fn=('data/qso_redshift_smearing_sv1.ecsv'
             rvs_nongaussian.append(stats.laplace(x0, s0))
             rvs_gaussian.append(stats.norm(x0, sg))
         else:
-            sigma,x0, mu,p, la = table['val_fit'][iz]
+            sigma,x0, p,mu, la = table['val_fit'][iz]
             rvs_nongaussian.append(stats.cauchy(scale=p/2, loc=mu))
             rvs_gaussian.append(stats.norm(scale=sigma,loc=x0))
         laz.append(la)
@@ -49,7 +49,7 @@ def tracerRedshiftSmearing(tracer='QSO',fn=('data/qso_redshift_smearing_sv1.ecsv
     Return :class:`RVS2DRedshiftSmearing` instance given input tabulate file of redshift errors.
     Redshift errors can be sampled through: ``dz = rs.sample(z, seed=42)``.
     """
-    z, rvs, weights, dztransform = RedshiftSmearingRVS(fn=fn)
+    z, rvs, weights, dztransform = RedshiftSmearingRVS(tracer=tracer,fn=fn)
     if tracer == 'QSO':
         dzscale = 5e3
     elif (tracer == 'ELG')|(tracer == 'BGS'):
@@ -119,7 +119,13 @@ if __name__ == '__main__':
     # z slices where to plot distributions
     lz = np.linspace(z[0], z[-1], 15)
     # Tabulated dz where to evaluate pdf
-    ldz = np.linspace(-5e4, 5e4, 1000)
+    if tracer == 'QSO':
+        dzscale = 5e3
+    elif (tracer == 'ELG')|(tracer == 'BGS'):
+        dzscale = 150
+    elif tracer == 'LRG':
+        dzscale = 200
+    ldz = np.linspace(-dzscale, dzscale, 1000)
 
     fig, lax = plt.subplots(3, 5, figsize=(20, 10))
     lax = lax.flatten()
