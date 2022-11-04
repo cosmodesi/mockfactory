@@ -282,7 +282,7 @@ class Cuboid(BaseClass):
                 mask |= mask_
                 position[mask_] += cell.ipos
             if not mask.all():
-                raise CuboidError('Elements not contained in any cell')
+                raise CuboidError('Positions not contained in any cell; are those really in [0, boxsize]?')
             toret = vec3([dot(position.T, n) for n in [self.n1, self.n2, self.n3]]).T * self.cuboidresize
         if isscalar:
             toret = toret[0]

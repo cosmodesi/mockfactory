@@ -128,7 +128,7 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD):
         nbr_bricks = np.diff(nbr_bricks, axis=-1)
         logger.info(f'Number of bricks to read per rank = {np.min(nbr_bricks)} - {np.max(nbr_bricks)} (min - max).')
 
-    # Send the number particles that each rank must contain after sorting
+    # Send the number of particles that each rank must contain after sorting
     nbr_particles = mpicomm.scatter(nbr_particles, root=0)
     assert mpicomm.allreduce(nbr_particles) == mpicomm.allreduce(brickid_data.size), 'float in bincount messes up total particle counts'
 

@@ -144,7 +144,7 @@ if __name__ == '__main__':
         mean = sum(all_mean.values()).reshape(corr.shape)
         cov = sum(all_cov.values())
         result = {'mean': mean, 'cov': cov, 'edges': result.edges, 'corr_type': args.corr_type, **attrs}
-        np.save(cov_fn(args.corr_type), result)
+        np.save(cov_fn(args.corr_type), result, allow_pickle=True)
 
     if args.todo == 'plot':
         from matplotlib import pyplot as plt

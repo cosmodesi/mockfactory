@@ -528,7 +528,7 @@ class ParticleCatalog(Catalog):
     """A catalog of particles, with 'Position' and 'Velocity'."""
 
     @CurrentMPIComm.enable
-    def __init__(self, data=None, columns=None, position='Position', velocity='Velocity', vectors=None, translational_invariants=None, attrs=None, mpicomm=None):
+    def __init__(self, data=None, columns=None, position='Position', velocity='Velocity', vectors=None, translational_invariants=None, attrs=None, mpicomm=None, **kwargs):
         """
         Initialize :class:`ParticleCatalog`.
 
@@ -560,13 +560,21 @@ class ParticleCatalog(Catalog):
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
         """
-        super(ParticleCatalog, self).__init__(data=data, columns=columns, attrs=attrs, mpicomm=mpicomm)
+        super(ParticleCatalog, self).__init__(data=data, columns=columns, attrs=attrs, position=position,
+                                              velocity=velocity, vectors=vectors, translational_invariants=translational_invariants,
+                                              mpicomm=mpicomm, **kwargs)
+
+    @classmethod
+    def from_dict(cls, *args, position='Position', velocity='Velocity', vectors=None, translational_invariants=None, **kwargs):
+        """See :meth:`__init__` doc."""
+        self = super(ParticleCatalog, cls).from_dict(*args, **kwargs)
         self._position = position
         self._velocity = velocity
         self._vectors = set(vectors or [])
         self._translational_invariants = set(translational_invariants or [])
         self._vectors |= {self._position, self._velocity}
         self._translational_invariants |= set([self._velocity])
+        return self
 
     @property
     def vectors(self):
@@ -677,7 +685,12 @@ class BoxCatalog(ParticleCatalog):
         kwargs : dict
             Other optional arguments, see :class:`ParticleCatalog`.
         """
-        super(BoxCatalog, self).__init__(data=data, columns=columns, **kwargs)
+        super(BoxCatalog, self).__init__(data=data, columns=columns, boxsize=boxsize, boxcenter=boxcenter, **kwargs)
+
+    @classmethod
+    def from_dict(cls, *args, boxsize=None, boxcenter=0., **kwargs):
+        """See :meth:`__init__` doc."""
+        self = super(BoxCatalog, cls).from_dict(*args, **kwargs)
         if boxsize is None:
             boxsize = self.attrs.get('boxsize', None)
         if boxsize is None:
@@ -686,6 +699,7 @@ class BoxCatalog(ParticleCatalog):
             boxcenter = self.attrs.get('boxcenter', 0.)
         self._boxsize = _make_array(boxsize, 3)
         self._boxcenter = _make_array(boxcenter, 3)
+        return self
 
     def translate(self, shift=0., axis=None):
         """
