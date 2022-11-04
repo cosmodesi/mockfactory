@@ -24,25 +24,6 @@ from mpi4py import MPI
 logger = logging.getLogger('F.A.')
 
 
-def _dict_to_array(data):
-    """
-    Return dict as numpy array.
-
-    Parameters
-    ----------
-    data : dict
-        Data dictionary of name: array.
-
-    Returns
-    -------
-    array : array
-    """
-    array = [(name, data[name]) for name in data]
-    array = np.empty(array[0][1].shape[0], dtype=[(name, col.dtype, col.shape[1:]) for name, col in array])
-    for name in data: array[name] = data[name]
-    return array
-
-
 def build_tiles_for_fa(release_tile_path='/global/cfs/cdirs/desi/survey/catalogs/Y1/LSS/tiles-DARK.fits',
                        surveyops_tile_path='/global/cfs/cdirs/desi/survey/ops/surveyops/trunk/ops/tiles-main.ecsv',
                        program='dark', npasses=7):
@@ -297,14 +278,19 @@ def _apply_mtl_one_pass(targets, tg_assign, tg_available):
 
 
 def _run_fiber_assignment_one_pass(tiles, targets, opts_for_fa, plate_radec=True, use_sky_targets=True):
-    """ From tiles and targets run step by step the fiber assignment process for one pass """
+    """
+    From tiles and targets run step by step the fiber assignment process for one pass.
+
+    Warning: to work with fiberassign package (ie) for _run_assign_init function, targets should be a dtype numpy array and not a mpytools.Catalog. Convert it with Catalog.to_array()
+    """
     from fiberassign.scripts.assign import parse_assign
 
     # load param for firber assignment
     ag = parse_assign(opts_for_fa)
 
     # Convert data to fiberassign class
-    hw, tiles, tgs, tagalong = _run_assign_init(ag, tiles, targets, plate_radec=plate_radec, use_sky_targets=use_sky_targets)
+    # targets should be a dtype numpy array here
+    hw, tiles, tgs, tagalong = _run_assign_init(ag, tiles, targets.to_array(), plate_radec=plate_radec, use_sky_targets=use_sky_targets)
 
     # run assignment
     asgn = _run_assign_full(ag, hw, tiles, tgs, tagalong)
@@ -350,16 +336,17 @@ def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa,
         If False, do not include sky targets. Useful for debug since sky targets are not read and it speed up the process.
     """
     import mpytools as mpy
-    import mpsort
     import desimodel.footprint
 
-    if mpicomm.rank == 0: logger.info(f'Start Fiber Assignment with {npasses} pass(es) (use sky targets? {use_sky_targets})')
+    start = MPI.Wtime()
+
+    csize = mpy.gather(targets.size, mpiroot=0)
+    if mpicomm.rank == 0: logger.info(f'Start fiber assignment for {csize.sum()} objects and {npasses} pass(es) (use sky targets? {use_sky_targets})')
 
     # Add columns to collect fiber assign output !
-    targets['NUMOBS'] = np.zeros(targets.size, dtype='i8')
-    targets['AVAILABLE'] = np.zeros(targets.size, dtype='?')
-    targets['FIBER'] = -1 * np.ones((targets.size, npasses), dtype='i8')  # To compute the completeness weight, need to collect at least (if avialable) one fiber per pass!
-    targets['OBS_PASS'] = np.zeros((targets.size, npasses), dtype='?')  # Take care to the size --> with mpytools should be (size, X) and not (X, size)
+    targets['NUMOBS', 'AVAILABLE', 'FIBER', 'OBS_PASS'] = [np.zeros(targets.size, dtype='i8'), np.zeros(targets.size, dtype='?'),
+                                                           -1 * np.ones((targets.size, npasses), dtype='i8'),  # To compute the completeness weight, need to collect at least (if avialable) one fiber per pass!
+                                                           np.zeros((targets.size, npasses), dtype='?')]  # Take care to the size --> with mpytools should be (size, X) and not (X, size)
 
     for pass_id in range(npasses):
         tiles_in_pass = tiles[tiles['PASS'] == pass_id]
@@ -370,69 +357,47 @@ def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa,
                             for idx in desimodel.footprint.find_tiles_over_point(tiles_in_pass, targets['RA'], targets['DEC'])])
         # keep only targets in the correct pass and with potential observation
         sel_targets_in_pass = (tile_id >= 0) & (targets["NUMOBS_MORE"] > 0)
+        # create subcatalog
+        targets_in_pass = targets[columns_for_fa + ['NUMOBS', 'AVAILABLE']][sel_targets_in_pass]
+        targets_in_pass['TILEID', 'OBS_PASS', 'FIBER', 'index'] = [tile_id[sel_targets_in_pass], np.zeros(sel_targets_in_pass.sum(), dtype='?'),
+                                                                   -1 * np.ones(sel_targets_in_pass.sum(), dtype='i8'),
+                                                                   targets_in_pass.cindex()]
+        # Copy unique identification to perform sanity check at the end
+        index = targets_in_pass['index']
 
-        # Create unique identification as index column
-        cumsize = np.cumsum([0] + mpicomm.allgather(sel_targets_in_pass.sum()))[mpicomm.rank]
-        index = cumsize + np.arange(sel_targets_in_pass.sum())
-        targets_in_pass = {name: targets[name][sel_targets_in_pass] for name in columns_for_fa + ['NUMOBS', 'AVAILABLE']}
-        targets_in_pass.update({'TILEID': tile_id[sel_targets_in_pass], 'index': index, 'OBS_PASS': np.zeros(index.size, dtype='?'), 'FIBER': -1 * np.ones(index.size, dtype='i8')})
-        targets_in_pass = _dict_to_array(targets_in_pass)
-
-        # Let's group particles by tileid, with ~ similar number of tileid on each rank
-        # Caution: this may produce memory unbalance between different processes
-        # hence potential memory error, which may be avoided using some criterion to rebalance load at the cost of less efficiency
-        unique_tileid, counts_tileid = np.unique(targets_in_pass['TILEID'], return_counts=True)
-
-        # Proceed rank-by-rank to save memory
-        for irank in range(1, mpicomm.size):
-            unique_tileid_irank = mpy.sendrecv(unique_tileid, source=irank, dest=0, tag=0, mpicomm=mpicomm)
-            counts_tileid_irank = mpy.sendrecv(counts_tileid, source=irank, dest=0, tag=0, mpicomm=mpicomm)
-            if mpicomm.rank == 0:
-                unique_tileid, counts_tileid = np.concatenate([unique_tileid, unique_tileid_irank]), np.concatenate([counts_tileid, counts_tileid_irank])
-                unique_tileid, inverse = np.unique(unique_tileid, return_inverse=True)
-                counts_tileid = np.bincount(inverse, weights=counts_tileid).astype(int)
-
-        # Compute the number particles that each rank must contain after sorting
-        nbr_particles = None
-        if mpicomm.rank == 0:
-            nbr_tiles = [(irank * unique_tileid.size // mpicomm.size, (irank + 1) * unique_tileid.size // mpicomm.size) for irank in range(mpicomm.size)]
-            nbr_particles = [np.sum(counts_tileid[nbr_tile_low:nbr_tile_high], dtype='i8') for nbr_tile_low, nbr_tile_high in nbr_tiles]
-            nbr_tiles = np.diff(nbr_tiles, axis=-1)
-            logger.info(f'        ** Number of tiles to process per rank = {np.min(nbr_tiles)} - {np.max(nbr_tiles)} (min - max).')
-
-        # Send the number particles that each rank must contain after sorting
-        nbr_particles = mpicomm.scatter(nbr_particles, root=0)
-        assert mpicomm.allreduce(nbr_particles) == mpicomm.allreduce(targets_in_pass.size), 'float in bincount messes up total particle counts'
-
-        # Sort data to have same number of bricks in each rank
+        # Sort data to have same number of tileid in each rank
         t_start = MPI.Wtime()
-        targets_in_pass_tmp = np.empty_like(targets_in_pass, shape=nbr_particles)
-        mpsort.sort(targets_in_pass, orderby='TILEID', out=targets_in_pass_tmp)
+        targets_in_pass = targets_in_pass.csort('TILEID', size='orderby_counts')
         mpicomm.Barrier()
         if mpicomm.rank == 0: logger.info(f'        ** Particle exchange between all the processes took: {MPI.Wtime() - t_start:2.2f} s.')
+        nbr_tiles = mpy.gather(np.unique(targets_in_pass['TILEID']).size, mpiroot=0)
+        if mpicomm.rank == 0: logger.info(f'        ** Number of tiles to process per rank = {np.min(nbr_tiles)} - {np.max(nbr_tiles)} (min - max).')
 
         # Which tiles are treated on the current process
         t_start = MPI.Wtime()
-        sel_tiles_in_process = np.isin(tiles_in_pass['TILEID'], targets_in_pass_tmp['TILEID'])
+        sel_tiles_in_process = np.isin(tiles_in_pass['TILEID'], targets_in_pass['TILEID'])
         # run F.A. only on these tiles
         if sel_tiles_in_process.sum() != 0:
-            _run_fiber_assignment_one_pass(tiles_in_pass[sel_tiles_in_process], targets_in_pass_tmp, opts_for_fa, use_sky_targets=use_sky_targets)
+            _run_fiber_assignment_one_pass(tiles_in_pass[sel_tiles_in_process], targets_in_pass, opts_for_fa, use_sky_targets=use_sky_targets)
         mpicomm.Barrier()
         if mpicomm.rank == 0: logger.info(f'        ** Apply F.A. Pass {pass_id} took: {MPI.Wtime() - t_start:2.2f} s.')
 
         # Put the new data in the intial order
         t_start = MPI.Wtime()
-        targets_in_pass = np.empty_like(targets_in_pass_tmp, shape=sel_targets_in_pass.sum())
-        mpsort.sort(targets_in_pass_tmp, orderby='index', out=targets_in_pass)
+        targets_in_pass = targets_in_pass.csort('index', size=sel_targets_in_pass.sum())
         # Check if we find the correct initial order
         assert np.all(targets_in_pass['index'] == index)
+        mpicomm.Barrier()
         if mpicomm.rank == 0: logger.info(f'        ** Particle exchange between all the processes took: {MPI.Wtime() - t_start:2.2f} s.')
 
-        # Update the targets before starting a new pass
+        # Update the targets before starting a new pass (do it one by one)
         for col in ['NUMOBS_MORE', 'NUMOBS', 'AVAILABLE']:
             targets[col][sel_targets_in_pass] = targets_in_pass[col]
         targets['OBS_PASS'][sel_targets_in_pass, pass_id] = targets_in_pass['OBS_PASS']
         targets['FIBER'][sel_targets_in_pass, pass_id] = targets_in_pass['FIBER']
+
+    mpicomm.Barrier()
+    if mpicomm.rank == 0: logger.info(f'Apply fiber assign performed in elapsed time {MPI.Wtime() - start:2.2f} s.')
 
 
 def _compute_completness_weight_one_pass(tiles, targets):
@@ -501,15 +466,16 @@ def compute_completness_weight(targets, tiles, npasses, mpicomm):
         The current MPI communicator.
     """
     import mpytools as mpy
-    import mpsort
     import desimodel.footprint
 
-    if mpicomm.rank == 0: logger.info('Compute the completeness weight')
+    start = MPI.Wtime()
+
+    if mpicomm.rank == 0: logger.info('Start completeness weight computation')
 
     # We will use only available targets which are not observed !
     not_used_for_comp_weight = targets['AVAILABLE'] & (targets['NUMOBS'] == 0)
     nbr_targets_for_comp_weight = mpy.gather(not_used_for_comp_weight.sum(), mpiroot=0)
-    if mpicomm.rank == 0: logger.info(f'Starting completness weight with {np.sum(nbr_targets_for_comp_weight)} unobserved but available targets')
+    if mpicomm.rank == 0: logger.info(f'Starting completness weight with {nbr_targets_for_comp_weight.sum()} unobserved but available targets')
     # Create Comp weight column to store it
     targets['COMP_WEIGHT'] = np.ones(targets.size)
     targets['COMP_WEIGHT'][targets['NUMOBS'] == 0] = np.nan
@@ -523,52 +489,25 @@ def compute_completness_weight(targets, tiles, npasses, mpicomm):
                             for idx in desimodel.footprint.find_tiles_over_point(tiles_in_pass, targets['RA'], targets['DEC'])])
         # keep only targets in the correct pass
         sel_targets_in_pass = (tile_id >= 0)
+        # create subcatalog
+        targets_in_pass = targets['AVAILABLE', 'COMP_WEIGHT'][sel_targets_in_pass]
+        targets_in_pass['TILEID', 'OBS_PASS', 'FIBER', 'NOT_USED_FOR_COMP_WEIGHT', 'index'] = [tile_id[sel_targets_in_pass], targets['OBS_PASS'][sel_targets_in_pass, pass_id],
+                                                                                               targets['FIBER'][sel_targets_in_pass, pass_id],
+                                                                                               not_used_for_comp_weight[sel_targets_in_pass],
+                                                                                               targets_in_pass.cindex()]
+        # Copy unique identification to perform sanity check at the end
+        index = targets_in_pass['index']
 
-        # Create unique identification as index column
-        cumsize = np.cumsum([0] + mpicomm.allgather(sel_targets_in_pass.sum()))[mpicomm.rank]
-        index = cumsize + np.arange(sel_targets_in_pass.sum())
-        targets_in_pass = {'TILEID': tile_id[sel_targets_in_pass], 'OBS_PASS': targets['OBS_PASS'][sel_targets_in_pass, pass_id], 'FIBER': targets['FIBER'][sel_targets_in_pass, pass_id], 'AVAILABLE': targets['AVAILABLE'][sel_targets_in_pass],
-                           'NOT_USED_FOR_COMP_WEIGHT': not_used_for_comp_weight[sel_targets_in_pass], 'COMP_WEIGHT': targets['COMP_WEIGHT'][sel_targets_in_pass], 'index': index}
-        targets_in_pass = _dict_to_array(targets_in_pass)
-
-        # Let's group particles by tileid, with ~ similar number of tileid on each rank
-        # Caution: this may produce memory unbalance between different processes
-        # hence potential memory error, which may be avoided using some criterion to rebalance load at the cost of less efficiency
-        unique_tileid, counts_tileid = np.unique(targets_in_pass['TILEID'], return_counts=True)
-
-        # Proceed rank-by-rank to save memory
-        for irank in range(1, mpicomm.size):
-            unique_tileid_irank = mpy.sendrecv(unique_tileid, source=irank, dest=0, tag=0, mpicomm=mpicomm)
-            counts_tileid_irank = mpy.sendrecv(counts_tileid, source=irank, dest=0, tag=0, mpicomm=mpicomm)
-            if mpicomm.rank == 0:
-                unique_tileid, counts_tileid = np.concatenate([unique_tileid, unique_tileid_irank]), np.concatenate([counts_tileid, counts_tileid_irank])
-                unique_tileid, inverse = np.unique(unique_tileid, return_inverse=True)
-                counts_tileid = np.bincount(inverse, weights=counts_tileid).astype(int)
-
-        # Compute the number particles that each rank must contain after sorting
-        nbr_particles = None
-        if mpicomm.rank == 0:
-            nbr_tiles = [(irank * unique_tileid.size // mpicomm.size, (irank + 1) * unique_tileid.size // mpicomm.size) for irank in range(mpicomm.size)]
-            nbr_particles = [np.sum(counts_tileid[nbr_tile_low:nbr_tile_high], dtype='i8') for nbr_tile_low, nbr_tile_high in nbr_tiles]
-            nbr_tiles = np.diff(nbr_tiles, axis=-1)
-            logger.debug(f'Number of tiles to process per rank = {np.min(nbr_tiles)} - {np.max(nbr_tiles)} (min - max).')
-
-        # Send the number particles that each rank must contain after sorting
-        nbr_particles = mpicomm.scatter(nbr_particles, root=0)
-        assert mpicomm.allreduce(nbr_particles) == mpicomm.allreduce(targets_in_pass.size), 'float in bincount messes up total particle counts'
-
-        # Sort data to have same number of bricks in each rank
-        targets_in_pass_tmp = np.empty_like(targets_in_pass, shape=nbr_particles)
-        mpsort.sort(targets_in_pass, orderby='TILEID', out=targets_in_pass_tmp)
+        # Sort data to have same number of tileid in each rank
+        targets_in_pass = targets_in_pass.csort('TILEID', size='orderby_counts')
 
         # Which tiles are treated on the current process
-        sel_tiles_in_process = np.isin(tiles_in_pass['TILEID'], targets_in_pass_tmp['TILEID'])
+        sel_tiles_in_process = np.isin(tiles_in_pass['TILEID'], targets_in_pass['TILEID'])
         if sel_tiles_in_process.sum() != 0:
-            _compute_completness_weight_one_pass(tiles_in_pass[sel_tiles_in_process], targets_in_pass_tmp)
+            _compute_completness_weight_one_pass(tiles_in_pass[sel_tiles_in_process], targets_in_pass)
 
         # Put the new data in the intial order
-        targets_in_pass = np.empty_like(targets_in_pass_tmp, shape=sel_targets_in_pass.sum())
-        mpsort.sort(targets_in_pass_tmp, orderby='index', out=targets_in_pass)
+        targets_in_pass = targets_in_pass.csort('index', size=sel_targets_in_pass.sum())
         # Check if we find the correct initial order
         assert np.all(targets_in_pass['index'] == index)
 
@@ -577,7 +516,10 @@ def compute_completness_weight(targets, tiles, npasses, mpicomm):
         not_used_for_comp_weight[sel_targets_in_pass] = targets_in_pass['NOT_USED_FOR_COMP_WEIGHT']
 
         nbr_targets_for_comp_weight = mpy.gather(not_used_for_comp_weight.sum(), mpiroot=0)
-        if mpicomm.rank == 0: logger.info(f'   * After pass: {pass_id} it remains {np.sum(nbr_targets_for_comp_weight)} targets available unobserved to compute complteness weight')
+        if mpicomm.rank == 0: logger.info(f'   * After pass: {pass_id} it remains {nbr_targets_for_comp_weight.sum()} targets available unobserved to compute complteness weight')
+
+    mpicomm.Barrier()
+    if mpicomm.rank == 0: logger.info(f'Completeness weight computed in elapsed time {MPI.Wtime() - start:2.2f} s.')
 
 
 if __name__ == '__main__':
@@ -636,13 +578,12 @@ if __name__ == '__main__':
     cutsky['SUBPRIORITY'] = mpy.random.MPIRandomState(cutsky.size, seed=123).uniform(low=0, high=1, dtype='f8')
     cutsky['OBSCONDITIONS'] = 3 * np.ones(cutsky.size, dtype='i8')
     cutsky['NUMOBS_MORE'] = np.ones(cutsky.size, dtype='i8')
-    cutsky['NUMOBS_INIT'] = np.ones(cutsky.size, dtype='i8')
     # take care with MPI ! TARGETID has to be unique !
     cumsize = np.cumsum([0] + mpicomm.allgather(cutsky.size))[mpicomm.rank]
     cutsky['TARGETID'] = cumsize + np.arange(cutsky.size)
 
     # columns needed to run the F.A. and collect the info (They will be exchange between processes during the F.A.)
-    columns_for_fa = ['RA', 'DEC', 'TARGETID', 'DESI_TARGET', 'SUBPRIORITY', 'OBSCONDITIONS', 'NUMOBS_MORE', 'NUMOBS_INIT']
+    columns_for_fa = ['RA', 'DEC', 'TARGETID', 'DESI_TARGET', 'SUBPRIORITY', 'OBSCONDITIONS', 'NUMOBS_MORE']
 
     # Let's do the F.A.:
     apply_fiber_assignment(cutsky, tiles, npasses, opts_for_fa, columns_for_fa, mpicomm, use_sky_targets=use_sky_targets)
