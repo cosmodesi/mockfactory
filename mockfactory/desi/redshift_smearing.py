@@ -10,7 +10,7 @@ from mockfactory import RVS2DRedshiftSmearing
 logger = logging.getLogger('Redshift Smearing')
 
 
-def RedshiftSmearingRVS(tracer = 'QSO',fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')):
+def RedshiftSmearingRVS(tracer='QSO', fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')):
     """
     Return redshifts ``z``, list of continuous random variates for ``z``  
     (QSOs are Laplace and Gaussian, ELGs and BGS are Lorentzian, LRGs are Gaussian)
@@ -44,19 +44,18 @@ def RedshiftSmearingRVS(tracer = 'QSO',fn=('data/qso_redshift_smearing_sv1.ecsv'
     return np.asarray(table['mean_z']), [rvs_nongaussian, rvs_gaussian], [laz, 1. - laz], dztransform
 
 
-def tracerRedshiftSmearing(tracer='QSO',fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')):
+def TracerRedshiftSmearing(tracer='QSO', fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')):
     """
     Return :class:`RVS2DRedshiftSmearing` instance given input tabulate file of redshift errors.
     Redshift errors can be sampled through: ``dz = rs.sample(z, seed=42)``.
     """
-    z, rvs, weights, dztransform = RedshiftSmearingRVS(tracer=tracer,fn=fn)
+    z, rvs, weights, dztransform = RedshiftSmearingRVS(tracer=tracer, fn=fn)
     if tracer == 'QSO':
         dzscale = 5e3
     elif (tracer == 'ELG')|(tracer == 'BGS'):
         dzscale = 150
     elif tracer == 'LRG':
         dzscale = 200
-    #import pdb;pdb.set_trace()
     return RVS2DRedshiftSmearing.average([RVS2DRedshiftSmearing(z, rv, dzsize=10000, dzscale=dzscale, dztransform=dztransform) for rv in rvs], weights=weights)
     
 
@@ -71,7 +70,7 @@ def RedshiftSmearing(tracer='QSO', fn=None):
             import mockfactory.desi
             dir = os.path.dirname(mockfactory.desi.__file__)
             fn  = os.path.join(dir, 'data/{}_redshift_smearing_sv1.ecsv'.format(tracer))
-        return tracerRedshiftSmearing(tracer=tracer,fn=fn)
+        return TracerRedshiftSmearing(tracer=tracer, fn=fn)
 
     elif tracer == 'QSO':
         if fn is None:
@@ -79,10 +78,10 @@ def RedshiftSmearing(tracer='QSO', fn=None):
             import mockfactory.desi
             dir = os.path.dirname(mockfactory.desi.__file__)
             fn = (os.path.join(dir, 'data/qso_redshift_smearing_sv1.ecsv'), os.path.join(dir, 'data/qso_redshift_smearing_sv3.ecsv'))
-        return tracerRedshiftSmearing(fn=fn)
+        return TracerRedshiftSmearing(fn=fn)
 
     else:
-        raise ValueError(f'{tracer} redshift smearing do not exists')
+        raise ValueError(f'{tracer} redshift smearing does not exists')
 
 
 if __name__ == '__main__':
@@ -111,10 +110,10 @@ if __name__ == '__main__':
         fn = ('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')
     else:
         fn  = 'data/{}_redshift_smearing_sv1.ecsv'.format(tracer)
-    rs = tracerRedshiftSmearing(tracer=tracer,fn=fn)
+    rs = TracerRedshiftSmearing(tracer=tracer, fn=fn)
 
     # Load random variates, to get pdf to compare to
-    z, rvs, weights, dztransform = RedshiftSmearingRVS(tracer=tracer,fn=fn)
+    z, rvs, weights, dztransform = RedshiftSmearingRVS(tracer=tracer, fn=fn)
 
     # z slices where to plot distributions
     lz = np.linspace(z[0], z[-1], 15)
@@ -141,6 +140,9 @@ if __name__ == '__main__':
             pdf += alpha * sum(weight[iz + 1] * rv[iz + 1].pdf(ldz) for rv, weight in zip(rvs, weights))
         ax.plot(dztransform(zz, ldz), constants.c / 1e3 * (1. + zz) * pdf, color='r')
         ax.set_xlabel('$dz$')
+        ax.set_xlim(dztransform(zz, -dzscale),dztransform(zz, dzscale))
+    plt.savefig('{}_dz'.format(tracer))
+    plt.close()
 
-    if rs.mpicomm.rank == 0:
-        plt.show()
+    #if rs.mpicomm.rank == 0:
+    #    plt.show()
