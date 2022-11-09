@@ -10,9 +10,10 @@ from mockfactory import RVS2DRedshiftSmearing
 logger = logging.getLogger('Redshift Smearing')
 
 
-def QSORedshiftSmearingRVS(fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')):
+def RedshiftSmearingRVS(tracer='QSO', fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')):
     """
-    Return redshifts ``z``, list of continuous random variates (Laplace and Gaussian) for ``z``,
+    Return redshifts ``z``, list of continuous random variates for ``z``  
+    (QSOs are Laplace and Gaussian, ELGs and BGS are Lorentzian, LRGs are Gaussian)
     weights, and optional ``dz`` transform, given input tabulated file(s) of redshift errors.
     """
     from astropy.table import Table, vstack
@@ -27,25 +28,36 @@ def QSORedshiftSmearingRVS(fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_
             table = vstack([table[table['mean_z'] < tt['mean_z'][0]], tt])
         else:
             table = tt
-    rvs_laplace, rvs_gaussian, laz = [], [], []
+    rvs_nongaussian, rvs_gaussian, laz = [], [], []
     for iz, z in enumerate(table['mean_z']):
-        A0, x0, s0, sg, la = table['val_fit'][iz]
-        rvs_laplace.append(stats.laplace(x0, s0))
-        rvs_gaussian.append(stats.norm(x0, sg))
+        if tracer == 'QSO':
+            A0, x0, s0, sg, la = table['val_fit'][iz]
+            rvs_nongaussian.append(stats.laplace(x0, s0))
+            rvs_gaussian.append(stats.norm(x0, sg))
+        else:
+            sigma,x0, p,mu, la = table['val_fit'][iz]
+            rvs_nongaussian.append(stats.cauchy(scale=p/2, loc=mu))
+            rvs_gaussian.append(stats.norm(scale=sigma,loc=x0))
         laz.append(la)
     laz = np.array(laz)
     dztransform = lambda z, dz: dz / (constants.c / 1e3) / (1. + z)  # file units was km / s
-    return np.asarray(table['mean_z']), [rvs_laplace, rvs_gaussian], [laz, 1. - laz], dztransform
+    return np.asarray(table['mean_z']), [rvs_nongaussian, rvs_gaussian], [laz, 1. - laz], dztransform
 
 
-def QSORedshiftSmearing(fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')):
+def TracerRedshiftSmearing(tracer='QSO', fn=('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')):
     """
     Return :class:`RVS2DRedshiftSmearing` instance given input tabulate file of redshift errors.
     Redshift errors can be sampled through: ``dz = rs.sample(z, seed=42)``.
     """
-    z, rvs, weights, dztransform = QSORedshiftSmearingRVS(fn=fn)
-    return RVS2DRedshiftSmearing.average([RVS2DRedshiftSmearing(z, rv, dzsize=10000, dzscale=5e3, dztransform=dztransform) for rv in rvs], weights=weights)
-
+    z, rvs, weights, dztransform = RedshiftSmearingRVS(tracer=tracer, fn=fn)
+    if tracer == 'QSO':
+        dzscale = 5e3
+    elif (tracer == 'ELG')|(tracer == 'BGS'):
+        dzscale = 150
+    elif tracer == 'LRG':
+        dzscale = 200
+    return RVS2DRedshiftSmearing.average([RVS2DRedshiftSmearing(z, rv, dzsize=10000, dzscale=dzscale, dztransform=dztransform) for rv in rvs], weights=weights)
+    
 
 def RedshiftSmearing(tracer='QSO', fn=None):
     """
@@ -53,18 +65,23 @@ def RedshiftSmearing(tracer='QSO', fn=None):
     Redshift errors can be sampled through: ``dz = rs.sample(z, seed=42)``.
     """
     if tracer in ['BGS', 'LRG', 'ELG']:
-        raise ValueError(f'Redshift Smearing is not ready for {tracer} tracer')
+        if fn is None:
+            import os
+            import mockfactory.desi
+            dir = os.path.dirname(mockfactory.desi.__file__)
+            fn  = os.path.join(dir, 'data/{}_redshift_smearing_sv1.ecsv'.format(tracer))
+        return TracerRedshiftSmearing(tracer=tracer, fn=fn)
 
-    if tracer == 'QSO':
+    elif tracer == 'QSO':
         if fn is None:
             import os
             import mockfactory.desi
             dir = os.path.dirname(mockfactory.desi.__file__)
             fn = (os.path.join(dir, 'data/qso_redshift_smearing_sv1.ecsv'), os.path.join(dir, 'data/qso_redshift_smearing_sv3.ecsv'))
-        return QSORedshiftSmearing(fn=fn)
+        return TracerRedshiftSmearing(fn=fn)
 
     else:
-        raise ValueError(f'Redshift Smearing is not ready for {tracer} tracer')
+        raise ValueError(f'{tracer} redshift smearing does not exists')
 
 
 if __name__ == '__main__':
@@ -75,17 +92,39 @@ if __name__ == '__main__':
 
     setup_logging()
 
+    from argparse import ArgumentParser
+    def parse_args():
+        parser = ArgumentParser()
+        parser.add_argument(
+            "--tracer", help="the tracer for redshift smearing: QSO, LRG, ELG, BGS",
+            type=str, default='QSO', required=True,
+        )
+        args = None
+        args = parser.parse_args()
+        return args
+    args = parse_args()
+    tracer = args.tracer
+
     # Instantiate redshift smearing class
-    fn = ('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')
-    rs = QSORedshiftSmearing(fn=fn)
+    if tracer == 'QSO':
+        fn = ('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')
+    else:
+        fn = 'data/{}_redshift_smearing_sv1.ecsv'.format(tracer)
+    rs = TracerRedshiftSmearing(tracer=tracer, fn=fn)
 
     # Load random variates, to get pdf to compare to
-    z, rvs, weights, dztransform = QSORedshiftSmearingRVS(fn=fn)
+    z, rvs, weights, dztransform = RedshiftSmearingRVS(tracer=tracer, fn=fn)
 
     # z slices where to plot distributions
     lz = np.linspace(z[0], z[-1], 15)
     # Tabulated dz where to evaluate pdf
-    ldz = np.linspace(-5e4, 5e4, 1000)
+    if tracer == 'QSO':
+        dzscale = 5e3
+    elif (tracer == 'ELG')|(tracer == 'BGS'):
+        dzscale = 150
+    elif tracer == 'LRG':
+        dzscale = 200
+    ldz = np.linspace(-dzscale, dzscale, 1000)
 
     fig, lax = plt.subplots(3, 5, figsize=(20, 10))
     lax = lax.flatten()
@@ -101,5 +140,7 @@ if __name__ == '__main__':
             pdf += alpha * sum(weight[iz + 1] * rv[iz + 1].pdf(ldz) for rv, weight in zip(rvs, weights))
         ax.plot(dztransform(zz, ldz), constants.c / 1e3 * (1. + zz) * pdf, color='r')
         ax.set_xlabel('$dz$')
+        ax.set_xlim(dztransform(zz, -dzscale),dztransform(zz, dzscale))
+
     if rs.mpicomm.rank == 0:
         plt.show()
