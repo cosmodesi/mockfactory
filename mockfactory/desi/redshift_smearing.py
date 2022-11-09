@@ -141,8 +141,6 @@ if __name__ == '__main__':
         ax.plot(dztransform(zz, ldz), constants.c / 1e3 * (1. + zz) * pdf, color='r')
         ax.set_xlabel('$dz$')
         ax.set_xlim(dztransform(zz, -dzscale),dztransform(zz, dzscale))
-    plt.savefig('{}_dz'.format(tracer))
-    plt.close()
 
-    #if rs.mpicomm.rank == 0:
-    #    plt.show()
+    if rs.mpicomm.rank == 0:
+        plt.show()
