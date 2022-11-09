@@ -96,8 +96,8 @@ if __name__ == '__main__':
     def parse_args():
         parser = ArgumentParser()
         parser.add_argument(
-            "--tracer",help="the tracer for redshift smearing: QSO, LRG, ELG, BGS",
-            type=str,default='QSO',required=True,
+            "--tracer", help="the tracer for redshift smearing: QSO, LRG, ELG, BGS",
+            type=str, default='QSO', required=True,
         )
         args = None
         args = parser.parse_args()
@@ -109,7 +109,7 @@ if __name__ == '__main__':
     if tracer == 'QSO':
         fn = ('data/qso_redshift_smearing_sv1.ecsv', 'data/qso_redshift_smearing_sv3.ecsv')
     else:
-        fn  = 'data/{}_redshift_smearing_sv1.ecsv'.format(tracer)
+        fn = 'data/{}_redshift_smearing_sv1.ecsv'.format(tracer)
     rs = TracerRedshiftSmearing(tracer=tracer, fn=fn)
 
     # Load random variates, to get pdf to compare to
