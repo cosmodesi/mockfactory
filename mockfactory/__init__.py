@@ -6,4 +6,4 @@ from .make_survey import (EuclideanIsometry, box_to_cutsky, cutsky_to_box, Dista
                           MaskCollection, UniformRadialMask, TabulatedRadialMask,
                           UniformAngularMask, MangleAngularMask, HealpixAngularMask,
                           TabulatedPDF2DRedshiftSmearing, RVS2DRedshiftSmearing)
-from .utils import setup_logging
+from .utils import cartesian_to_sky, sky_to_cartesian, setup_logging

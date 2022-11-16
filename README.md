@@ -1,7 +1,7 @@
 # mockfactory
 
 **mockfactory** is a MPI-parallel Python toolkit to generate Gaussian and lognormal mocks and apply cut-sky geometry to box galaxy mocks.
-Its main purpose is to study geometry effects on the power spectrum. 
+Its main purpose is to study geometry effects on the power spectrum.
 
 ![My image](https://github.com/echaussidon/mockfactory/blob/main/remap.png)
 
@@ -115,3 +115,5 @@ and mpi helper functions.
 [cuboid_remap](https://github.com/duncandc/cuboid_remap) by Duncan Campbell, based on [Jordan Carlson and Martin White's algorithm](https://arxiv.org/abs/1003.3178).
 Edmond Chaussidon for box-to-cutsky debugging and DESI cutsky script.
 Antoine Rocher for DESI SV3 cutsky script and debugging.
+Marie Laplace and Christophe Yèche for implementation of DESI QSO redshift smearing.
+Jiaxi Yu for implementation of DESI ELG, LRG and BGS redshift smearing.

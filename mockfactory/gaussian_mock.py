@@ -50,6 +50,7 @@ def _transform_rslab(rslab, boxsize):
     toret = []
     for ii, rr in enumerate(rslab):
         mask = rr < 0.
+        rr = rr.copy()
         rr[mask] += boxsize[ii]
         toret.append(rr)
     return toret
