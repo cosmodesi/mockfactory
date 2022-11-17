@@ -1902,7 +1902,7 @@ class Base2DRedshiftSmearing(BaseClass):
             weights = np.asarray(weights, dtype='f8')
         weights = weights / np.sum(weights, axis=0)
         new = others[0].copy()
-        for other in others:
+        for i, other in enumerate(others):
             if not np.allclose(other.dz, new.dz):
                 raise ValueError('Input redshift smearing pdfs must have same support to be averaged')
             # Remove first / end points (typically 0, 1) to avoid potential warning with infs in _support_transform
