@@ -55,8 +55,12 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None):
             # need to use truncated cauchy (utils.trunccauchy) (range=[a, b]) instead stats.cauchy
             # do not use scipy.stats.truncnorm (strange behavior and do not work here
             # cannot use scale and loc.. --> sc and lo instead :)
-            """ TO DO HERE by Jiaxi --> can split ELG and BGS if they not have the same range"""
-            trunc = 150
+            # trunc is empirically decided by the distribution of repeat observation
+            # for SV1, trunc is 150 km/s for ELG and BGS
+            if tracer == 'ELG':
+                trunc = 150
+            else:
+                trunc = 150
             rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc).freeze(sc=p / 2, lo=mu))
             rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc).freeze(sc=sigma, lo=x0))
         laz.append(la)
