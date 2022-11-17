@@ -310,7 +310,8 @@ def _extract_info_assignment(asgn, verbose=False):
         tdata = asgn.tile_location_target(t)
         avail = asgn.targets_avail().tile_data(t)
 
-        if len(tdata) > 0:
+        # check if there is at least one science observed target
+        if np.sum([tgs.get(tdata[x]).type & 2**0 != 0 for x in tdata.keys()]) > 0:
             # Only Collect science targets (ie) FA_TYPE & 2**0 != 0
             # Collect assign targets
             tg_assign_tmp = np.concatenate([np.array([[tdata[x], tgs.get(tdata[x]).type, fibers[x]]]) for x in tdata.keys() if (tgs.get(tdata[x]).type & 2**0) != 0])
@@ -337,10 +338,14 @@ def _extract_info_assignment(asgn, verbose=False):
 
             if verbose: logger.info(f'Tile: {t}, Assign: {tg_assign_tmp.shape}, Avail: {tg_avail_tmp.shape}, Ratio: {np.isin(tg_avail_tmp[:, 1], tg_assign_tmp[:, 2]).sum() / tg_avail_tmp[:, 1].size}')
 
-    tg_assign, tg_avail = np.concatenate(tg_assign), np.concatenate(tg_avail)
+    if tg_assign == []:
+        tg_assign = {'TARGETID': np.array([]), 'FA_TYPE': np.array([]), 'FIBER': np.array([])}
+        tg_avail = {'TARGETID': np.array([]), 'FIBER': np.array([])}
+    else:
+        tg_assign, tg_avail = np.concatenate(tg_assign), np.concatenate(tg_avail)
 
-    tg_assign = {'TARGETID': tg_assign[:, 0], 'FA_TYPE': tg_assign[:, 1], 'FIBER': tg_assign[:, 2]}
-    tg_avail = {'TARGETID': tg_avail[:, 0], 'FIBER': tg_avail[:, 1]}
+        tg_assign = {'TARGETID': tg_assign[:, 0], 'FA_TYPE': tg_assign[:, 1], 'FIBER': tg_assign[:, 2]}
+        tg_avail = {'TARGETID': tg_avail[:, 0], 'FIBER': tg_avail[:, 1]}
 
     return tg_assign, tg_avail
 
