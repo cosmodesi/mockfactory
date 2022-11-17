@@ -38,6 +38,7 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None):
             table = vstack([table[table['mean_z'] < tt['mean_z'][0]], tt])
         else:
             table = tt
+
     rvs_nongaussian, rvs_gaussian, laz = [], [], []
     for iz, z in enumerate(table['mean_z']):
         if tracer == 'QSO':
@@ -45,20 +46,26 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None):
             s0, sg = s0 / np.sqrt(2), sg / np.sqrt(2)
             rvs_nongaussian.append(stats.laplace(x0, s0))
             rvs_gaussian.append(stats.norm(x0, sg))
-        else:
+        elif tracer == 'LRG':
             sigma, x0, p, mu, la = table['val_fit'][iz]
             rvs_nongaussian.append(stats.cauchy(scale=p / 2, loc=mu))
             rvs_gaussian.append(stats.norm(scale=sigma, loc=x0))
+        elif tracer in ['ELG', 'BGS']:
+            sigma, x0, p, mu, la = table['val_fit'][iz]
+            # need to use truncated cauchy (utils.trunccauchy) (range=[a, b]) instead stats.cauchy
+            # do not use scipy.stats.truncnorm (strange behavior and do not work here
+            # cannot use scale and loc.. --> sc and lo instead :)
+            """ TO DO HERE by Jiaxi --> can split ELG and BGS if they not have the same range"""
+            trunc = 150
+            rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc).freeze(sc=p / 2, lo=mu))
+            rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc).freeze(sc=sigma, lo=x0))
         laz.append(la)
     laz = np.array(laz)
 
     if tracer == 'QSO':
-
         def dztransform(z, dz):
             return dz / (constants.c / 1e3) / (1. + z)  # file unit is dz (1 + z) c [km / s]
-
     else:
-
         def dztransform(z, dz):
             return dz / (constants.c / 1e3) * (1. + z)  # file unit is c dz / (1 + z) [km / s]
 
@@ -79,6 +86,7 @@ def TracerRedshiftSmearing(tracer='QSO', fn=None):
         dzscale = 200
     else:
         raise ValueError(f'{tracer} redshift smearing does not exist')
+
     return RVS2DRedshiftSmearing.average([RVS2DRedshiftSmearing(z, rv, dzsize=10000, dzscale=dzscale, dztransform=dztransform) for rv in rvs], weights=weights)
 
 
@@ -88,37 +96,32 @@ if __name__ == '__main__':
     from matplotlib import pyplot as plt
     from mockfactory import setup_logging
 
-    setup_logging()
+    def collect_argparser():
+        parser = ArgumentParser(description="Load and display the redshift smearing for args.tracer")
+        parser.add_argument("--tracer", type=str, required=True, default='QSO',
+                            help="the tracer for redshift smearing: QSO, LRG, ELG, BGS")
+        return parser.parse_args()
 
-    def parse_args():
-        parser = ArgumentParser()
-        parser.add_argument(
-            "--tracer", help="the tracer for redshift smearing: QSO, LRG, ELG, BGS",
-            type=str, default='QSO', required=True,
-        )
-        args = None
-        args = parser.parse_args()
-        return args
-    args = parse_args()
-    tracer = args.tracer
+    setup_logging()
+    args = collect_argparser()
 
     # Instantiate redshift smearing class
-    rs = TracerRedshiftSmearing(tracer=tracer)
+    rs = TracerRedshiftSmearing(tracer=args.tracer)
 
     # Load random variates, to get pdf to compare to
-    z, rvs, weights, dztransform = TracerRedshiftSmearingRVS(tracer=tracer)
+    z, rvs, weights, dztransform = TracerRedshiftSmearingRVS(tracer=args.tracer)
 
     # z slices where to plot distributions
     lz = np.linspace(z[0], z[-1], 15)
     # Tabulated dz where to evaluate pdf
-    if tracer == 'QSO':
+    if args.tracer == 'QSO':
         dvscale = 5e3
-    elif tracer in ['ELG', 'BGS']:
+    elif args.tracer in ['ELG', 'BGS']:
         dvscale = 150
-    elif tracer == 'LRG':
+    elif args.tracer == 'LRG':
         dvscale = 200
 
-    #unit = 'dz'
+    # unit = 'dz'
     unit = 'dv [km/s]'
 
     fig, lax = plt.subplots(3, 5, figsize=(20, 10))
@@ -151,4 +154,6 @@ if __name__ == '__main__':
         ax.set_xlim(xmin, xmax)
 
     if rs.mpicomm.rank == 0:
+        plt.tight_layout()
+        plt.savefig('test.png')
         plt.show()

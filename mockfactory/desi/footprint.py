@@ -16,7 +16,8 @@ except KeyError:
 
 
 def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', survey='main',
-                         tiles_fn=os.path.join(redux_path, '{redux}/tiles-{redux}.csv'), return_tile_index=False):
+                         tiles_fn=os.path.join(redux_path, '{redux}/tiles-{redux}.csv'),
+                         return_tile_index=False):
     """
     Return mask for the requested DESI footprint.
 
@@ -46,6 +47,9 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
 
     tiles_fn : string
         Template path to csv or fits file of tiles.
+
+    return_tile_index : bool
+        if true also the tile id for each entry (ra, dec). If npasses is None, it gives only one tile id, otherwise it gives all the potential tile id for each targets.
 
     Returns
     -------
@@ -81,9 +85,13 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
         tiles['RA'], tiles['DEC'] = tiles['TILERA'], tiles['TILEDEC']
 
     if npasses is not None:
-        return np.array([len(tt) >= npasses for tt in desimodel.footprint.find_tiles_over_point(tiles, ra, dec)], dtype='?')
+        tile_id = desimodel.footprint.find_tiles_over_point(tiles, ra, dec)
+        if return_tile_index:
+            return np.array([len(tt) >= npasses for tt in tile_id], dtype='?'), tile_id
+        else:
+            return np.array([len(tt) >= npasses for tt in tile_id], dtype='?')
 
-    return desimodel.footprint.is_point_in_desi(tiles, ra, dec)
+    return desimodel.footprint.is_point_in_desi(tiles, ra, dec, return_tile_index=return_tile_index)
 
 
 if __name__ == '__main__':
@@ -104,3 +112,6 @@ if __name__ == '__main__':
             is_in_desi = is_in_desi_footprint(ra, dec, release=release, npasses=npasses, program='dark')
             logger.info(f'Mask build for {ra.size} objects in {time.time() - t0:2.2f}s')
             logger.info(f'There are {is_in_desi.sum() / is_in_desi.size:2.2%} objects in {release} with {npasses} passes')
+
+    # You can also request the list of tiles:
+    is_in_footprint, tile_id = is_in_desi_footprint(ra, dec, release='Y1', npasses=3, program='dark', return_tile_index=True)

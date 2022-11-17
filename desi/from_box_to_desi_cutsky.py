@@ -142,9 +142,9 @@ def apply_radial_mask(cutsky, zmin=0., zmax=6., nz_filename='nz_qso_final.dat',
     mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=2, zrange=(zmin, zmax))
 
     if apply_redshift_smearing:
-        from mockfactory.desi import RedshiftSmearing
+        from mockfactory.desi import TracerRedshiftSmearing
         # Note: apply redshift smearing before the n(z) match since n(z) is what we observe (ie) containing the smearing
-        cutsky['Z'] = cutsky['Z'] + RedshiftSmearing(tracer=tracer_smearing).sample(cutsky['Z'], seed=seed + 13)
+        cutsky['Z'] = cutsky['Z'] + TracerRedshiftSmearing(tracer=tracer_smearing).sample(cutsky['Z'], seed=seed + 13)
 
     return cutsky[mask_radial(cutsky['Z'], seed=seed)]
 
