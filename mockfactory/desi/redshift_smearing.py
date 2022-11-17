@@ -88,38 +88,32 @@ if __name__ == '__main__':
     from matplotlib import pyplot as plt
     from mockfactory import setup_logging
 
+    def collect_argparser():
+        parser = ArgumentParser(description="Load and display the redshift smearing for args.tracer")
+        parser.add_argument("--tracer", type=str, required=True, default='QSO',
+                            help="the tracer for redshift smearing: QSO, LRG, ELG, BGS")
+        return parser.parse_args()
+
     setup_logging()
-
-    def parse_args():
-        parser = ArgumentParser()
-        parser.add_argument(
-            "--tracer", help="the tracer for redshift smearing: QSO, LRG, ELG, BGS",
-            type=str, default='QSO', required=True,
-        )
-        args = None
-        args = parser.parse_args()
-        return args
-
-    args = parse_args()
-    tracer = args.tracer
+    args = collect_argparser()
 
     # Instantiate redshift smearing class
-    rs = TracerRedshiftSmearing(tracer=tracer)
+    rs = TracerRedshiftSmearing(tracer=args.tracer)
 
     # Load random variates, to get pdf to compare to
-    z, rvs, weights, dztransform = TracerRedshiftSmearingRVS(tracer=tracer)
+    z, rvs, weights, dztransform = TracerRedshiftSmearingRVS(tracer=args.tracer)
 
     # z slices where to plot distributions
     lz = np.linspace(z[0], z[-1], 15)
     # Tabulated dz where to evaluate pdf
-    if tracer == 'QSO':
+    if args.tracer == 'QSO':
         dvscale = 5e3
-    elif tracer in ['ELG', 'BGS']:
+    elif args.tracer in ['ELG', 'BGS']:
         dvscale = 150
-    elif tracer == 'LRG':
+    elif args.tracer == 'LRG':
         dvscale = 200
 
-    #unit = 'dz'
+    # unit = 'dz'
     unit = 'dv [km/s]'
 
     fig, lax = plt.subplots(3, 5, figsize=(20, 10))
@@ -152,4 +146,5 @@ if __name__ == '__main__':
         ax.set_xlim(xmin, xmax)
 
     if rs.mpicomm.rank == 0:
+        plt.tight_layout()
         plt.show()
