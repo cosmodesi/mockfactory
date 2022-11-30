@@ -607,7 +607,7 @@ class ParticleCatalog(Catalog):
         self[self._velocity] = velocity
 
     def distance(self):
-        """Distance."""
+        """Distances."""
         return utils.distance(self.position)
 
     def rsd_position(self, f=1., los=None):
