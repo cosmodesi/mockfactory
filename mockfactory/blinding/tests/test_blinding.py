@@ -29,10 +29,13 @@ def test_blinding():
     cosmo_blind = get_cosmo_blind(cosmo.clone(w0_fld=-0.8, wa_fld=0.5), z=z, seed=42, params={'f': 0.05, 'fnl': 10.})
     assert 'f' in cosmo_blind._derived and 'fnl' in cosmo_blind._derived
     cosmo_blind._derived['f'] = 0.8 * f
-    cosmo_blind._derived['fnl'] = -200.
+    cosmo_blind._derived['fnl'] = 100.
     blinding = CutskyCatalogBlinding(cosmo_fid=cosmo, cosmo_blind=cosmo_blind, bias=bias, z=z)
     data_png = data.deepcopy()
     data_png['Weight'] = blinding.png(data['Position'], data_weights=data['Weight'], randoms_positions=randoms['Position'])
+    std = mpy.cstd(data_png['Weight'])
+    if data.mpicomm.rank == 0:
+        print('Standard deviation of PNG weights is {:.2f}'.format(std))
     data_rsd = data_png.deepcopy()
     data_rsd['Position'] = blinding.rsd(data_png['Position'], data_weights=data['Weight'], randoms_positions=randoms['Position'])
     data_ap, randoms_ap = data_rsd.deepcopy(), randoms.deepcopy()

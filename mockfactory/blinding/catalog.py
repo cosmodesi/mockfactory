@@ -454,8 +454,14 @@ class CutskyCatalogBlinding(BaseClass):
         return _format_output_positions(data_positions, position_type=position_type, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
 
     def png(self, data_positions, data_weights=None, randoms_positions=None, randoms_weights=None, recon='IterativeFFTReconstruction', smoothing_radius=30., **kwargs):
-        """
+        r"""
         Apply local primordial non-Gaussianity blinding, computing weights to apply scale-dependent bias on large scales.
+        The rationale is to change the real-space Fourier galaxy density contrast: :math:`b_{1} \delta(\mathbf{k})` such that it becomes
+        :math:`(b_{1} + b_{\phi} f_{NL}^{\mathrm{loc}} \alpha(k)) \delta(\mathbf{k})`.
+        The real-space Fourier density contrast :math:`\delta(\mathbf{k})` is obtained through reconstruction,
+        and we add the weight :math:`w_{NL} = b_{\phi} f_{NL}^{\mathrm{loc}} \alpha \delta` (transformed in configuration space) to each data point,
+        namely the result is ``data_weights`` (if provided, else 1) multiplied by :math:`1 + w_{NL}`.
+        (This looks fishy, though.)
 
         Parameters
         ----------
@@ -471,11 +477,11 @@ class CutskyCatalogBlinding(BaseClass):
         randoms_weights : array, default=None
             Optionally, randoms weights.
 
-        recon : str, pyrecon.BaseReconstruction, default='IterativeFFTReconstruction'
+        recon : string, pyrecon.BaseReconstruction, default='IterativeFFTReconstruction'
             Name of reconstruction algorithm, or (already run) reconstruction instance,
             in which case input ``randoms_positions``, ``randoms_weights`` are ignored.
 
-        smoothing_radius : float, default=30.
+        smoothing_radius : float, default=40.
             Smoothing radius for reconstruction. Larger than for RSD blinding, as we only need large scale RSD to be resolved.
 
         kwargs : dict
@@ -509,9 +515,10 @@ class CutskyCatalogBlinding(BaseClass):
         shifted_positions = data_positions - shifts
         recon.assign_data(shifted_positions, weights=data_weights, position_type='pos', mpiroot=None)
         recon.assign_randoms(randoms_positions, weights=randoms_weights, position_type='pos', mpiroot=None)
-        recon.set_density_contrast(smoothing_radius=smoothing_radius)
+        recon.set_density_contrast(smoothing_radius=smoothing_radius)  # divides by bias
         mesh = recon.mesh_delta.r2c()
-        bfnl = 2 * 1.686 * (recon.bias - 1.) * _get_from_cosmo(self.cosmo_blind, 'fnl')
+        b1 = recon.bias
+        bfnl = 2 * 1.686 * (b1 - 1.) * _get_from_cosmo(self.cosmo_blind, 'fnl')
 
         pk_prim = self.cosmo_fid.get_primordial().pk_interpolator(mode='scalar')
         pk_lin = self.cosmo_fid.get_fourier().pk_interpolator(of='theta_cb').to_1d(z=self.z)
@@ -524,8 +531,9 @@ class CutskyCatalogBlinding(BaseClass):
             k = sum(kk.real**2 for kk in kslab)**0.5
             nonzero = k != 0.
             slab[nonzero] *= bfnl / Tk(k[nonzero])
+            slab[~nonzero] = 0.
 
-        weights = 1. + recon._readout(mesh.c2r(), data_positions)
-        if data_weights is not None:
-            weights *= data_weights
+        weights = recon._readout(mesh.c2r(), shifted_positions)
+        #weights = (1. if data_weights is None else data_weights) + weights
+        weights = (1. if data_weights is None else data_weights) * (1. + weights)
         return _format_output_weights(weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
