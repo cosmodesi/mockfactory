@@ -24,40 +24,61 @@ def test_blinding():
 
     data = RandomBoxCatalog(nbar=nbar, boxsize=boxsize, boxcenter=boxcenter, seed=seed)
     data['Weight'] = mock.readout(data['Position'], field='delta', resampler='tsc', compensate=True) + 1.
-    randoms = RandomBoxCatalog(nbar=5. * nbar, boxsize=boxsize, boxcenter=boxcenter, seed=seed)
-
+    randoms = RandomBoxCatalog(nbar=10. * nbar, boxsize=boxsize, boxcenter=boxcenter, seed=seed)
+    randoms['Weight'] = randoms.ones()
     cosmo_blind = get_cosmo_blind(cosmo.clone(w0_fld=-0.8, wa_fld=0.5), z=z, seed=42, params={'f': 0.05, 'fnl': 10.})
     assert 'f' in cosmo_blind._derived and 'fnl' in cosmo_blind._derived
     cosmo_blind._derived['f'] = 0.8 * f
     cosmo_blind._derived['fnl'] = 100.
     blinding = CutskyCatalogBlinding(cosmo_fid=cosmo, cosmo_blind=cosmo_blind, bias=bias, z=z)
     data_png = data.deepcopy()
-    data_png['Weight'] = blinding.png(data['Position'], data_weights=data['Weight'], randoms_positions=randoms['Position'])
-    std = mpy.cstd(data_png['Weight'])
-    if data.mpicomm.rank == 0:
-        print('Standard deviation of PNG weights is {:.2f}'.format(std))
+    randoms_png = randoms.deepcopy()
+    method = 'randoms_weights'
+    result = blinding.png(data['Position'], data_weights=data['Weight'], randoms_positions=randoms['Position'], method=method)
+    if 'data' in method: catalog = data_png
+    else: catalog = randoms_png
+    if 'weights' in method:
+        tmp = result / catalog['Weight']
+        catalog['Weight'] = result
+        cstd, cmin, cmax = mpy.cstd(tmp), mpy.cmin(tmp), mpy.cmax(tmp)
+        cweights = mpy.gather(tmp)
+        if data.mpicomm.rank == 0:
+            from matplotlib import pyplot as plt
+            plt.hist(cweights)
+            plt.show()
+            print('Standard deviation of PNG weights is {:.2f} ({:.2f} - {:.2f})'.format(cstd, cmin, cmax))
+    elif 'positions' in method:
+        tmp = result - catalog['Position']
+        catalog['Position'] = result
+        cstd, cmin, cmax = mpy.cstd(tmp, axis=0), mpy.cmin(tmp, axis=0), mpy.cmax(tmp, axis=0)
+        cshifts = mpy.gather(np.sum(tmp**2, axis=-1)**0.5)
+        if data.mpicomm.rank == 0:
+            from matplotlib import pyplot as plt
+            plt.hist(cshifts)
+            plt.show()
+            print('Standard deviation of PNG weights is {} ({} - {})'.format(cstd, cmin, cmax))
+
     data_rsd = data_png.deepcopy()
-    data_rsd['Position'] = blinding.rsd(data_png['Position'], data_weights=data['Weight'], randoms_positions=randoms['Position'])
-    data_ap, randoms_ap = data_rsd.deepcopy(), randoms.deepcopy()
+    data_rsd['Position'] = blinding.rsd(data_png['Position'], data_weights=data_png['Weight'], randoms_positions=randoms_png['Position'], randoms_weights=randoms_png['Weight'])
+    data_ap, randoms_ap = data_rsd.deepcopy(), randoms_png.deepcopy()
     for catalog in [data_ap, randoms_ap]:
         catalog['Position'] = blinding.ap(catalog['Position'])
-
     ells = (0, 2)
     kwargs = dict(edges={'step': 0.01}, los=None, ells=ells, boxsize=2. * boxsize, boxcenter=boxcenter, nmesh=nmesh,
                   resampler='tsc', interlacing=2, position_type='pos', mpicomm=data.mpicomm)
     poles = CatalogFFTPower(data_positions1=data['Position'], data_weights1=data['Weight'], randoms_positions1=randoms['Position'], **kwargs).poles
-    poles_png = CatalogFFTPower(data_positions1=data_png['Position'], data_weights1=data_png['Weight'], randoms_positions1=randoms['Position'], **kwargs).poles
-    poles_rsd = CatalogFFTPower(data_positions1=data_rsd['Position'], data_weights1=data_rsd['Weight'], randoms_positions1=randoms['Position'], **kwargs).poles
-    poles_ap = CatalogFFTPower(data_positions1=data_ap['Position'], data_weights1=data_ap['Weight'], randoms_positions1=randoms_ap['Position'], **kwargs).poles
+    poles_png = CatalogFFTPower(data_positions1=data_png['Position'], data_weights1=data_png['Weight'], randoms_positions1=randoms_png['Position'], randoms_weights1=randoms_png['Weight'], **kwargs).poles
+    poles_rsd = CatalogFFTPower(data_positions1=data_rsd['Position'], data_weights1=data_rsd['Weight'], randoms_positions1=randoms_png['Position'], randoms_weights1=randoms_png['Weight'], **kwargs).poles
+    poles_ap = CatalogFFTPower(data_positions1=data_ap['Position'], data_weights1=data_ap['Weight'], randoms_positions1=randoms_ap['Position'], randoms_weights1=randoms_ap['Weight'], **kwargs).poles
     figsize = (12, 3)
     from matplotlib import pyplot as plt
     fig, lax = plt.subplots(1, len(ells), sharex=False, sharey=False, figsize=figsize, squeeze=True)
     for ax, ell in zip(lax, ells):
         ax.set_title(r'$\ell = {:d}$'.format(ell))
-        ax.plot(poles.k, poles.k * poles(ell=ell), label='fid')
-        ax.plot(poles_png.k, poles_png.k * poles_png(ell=ell), label='+ png')
-        ax.plot(poles_rsd.k, poles_rsd.k * poles_rsd(ell=ell), label='+ rsd')
-        ax.plot(poles_ap.k, poles_ap.k * poles_ap(ell=ell), label='+ ap')
+        ax.plot(poles.k, poles.k * poles(ell=ell, complex=False), label='fid')
+        ax.plot(poles_png.k, poles_png.k * poles_png(ell=ell, complex=False), label='+ png')
+        ax.plot(poles_rsd.k, poles_rsd.k * poles_rsd(ell=ell, complex=False), label='+ rsd')
+        ax.plot(poles_ap.k, poles_ap.k * poles_ap(ell=ell, complex=False), label='+ ap')
         ax.set_ylabel(r'$k P_{\ell}(k)$ [$(\mathrm{Mpc}/h)^{2}$]')
         ax.set_xlabel(r'$k$ [$h/\mathrm{Mpc}$]')
         ax.legend()

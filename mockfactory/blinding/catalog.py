@@ -235,7 +235,7 @@ def _format_output_positions(positions, position_type='pos', cosmo=None, mpicomm
             toret = toret.T
     return toret
 
-
+OPT='-fopenmp -pedantic -Wall -Wextra -O3 -std=c99'
 def _format_output_weights(weights, mpicomm=None, mpiroot=None):
     # Transform output weights to input format (position_type and gathered or not)
     toret = weights
@@ -255,15 +255,15 @@ class CutskyCatalogBlinding(BaseClass):
         # position_type = 'pos' ((N, 3) Cartesian positions), 'xyz' ((3, N) Cartesian positions), 'rdd' (RA, DEC, distance), 'rdz' (RA, DEC, Z)
         blinding = CutskyCatalogBlinding(cosmo_fid=cosmo_fid, cosmo_blind=cosmo_blind, bias=1.4, z=1.5, position_type='rdz')
         # data_png_weights are data_weights modified to include (local) PNG blinding
-        data_png_weights = blinding.png(data_positions, data_weights=data_weights, randoms_positions=randoms_positions, randoms_weights=randoms_weights)
-        # For RSD blinding use data_weights instead of data_png_weights to avoid coupling between png and rsd blinding
+        randoms_png_weights = blinding.png(data_positions, data_weights=data_weights, randoms_positions=randoms_positions, randoms_weights=randoms_weights)
+        # For RSD blinding use randoms_weights instead of randoms_png_weights to avoid coupling between png and rsd blinding
         # (though this should not be too problematic if blinded fnl is not unrealistic)
         data_positions = blinding.rsd(data_positions, data_weights=data_weights, randoms_positions=randoms_positions, randoms_weights=randoms_weights)
         # Alcock-Paczynski-type blinding
         data_positions, randoms_positions = blinding.ap(data_positions), blinding.ap(randoms_positions)
         # Blinded output is:
-        # - data: data_positions, data_png_weights
-        # - randoms: randoms_positions, randoms_weights
+        # - data: data_positions, data_weights
+        # - randoms: randoms_positions, randoms_png_weights
 
     Note
     ----
@@ -408,7 +408,7 @@ class CutskyCatalogBlinding(BaseClass):
         data_weights : array, default=None
             Optionally, data weights.
 
-        randoms_positions : list, array.
+        randoms_positions : list, array, default=None.
             Optionally, randoms positions, of shape (N, 3) or (3, N) depending on :attr:`position_type`.
 
         randoms_weights : array, default=None
@@ -453,15 +453,15 @@ class CutskyCatalogBlinding(BaseClass):
         data_positions = data_positions + (f_blind / recon.f - 1.) * shifts
         return _format_output_positions(data_positions, position_type=position_type, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
 
-    def png(self, data_positions, data_weights=None, randoms_positions=None, randoms_weights=None, recon='IterativeFFTReconstruction', smoothing_radius=30., **kwargs):
+    def png(self, data_positions, data_weights=None, randoms_positions=None, randoms_weights=None, method='randoms_weights',
+            recon='IterativeFFTReconstruction', smoothing_radius=30., **kwargs):
         r"""
         Apply local primordial non-Gaussianity blinding, computing weights to apply scale-dependent bias on large scales.
         The rationale is to change the real-space Fourier galaxy density contrast: :math:`b_{1} \delta(\mathbf{k})` such that it becomes
         :math:`(b_{1} + b_{\phi} f_{NL}^{\mathrm{loc}} \alpha(k)) \delta(\mathbf{k})`.
         The real-space Fourier density contrast :math:`\delta(\mathbf{k})` is obtained through reconstruction,
-        and we add the weight :math:`w_{NL} = b_{\phi} f_{NL}^{\mathrm{loc}} \alpha \delta` (transformed in configuration space) to each data point,
-        namely the result is ``data_weights`` (if provided, else 1) multiplied by :math:`1 + w_{NL}`.
-        (This looks fishy, though.)
+        and we add the weight :math:`w_{NL} = - b_{\phi} f_{NL}^{\mathrm{loc}} \alpha \delta` (transformed in configuration space) to each *random* point,
+        namely the result is ``randoms_weights`` (if provided, else 1) multiplied by :math:`1 + w_{NL}`.
 
         Parameters
         ----------
@@ -471,7 +471,7 @@ class CutskyCatalogBlinding(BaseClass):
         data_weights : array, default=None
             Optionally, data weights.
 
-        randoms_positions : list, array.
+        randoms_positions : list, array, default=None.
             Optionally, randoms positions, of shape (N, 3) or (3, N) depending on :attr:`position_type`.
 
         randoms_weights : array, default=None
@@ -490,9 +490,12 @@ class CutskyCatalogBlinding(BaseClass):
 
         Returns
         -------
-        data_weights : array
-            Data weights, including blinded PNG signal.
+        randoms_weights : array
+            Randoms weights, including blinded PNG signal.
         """
+        available_methods = ['data_weights', 'randoms_weights', 'data_positions', 'randoms_positions']
+        if method not in available_methods:
+            raise ValueError('blinding method {} must be one of {}'.format(method, available_methods))
         position_type = kwargs.pop('position_type', self.position_type)
         mpiroot = kwargs.pop('mpiroot', self.mpiroot)
         data_positions = _format_positions(data_positions, position_type=position_type, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
@@ -514,7 +517,8 @@ class CutskyCatalogBlinding(BaseClass):
         shifts = recon.read_shifts(data_positions, position_type='pos', mpiroot=None, field='rsd')
         shifted_positions = data_positions - shifts
         recon.assign_data(shifted_positions, weights=data_weights, position_type='pos', mpiroot=None)
-        recon.assign_randoms(randoms_positions, weights=randoms_weights, position_type='pos', mpiroot=None)
+        if randoms_positions is not None:
+            recon.assign_randoms(randoms_positions, weights=randoms_weights, position_type='pos', mpiroot=None)
         recon.set_density_contrast(smoothing_radius=smoothing_radius)  # divides by bias
         mesh = recon.mesh_delta.r2c()
         b1 = recon.bias
@@ -530,10 +534,30 @@ class CutskyCatalogBlinding(BaseClass):
         for kslab, slab in zip(mesh.slabs.x, mesh.slabs):
             k = sum(kk.real**2 for kk in kslab)**0.5
             nonzero = k != 0.
+            # minus because applied to randoms
             slab[nonzero] *= bfnl / Tk(k[nonzero])
             slab[~nonzero] = 0.
-
-        weights = recon._readout(mesh.c2r(), shifted_positions)
-        #weights = (1. if data_weights is None else data_weights) + weights
-        weights = (1. if data_weights is None else data_weights) * (1. + weights)
-        return _format_output_weights(weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
+        if 'weights' in method:
+            mesh = mesh.c2r()
+            if 'data' in method:
+                weights = recon._readout(mesh, data_positions)
+                weights = (1. if data_weights is None else data_weights) * (1. + weights)
+            elif 'randoms' in method:
+                weights = recon._readout(mesh, randoms_positions)
+                weights = (1. if randoms_weights is None else randoms_weights) * (1. - weights)
+            return _format_output_weights(weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
+        else:
+            positions = data_positions if 'data' in method else randoms_positions
+            disps = []
+            for iaxis in range(mesh.ndim):
+                psi = mesh.copy()
+                for kslab, slab in zip(psi.slabs.x, psi.slabs):
+                    k2 = sum(kk**2 for kk in kslab)
+                    k2[k2 == 0.] = 1.  # avoid dividing by zero
+                    slab[...] *= 1j * kslab[iaxis] / k2
+                psi = psi.c2r()
+                disps.append(recon._readout(psi, positions))
+            shifts = np.column_stack(disps)
+            shifts -= mpy.cmean(shifts)
+            positions = positions + (shifts if 'data' in method else - shifts)
+            return _format_output_weights(positions, mpicomm=self.mpicomm, mpiroot=mpiroot)
