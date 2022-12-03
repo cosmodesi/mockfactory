@@ -1,6 +1,6 @@
 import os
 import sys
-from setuptools import setup
+from setuptools import setup, find_packages
 
 
 package_basename = 'mockfactory'
@@ -18,4 +18,4 @@ setup(name=package_basename,
       url='http://github.com/cosmodesi/mockfactory',
       install_requires=['numpy', 'scipy', 'pmesh', 'mpytools @ git+https://github.com/adematti/mpytools'],
       package_data={package_basename + '.desi': ['data/*.ecsv']},
-      packages=[package_basename, package_basename + '.desi'])
+      packages=find_packages())
