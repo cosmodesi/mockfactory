@@ -69,21 +69,23 @@ class EulerianLinearMock(BaseGaussianMock):
         else:
             # the real-space grid
             mesh_delta_rsd = self.mesh_delta_r.copy()
-            for i in range(self.ndim):
-                for j in range(i, self.ndim):
+            for iaxis in range(self.ndim):
+                for jaxis in range(iaxis, self.ndim):
                     disp_deriv_k[:] = self.mesh_delta_k[:]
-                    for kslab, slab in zip(disp_deriv_k.slabs.x, disp_deriv_k.slabs):
+                    for kslab, islab, slab in zip(disp_deriv_k.slabs.x, disp_deriv_k.slabs.i, disp_deriv_k.slabs):
                         k2 = sum(kk**2 for kk in kslab)
                         k2[k2 == 0.] = 1.  # avoid dividing by zero
-                        slab[...] *= kslab[i] * kslab[j] / k2
+                        mask = (islab[iaxis] != self.nmesh[iaxis] // 2) & (islab[jaxis] != self.nmesh[jaxis] // 2)
+                        mask |= (islab[iaxis] == self.nmesh[iaxis] // 2) & (islab[jaxis] == self.nmesh[jaxis] // 2)
+                        slab[...] *= kslab[iaxis] * kslab[jaxis] / k2 * mask
                     disp_deriv_k.c2r(out=mesh_delta_rsd)
                     for rslab, slab in zip(mesh_delta_rsd.slabs.x, mesh_delta_rsd.slabs):
                         # reslab in [0, boxsize]
                         rslab = _transform_rslab(rslab, self.boxsize)
                         rgrid = [r + o for r, o in zip(rslab, offset)]
                         r2 = np.sum(rr**2 for rr in rgrid)
-                        slab[...] *= rgrid[i] * rgrid[j] / r2
-                    factor = 1. + (i != j)
+                        slab[...] *= rgrid[iaxis] * rgrid[jaxis] / r2
+                    factor = 1. + (iaxis != jaxis)
                     if not iscallable:
                         factor *= f
                     mesh_delta_r_tot[:] += factor * mesh_delta_rsd[:]

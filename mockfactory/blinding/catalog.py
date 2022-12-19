@@ -551,13 +551,14 @@ class CutskyCatalogBlinding(BaseClass):
             disps = []
             for iaxis in range(mesh.ndim):
                 psi = mesh.copy()
-                for kslab, slab in zip(psi.slabs.x, psi.slabs):
+                for kslab, islab, slab in zip(psi.slabs.x, psi.slabs.i, psi.slabs):
                     k2 = sum(kk**2 for kk in kslab)
                     k2[k2 == 0.] = 1.  # avoid dividing by zero
-                    slab[...] *= 1j * kslab[iaxis] / k2
+                    mask = islab[iaxis] != recon.nmesh[iaxis] // 2
+                    slab[...] *= 1j * kslab[iaxis] / k2 * mask
                 psi = psi.c2r()
                 disps.append(recon._readout(psi, positions))
             shifts = np.column_stack(disps)
             shifts -= mpy.cmean(shifts)
-            positions = positions + (shifts if 'data' in method else - shifts)
+            positions = positions + (shifts if 'data' in method else -shifts)
             return _format_output_weights(positions, mpicomm=self.mpicomm, mpiroot=mpiroot)

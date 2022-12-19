@@ -29,7 +29,7 @@ def test_blinding():
     cosmo_blind = get_cosmo_blind(cosmo.clone(w0_fld=-0.8, wa_fld=0.5), z=z, seed=42, params={'f': 0.05, 'fnl': 10.})
     assert 'f' in cosmo_blind._derived and 'fnl' in cosmo_blind._derived
     cosmo_blind._derived['f'] = 0.8 * f
-    cosmo_blind._derived['fnl'] = 100.
+    cosmo_blind._derived['fnl'] = 8.
     blinding = CutskyCatalogBlinding(cosmo_fid=cosmo, cosmo_blind=cosmo_blind, bias=bias, z=z)
     data_png = data.deepcopy()
     randoms_png = randoms.deepcopy()
@@ -155,4 +155,4 @@ if __name__ == '__main__':
 
     setup_logging()
     test_blinding()
-    test_misc()
+    #test_misc()
