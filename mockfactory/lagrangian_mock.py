@@ -51,19 +51,16 @@ class LagrangianLinearMock(BaseGaussianMock):
             Whether to apply a lognormal transform to the (biased) real field, i.e. :math:`\exp{(\delta)}'
         """
         super(LagrangianLinearMock, self).set_real_delta_field(bias=bias, lognormal_transform=lognormal_transform)
-        disp_k = [self.pm.create(type='untransposedcomplex') for i in range(self.ndim)]
-        slabs = [self.mesh_delta_k.slabs.x, self.mesh_delta_k.slabs] + [d.slabs for d in disp_k]
-        for islabs in zip(*slabs):
-            kslab, delta_slab = islabs[:2]  # the k arrays and delta slab
-            # the square of the norm of k on the mesh
-            k2 = sum(kk**2 for kk in kslab)
-            mask_zero = k2 == 0.
-            k2[mask_zero] = 1.  # avoid dividing by zero
-            for i in range(self.ndim):
-                disp_slab = islabs[2 + i]
-                disp_slab[...] = 1j * kslab[i] / k2 * delta_slab[...]
-                # disp_slab[mask_zero] = 0.  # no bulk displacement
-        self.mesh_disp_r = [d.c2r() for d in disp_k]
+        self.mesh_disp_r = []
+        for iaxis in range(self.mesh_delta_k.ndim):
+            psi = self.mesh_delta_k.copy()
+            for kslab, islab, slab in zip(psi.slabs.x, psi.slabs.i, psi.slabs):
+                k2 = sum(kk**2 for kk in kslab)
+                k2[k2 == 0.] = 1.  # avoid dividing by zero
+                mask = islab[iaxis] != self.nmesh[iaxis] // 2
+                slab[...] *= 1j * kslab[iaxis] / k2 * mask
+            self.mesh_disp_r.append(psi.c2r())
+            del psi
 
     def readout(self, positions, field='delta', resampler='nnb', compensate=False):
         """
