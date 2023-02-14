@@ -50,10 +50,6 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD):
     di : dict
         Dictionary with requested columns.
     """
-    import mpytools as mpy
-    from desiutil import brick
-    from astropy import wcs
-
     if not columns:
         return {}
 
@@ -62,6 +58,27 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD):
     if not mpicomm.allreduce(size):
         return {}
     ra, dec = np.ravel(ra), np.ravel(dec)
+
+    import mpytools as mpy
+    import mpsort
+
+    def _dict_to_array(data):
+        """
+        Return dict as numpy array.
+
+        Parameters
+        ----------
+        data : dict
+            Data dictionary of name: array.
+
+        Returns
+        -------
+        array : array
+        """
+        array = [(name, data[name]) for name in data]
+        array = np.empty(array[0][1].shape[0], dtype=[(name, col.dtype, col.shape[1:]) for name, col in array])
+        for name in data: array[name] = data[name]
+        return array
 
     def _one_brick(fn, ra, dec, dtype=None, default=None):
         """Extract quantity associated to a (RA, Dec) position from a legacy imaging brick."""
@@ -80,25 +97,49 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD):
         return np.full(ra.size, default, dtype=dtype)
 
     # Load bricks class
+    from desiutil import brick
+    from astropy import wcs
     bricks = brick.Bricks()
 
-    # Create mpytools.Catalog to sort it across processes in the brick id
-    brickid_data = mpy.Catalog({'ra': ra, 'dec': dec, 'brickname': bricks.brickname(ra, dec), 'brickid': bricks.brickid(ra, dec)})
     # Create unique identification as index column
-    brickid_data['index'] = brickid_data.cindex()
-    # Copy unique identification to perform sanity check at the end
-    index = brickid_data['index']
+    cumsize = np.cumsum([0] + mpicomm.allgather(ra.size))[mpicomm.rank]
+    index = cumsize + np.arange(ra.size)
+    brickid_data = _dict_to_array({'ra': ra, 'dec': dec, 'brickname': bricks.brickname(ra, dec), 'brickid': bricks.brickid(ra, dec), 'index': index})
+
+    # Let's group particles by brickid, with ~ similar number of brickids on each rank
+    # Caution: this may produce memory unbalance between different processes
+    # hence potential memory error, which may be avoided using some criterion to rebalance load at the cost of less efficiency
+    unique_brickid, counts_brickid = np.unique(brickid_data['brickid'], return_counts=True)
+
+    # Proceed rank-by-rank to save memory
+    for irank in range(1, mpicomm.size):
+        unique_brickid_irank = mpy.sendrecv(unique_brickid, source=irank, dest=0, tag=0, mpicomm=mpicomm)
+        counts_brickid_irank = mpy.sendrecv(counts_brickid, source=irank, dest=0, tag=0, mpicomm=mpicomm)
+        if mpicomm.rank == 0:
+            unique_brickid, counts_brickid = np.concatenate([unique_brickid, unique_brickid_irank]), np.concatenate([counts_brickid, counts_brickid_irank])
+            unique_brickid, inverse = np.unique(unique_brickid, return_inverse=True)
+            counts_brickid = np.bincount(inverse, weights=counts_brickid).astype(int)
+
+    # Compute the number particles that each rank must contain after sorting
+    nbr_particles = None
+    if mpicomm.rank == 0:
+        nbr_bricks = [(irank * unique_brickid.size // mpicomm.size, (irank + 1) * unique_brickid.size // mpicomm.size) for irank in range(mpicomm.size)]
+        nbr_particles = [np.sum(counts_brickid[nbr_brick_low:nbr_brick_high], dtype='i8') for nbr_brick_low, nbr_brick_high in nbr_bricks]
+        nbr_bricks = np.diff(nbr_bricks, axis=-1)
+        logger.info(f'Number of bricks to read per rank = {np.min(nbr_bricks)} - {np.max(nbr_bricks)} (min - max).')
+
+    # Send the number of particles that each rank must contain after sorting
+    nbr_particles = mpicomm.scatter(nbr_particles, root=0)
+    assert mpicomm.allreduce(nbr_particles) == mpicomm.allreduce(brickid_data.size), 'float in bincount messes up total particle counts'
 
     # Sort data to have same number of bricks in each rank
-    brickid_data = brickid_data.csort('brickid', size='orderby_counts')
-    nbr_bricks = mpy.gather(np.unique(brickid_data['brickid']).size, mpiroot=0)
-    if mpicomm.rank == 0: logger.info(f'Number of bricks to read per rank = {np.min(nbr_bricks)} - {np.max(nbr_bricks)} (min - max).')
+    brickid_data_tmp = np.empty_like(brickid_data, shape=nbr_particles)
+    mpsort.sort(brickid_data, orderby='brickid', out=brickid_data_tmp)
+    data_tmp = {}
 
-    # Collect the brick pixel quantities in each brickname
-    data = {}
-    for brickname in np.unique(brickid_data['brickname']):
-        mask_brick = brickid_data['brickname'] == brickname
-        ra_tmp, dec_tmp = brickid_data['ra'][mask_brick], brickid_data['dec'][mask_brick]
+    for brickname in np.unique(brickid_data_tmp['brickname']):
+        mask_brick = brickid_data_tmp['brickname'] == brickname
+        ra_tmp, dec_tmp = brickid_data_tmp['ra'][mask_brick], brickid_data_tmp['dec'][mask_brick]
         region = 'north' if bricks.brick_radec(ra_tmp[0], dec_tmp[0])[1] > 32.375 else 'south'
         tmp = {}
         for name, attrs in columns.items():
@@ -106,8 +147,8 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD):
                 if attrs is None:
                     if name.lower() == 'photsys':
                         tmp[name] = np.full(ra_tmp.size, region[0].upper())
-                    elif name.lower() in brickid_data.columns():
-                        tmp[name] = brickid_data[name.lower()][mask_brick]
+                    elif name.lower() in brickid_data_tmp.dtype.names:
+                        tmp[name] = brickid_data_tmp[name.lower()][mask_brick]
                     else:
                         raise ValueError('Unknown column {}'.format(name))
                 else:
@@ -120,29 +161,30 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD):
                     if isinstance(value, str): attrs[key] = value.format(region=region)
                 tmp.update(name(ra_tmp, dec_tmp, brickname, **attrs))
         for name, value in tmp.items():
-            if name not in data:
-                data[name] = np.empty_like(value, shape=brickid_data.size)
-            data[name][mask_brick] = value
+            if name not in data_tmp:
+                data_tmp[name] = np.empty_like(value, shape=brickid_data_tmp.size)
+            data_tmp[name][mask_brick] = value
 
-    index_name = '_'.join(data.keys()) + '_index'  # just to make sure this is distinct from all other column names
-    data[index_name] = brickid_data['index']
-    # Convert dict to mpytools.Catalog in order to sort it across processes to recover the initial order
-    data = mpy.Catalog(data)
+    index_name = '_'.join(data_tmp.keys()) + '_index'  # just to make sure this is distinct from all other column names
+    data_tmp[index_name] = brickid_data_tmp['index']
+    data_tmp = _dict_to_array(data_tmp)
 
-    dtypes = mpicomm.allgather((data.to_array().dtype, data.columns(), index_name) if data.size else (None, None, None))
-    for dtype, names, index_name in dtypes:
+    dtypes = mpicomm.allgather((data_tmp.dtype, index_name) if data_tmp.size else (None, None))
+    for dtype, index_name in dtypes:
         if dtype is not None: break
     if dtype is None:
         return {}
-    if not data.size:
-        data = mpy.Catalog({name: np.empty(0, dtype=dtype[name]) for name in names})
+    if not data_tmp.size:
+        data_tmp = np.empty(0, dtype=dtype)
 
     # Collect the data in the intial order
-    data = data.csort(index_name, size=index.size)
+    data = np.empty(shape=size, dtype=dtype)
+    mpsort.sort(data_tmp, orderby=index_name, out=data)
+
     # Check if we find the correct initial order
     assert np.all(data[index_name] == index)
 
-    return {name: data[name].reshape(shape) for name in data.columns() if name != index_name}
+    return {name: data[name].reshape(shape) for name in data.dtype.names if name != index_name}
 
 
 if __name__ == '__main__':
@@ -156,7 +198,7 @@ if __name__ == '__main__':
     if mpicomm.rank == 0: logger.info('Run simple example to illustrate how to get pixel-level quantities.')
 
     # Generate example cutsky catalog, scattered on all processes
-    cutsky = RandomCutskyCatalog(rarange=(28., 30.), decrange=(1., 2.), csize=10000, seed=44, mpicomm=mpicomm)
+    cutsky = RandomCutskyCatalog(rarange=(25., 30.), decrange=(1., 2.), csize=10000, seed=44, mpicomm=mpicomm)
     ra, dec = cutsky['RA'], cutsky['DEC']
     # to test when empty catalog is given with MPI
     if mpicomm.rank == 1: ra, dec = [], []
