@@ -58,7 +58,7 @@ def _get_from_cosmo(cosmo, name, z=None):
 
 def get_cosmo_blind(cosmo_fid, seed=42, params=None, z=None):
     """
-    Generalte blind cosmology from input fiducial cosmology ``cosmo_fid``.
+    Generate blind cosmology from input fiducial cosmology ``cosmo_fid``.
 
     Parameters
     ----------
@@ -235,7 +235,10 @@ def _format_output_positions(positions, position_type='pos', cosmo=None, mpicomm
             toret = toret.T
     return toret
 
-OPT='-fopenmp -pedantic -Wall -Wextra -O3 -std=c99'
+
+OPT = '-fopenmp -pedantic -Wall -Wextra -O3 -std=c99'
+
+
 def _format_output_weights(weights, mpicomm=None, mpiroot=None):
     # Transform output weights to input format (position_type and gathered or not)
     toret = weights
@@ -454,7 +457,7 @@ class CutskyCatalogBlinding(BaseClass):
         return _format_output_positions(data_positions, position_type=position_type, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
 
     def png(self, data_positions, data_weights=None, randoms_positions=None, randoms_weights=None, method='randoms_weights',
-            recon='IterativeFFTReconstruction', smoothing_radius=30., **kwargs):
+            recon='IterativeFFTReconstruction', smoothing_radius=30., shotnoise_correction=False, **kwargs):
         r"""
         Apply local primordial non-Gaussianity blinding, computing weights to apply scale-dependent bias on large scales.
         The rationale is to change the real-space Fourier galaxy density contrast: :math:`b_{1} \delta(\mathbf{k})` such that it becomes
@@ -481,8 +484,11 @@ class CutskyCatalogBlinding(BaseClass):
             Name of reconstruction algorithm, or (already run) reconstruction instance,
             in which case input ``randoms_positions``, ``randoms_weights`` are ignored.
 
-        smoothing_radius : float, default=40.
+        smoothing_radius : float, default=30.
             Smoothing radius for reconstruction. Larger than for RSD blinding, as we only need large scale RSD to be resolved.
+
+        shotnoise_correction : bool, default=False
+            If true, apply shotnoise correction to avoid excess of power at large scales. Need randoms to work.
 
         kwargs : dict
             Optionally, reconstruction parameters: ``cellsize`` (defaults to 15.), ``smoothing_radius``, etc.
@@ -517,8 +523,18 @@ class CutskyCatalogBlinding(BaseClass):
         shifts = recon.read_shifts(data_positions, position_type='pos', mpiroot=None, field='rsd')
         shifted_positions = data_positions - shifts
         recon.assign_data(shifted_positions, weights=data_weights, position_type='pos', mpiroot=None)
+
         if randoms_positions is not None:
             recon.assign_randoms(randoms_positions, weights=randoms_weights, position_type='pos', mpiroot=None)
+
+        if 'weights' not in method and shotnoise_correction:
+            raise ValueError('No shot noise correction when blinding is based on particle shifts')
+        
+        if shotnoise_correction:
+            csum_data_weights = mpy.cshape(data_positions)[0]  if data_weights is None else mpy.csum(data_weights)
+            csum_randoms_weights = mpy.cshape(randoms_positions)[0] if randoms_weights is None else mpy.csum(randoms_weights)
+            inv_shotnoise = recon._smooth_gaussian(recon.mesh_randoms / np.prod(recon.cellsize) * csum_data_weights / csum_randoms_weights)  # apply a gaussian smoothing
+
         recon.set_density_contrast(smoothing_radius=smoothing_radius)  # divides by bias
         mesh = recon.mesh_delta.r2c()
         b1 = recon.bias
@@ -531,34 +547,62 @@ class CutskyCatalogBlinding(BaseClass):
             pphi_prim = 9 / 25 * 2 * np.pi**2 / k**3 * pk_prim(k) / self.cosmo_fid.h**3
             return (pk_lin(k) / pphi_prim)**0.5
 
+        def W(k, sigma=smoothing_radius):
+            return np.exp(- 0.5 * k**2 * sigma**2)
+
         for kslab, slab in zip(mesh.slabs.x, mesh.slabs):
             k = sum(kk.real**2 for kk in kslab)**0.5
             nonzero = k != 0.
-            # minus because applied to randoms
             slab[nonzero] *= bfnl / Tk(k[nonzero])
             slab[~nonzero] = 0.
+
+        if shotnoise_correction:
+
+            # compute the corrective factor at k_pivot
+            mu_pivot = 0.6
+            k_pivot = 4e-3 if _get_from_cosmo(self.cosmo_blind, 'fnl') >= 0 else 8e-3
+
+            if 'data' in method:
+                shotnoise = 1 / recon._readout(inv_shotnoise, data_positions)
+            elif 'randoms' in method:
+                shotnoise = 1 / recon._readout(inv_shotnoise, randoms_positions)
+            else:
+                shotnoise = 0.
+
+            sel = W(pk_lin.k) > 1e-4  # to avoid error during the interpolation...
+            sigma_d_2 = pk_lin.clone(k=pk_lin.k[sel], pk=(W(pk_lin.k)**2 * pk_lin(pk_lin.k))[sel]).sigma_d()**2
+
+            X_tilde = b1 * (b1 + f * mu_pivot**2) * W(k_pivot) * pk_lin(k_pivot) + W(k_pivot) * shotnoise * np.exp(- 0.5 * k_pivot**2 * mu_pivot**2 * f**2 * sigma_d_2)
+            Y_tilde = b1**2 * W(k_pivot)**2 * pk_lin(k_pivot) + W(k_pivot)**2 * shotnoise
+            expected_pivot = 2 * bfnl / Tk(k_pivot) * b1 * (b1 + f * mu_pivot**2) * pk_lin(k_pivot) + (bfnl / Tk(k_pivot))**2 * b1**2 * pk_lin(k_pivot)
+
+            # two solutions, keep the positive one.
+            shotnoise_factor = (- X_tilde + np.sqrt(X_tilde**2 + Y_tilde * expected_pivot)) / Y_tilde / (bfnl / Tk(k_pivot))
+            # if recon.mpicomm.rank == 0: print(pk_lin.sigma_d(), shotnoise, W, X_tilde, Y_tilde, bfnl / Tk(k_pivot), expected_pivot, shotnoise_factor)
+        else:
+            shotnoise_factor = 1.
+
         if 'weights' in method:
             mesh = mesh.c2r()
             if 'data' in method:
                 weights = recon._readout(mesh, data_positions)
-                weights = (1. if data_weights is None else data_weights) * (1. + weights)
+                weights = (1. if data_weights is None else data_weights) * (1. + shotnoise_factor * weights)
             elif 'randoms' in method:
                 weights = recon._readout(mesh, randoms_positions)
-                weights = (1. if randoms_weights is None else randoms_weights) * (1. - weights)
+                weights = (1. if randoms_weights is None else randoms_weights) * (1. - shotnoise_factor * weights)
             return _format_output_weights(weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
         else:
             positions = data_positions if 'data' in method else randoms_positions
             disps = []
             for iaxis in range(mesh.ndim):
                 psi = mesh.copy()
-                for kslab, islab, slab in zip(psi.slabs.x, psi.slabs.i, psi.slabs):
+                for kslab, slab in zip(psi.slabs.x, psi.slabs):
                     k2 = sum(kk**2 for kk in kslab)
                     k2[k2 == 0.] = 1.  # avoid dividing by zero
-                    mask = islab[iaxis] != recon.nmesh[iaxis] // 2
-                    slab[...] *= 1j * kslab[iaxis] / k2 * mask
+                    slab[...] *= 1j * kslab[iaxis] / k2
                 psi = psi.c2r()
                 disps.append(recon._readout(psi, positions))
             shifts = np.column_stack(disps)
             shifts -= mpy.cmean(shifts)
-            positions = positions + (shifts if 'data' in method else -shifts)
+            positions = positions + (shifts if 'data' in method else - shifts)
             return _format_output_weights(positions, mpicomm=self.mpicomm, mpiroot=mpiroot)
