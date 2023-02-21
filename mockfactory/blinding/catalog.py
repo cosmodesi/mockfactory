@@ -560,7 +560,7 @@ class CutskyCatalogBlinding(BaseClass):
 
             # compute the corrective factor at k_pivot
             mu_pivot = 0.6
-            k_pivot = 4e-3 if _get_from_cosmo(self.cosmo_blind, 'fnl') >= 0 else 8e-3
+            k_pivot = 4e-3 if bfnl >= 0 else 8e-3
 
             if 'data' in method:
                 shotnoise = 1 / recon._readout(inv_shotnoise, data_positions)
