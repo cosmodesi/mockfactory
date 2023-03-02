@@ -1,0 +1,11 @@
+# %ECSV 1.0
+# ---
+# datatype:
+# - {name: val_fit, datatype: string, subtype: 'float64[5]'}
+# - {name: mean_z, datatype: float64}
+# schema: astropy-2.0
+val_fit mean_z
+[108.146,0,201.312,0,1] 0.9658  
+[190.217,0,156.368,0,1] 1.3665 
+[514.007,0,546.131,0,1] 1.8320 
+[706.553,0,1083.65,0,1] 2.4561 
