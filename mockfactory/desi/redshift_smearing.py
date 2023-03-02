@@ -52,17 +52,13 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None):
             rvs_gaussian.append(stats.norm(scale=sigma, loc=x0))
         elif tracer in ['ELG', 'BGS']:
             sigma, x0, p, mu, la = table['val_fit'][iz]
-            # need to use truncated cauchy (utils.trunccauchy) (range=[a, b]) instead stats.cauchy
-            # do not use scipy.stats.truncnorm (strange behavior and do not work here
-            # cannot use scale and loc.. --> sc and lo instead :)
-            # trunc is empirically decided by the distribution of repeat observation
-            # for SV1, trunc is 150 km/s for ELG and BGS
-            if tracer == 'ELG':
-                trunc = 150
-            else:
-                trunc = 150
-            rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc).freeze(sc=p / 2, lo=mu))
-            rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc).freeze(sc=sigma, lo=x0))
+            # Use truncated cauchy (utils.trunccauchy) (range=[a, b]) instead of stats.cauchy
+            # In scipy.stats.truncnorm a and b are defined w.r.t. the standard distribution
+            # In utils.truncnorm (as in utils.trunccauchy) a and b are defined w.r.t. to the scaled distribution
+            """TO DO by Jiaxi: split ELG and BGS if they do not have the same range."""
+            trunc = 150
+            rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc, loc=mu, scale=p / 2))
+            rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc, loc=x0, scale=sigma))
         laz.append(la)
     laz = np.array(laz)
 

@@ -163,91 +163,100 @@ def vector_projection(vector, direction):
         Same shape as input ``vector``.
     """
     direction = np.atleast_2d(direction)
-    direction = direction / (direction ** 2).sum(axis=-1)[:, None] ** 0.5
+    direction = direction / (direction ** 2).sum(axis=-1)[..., None] ** 0.5
     projection = (vector * direction).sum(axis=-1)
-    projection = projection[:, None] * direction
 
-    return projection
+    return projection[..., None] * direction
 
 
-class trunccauchy(stats.rv_continuous):
+def _rescaling_parser(func):
+    from functools import wraps
+
+    @wraps(func)
+    def wrapper(a, b, loc=0., scale=1., **kwargs):
+        # Here we do the rescaling
+        a, b = (a - loc) / scale, (b - loc) / scale
+        return func(a, b, loc=loc, scale=scale, **kwargs)
+    return wrapper
+
+
+class trunccauchy_gen(stats.rv_continuous):
     """
-    A truncated cauchy continuous random variable, where the range ``[a, b]`` is user-provided
+    A truncated Cauchy continuous random variable, where the range ``[a, b]`` is user-provided, and defined w.r.t. the (scaled) distribution.
 
-    In order to have correct cfd and able to draw sample, we just need to redine correctly the pdf. This is simple done by truncated the stats.cauchy.pdf
-    and then divided by the integral of the pdf in the restriced area (simply stats.cauchy.cdf(b) - stats.cauchy.cdf(a)). Implement only the pdf is not super
-    efficient, especially to draw samples with .rvs(). That is why we also implement ppf (used to draw) and cdf which is used to compute ppf doing the inversion via interpolation.
+    In order to have correct cfd and able to draw sample, we just need to redine correctly the pdf. This is simple done by truncating stats.cauchy.pdf
+    and then divide by the integral of the pdf in the support (simply stats.cauchy.cdf(b) - stats.cauchy.cdf(a)). Implementing only the pdf is not super
+    efficient, especially to draw samples with rvs.
+    That is why we also implement ppf (used to draw) and cdf which is used to compute ppf doing the inversion via interpolation.
 
-    Remark: For proper implementation, once should use logpdf as in truncnorm to avoid division by zero when the truncation is done far from the core of the distribution.
+    Note
+    ----
+    For proper implementation, one should use logpdf as in truncnorm to avoid division by zero when the truncation is done far from the core of the distribution.
 
-    Warning: loc and scale are built-in keywords. One cannot use them in _pdf ! Use lo and sc instead.
+    Example
+    -------
+    >>> rv = trunccauchy(a=-1, b=1, loc=0., scale=0.1)
+    >>> samples = rv.rvs(size=1000)
 
-    Example:
-        '''
-            e = trunccauchy(a=-1, b=1, shapes='lo, sc')
-            e = e.freeze(lo=0, sc=0.1)  # to freeze the parameter lo and sc
-            samples = e.rvs(size=1000)
-        '''
-
-    References:
-        * https://docs.scipy.org/doc/scipy/tutorial/stats.html#making-a-continuous-distribution-i-e-subclassing-rv-continuous
-        * truncated normal function already implemented (see also source code): https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.truncnorm.html
-
+    References
+    ----------
+    * https://docs.scipy.org/doc/scipy/tutorial/stats.html#making-a-continuous-distribution-i-e-subclassing-rv-continuous
+    * truncated normal function already implemented (see also source code): https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.truncnorm.html
     """
+    def _attach_argparser_methods(self):
+        # Redefine arg parsers, scaling a and b to the standard distribution
+        super()._attach_argparser_methods()
 
-    def _argcheck(*args):
-        """ by default _argcheck return true only for args > 0, this is not our case since we use loc for scipy.cauchy which could be negative..."""
-        return True
+        for name in ['_parse_args', '_parse_args_stats', '_parse_args_rvs']:
+            setattr(self, name, _rescaling_parser(getattr(self, name)))
 
-    def _pdf(self, x, lo, sc):
-        """ Without any optimzation, pdf is the only function that we need to define a prbability law. """
-        return stats.cauchy.pdf(x, loc=lo, scale=sc) / (stats.cauchy.cdf(self.b, loc=lo, scale=sc) - stats.cauchy.cdf(self.a, loc=lo, scale=sc))
+    def _argcheck(self, a, b):
+        return a < b
 
-    def _cdf(self, x, lo, sc):
-        """ Need to implement cdf and not only the pdf to compute ppf efficiently ! """
-        cdf = stats.cauchy.cdf(x, loc=lo, scale=sc) - stats.cauchy.cdf(self.a, loc=lo, scale=sc)
-        cdf[x < self.a] = 0
-        cdf[x > self.b] = stats.cauchy.cdf(self.b, loc=lo, scale=sc) - stats.cauchy.cdf(self.a, loc=lo, scale=sc)
-        cdf /= (stats.cauchy.cdf(self.b, loc=lo, scale=sc) - stats.cauchy.cdf(self.a, loc=lo, scale=sc))
-        return cdf
+    def _get_support(self, a, b):
+        return a, b
 
-    def _ppf(self, q, lo, sc):
-        """ Need to implement ppf and not only the pdf adn cdf if you want to draw quickly sample with rvs(). To speed up the inversion, we use interpolation.
-            Direct computation may be more efficient. """
-        from scipy.interpolate import interp1d
-        x_interp = np.linspace(self.a, self.b, 1000)
-        cdf = self._cdf(x_interp, lo=lo, sc=sc)
-        return interp1d(cdf, x_interp, kind='cubic')(q)
+    def _pdf(self, x, a, b):
+        # x, a, b are standardized, a < x < b
+        rv = stats.cauchy(loc=0., scale=1.)
+        return rv.pdf(x) / (rv.cdf(b) - rv.cdf(a))
+
+    def _cdf(self, x, a, b):
+        """Also implement cdf to compute ppf efficiently."""
+        # x, a, b are standardized, a < x < b
+        rv = stats.cauchy(loc=0., scale=1.)
+        x, a, b = np.broadcast_arrays(x, a, b)
+        return (rv.cdf(x) - rv.cdf(a)) / (rv.cdf(b) - rv.cdf(a))
+
+    def _ppf(self, q, a, b):
+        """Implement ppf to quickly draw samples with rvs."""
+        rv = stats.cauchy(loc=0., scale=1.)
+        q, a, b = np.broadcast_arrays(q, a, b)
+        q = q * (rv.cdf(b) - rv.cdf(a)) + rv.cdf(a)
+        return rv.ppf(q)
 
 
-class truncnorm(stats.rv_continuous):
+trunccauchy = trunccauchy_gen(name='cauchy')
+
+
+from scipy.stats._continuous_distns import truncnorm_gen as _truncnorm_gen
+
+
+class truncnorm_gen(_truncnorm_gen):
+    r"""A truncated normal continuous random variable.
+
+    Notes
+    -----
+    Contrary to :class:`scipy.stats.truncnorm`, input ``a`` and ``b`` are *not* defined
+    w.r.t. the *standard* normal, but to the (scaled) distribution.
+    (Not sure this is an excellent idea to use a different convention from scipy.)
     """
-    A truncated normal continuous random variable, where the range ``[a, b]`` is user-provided.
+    def _attach_argparser_methods(self):
+        # Redefine arg parsers, scaling a and b to the standard distribution
+        super()._attach_argparser_methods()
 
-    Similar remark than `utils.trunccauchy`.
+        for name in ['_parse_args', '_parse_args_stats', '_parse_args_rvs']:
+            setattr(self, name, _rescaling_parser(getattr(self, name)))
 
-    Note: I implemented a new truncnorm function to have exactly the same behaviour than `utils.trunccauchy` instead of used `scipy.stats.truncnorm`
-    """
 
-    def _argcheck(*args):
-        """ by default _argcheck return true only for args > 0, this is not our case since we use loc for scipy.norm which could be negative..."""
-        return True
-
-    def _pdf(self, x, lo, sc):
-        """ Without any optimzation, pdf is the only function that we need to define a prbability law. """
-        return stats.norm.pdf(x, loc=lo, scale=sc) / (stats.norm.cdf(self.b, loc=lo, scale=sc) - stats.norm.cdf(self.a, loc=lo, scale=sc))
-
-    def _cdf(self, x, lo, sc):
-        """ Need to implement cdf and not only the pdf to compute ppf efficiently ! """
-        cdf = stats.norm.cdf(x, loc=lo, scale=sc) - stats.norm.cdf(self.a, loc=lo, scale=sc)
-        cdf[x < self.a] = 0
-        cdf[x > self.b] = stats.norm.cdf(self.b, loc=lo, scale=sc) - stats.norm.cdf(self.a, loc=lo, scale=sc)
-        cdf /= (stats.norm.cdf(self.b, loc=lo, scale=sc) - stats.norm.cdf(self.a, loc=lo, scale=sc))
-        return cdf
-
-    def _ppf(self, q, lo, sc):
-        """ Need to implement ppf and not only the pdf adn cdf if you want to draw quickly sample with rvs(). To speed up the inversion, we use interpolation. """
-        from scipy.interpolate import interp1d
-        x_interp = np.linspace(self.a, self.b, 1000)
-        cdf = self._cdf(x_interp, lo=lo, sc=sc)
-        return interp1d(cdf, x_interp, kind='cubic')(q)
+truncnorm = truncnorm_gen(name='truncnorm', momtype=1)
