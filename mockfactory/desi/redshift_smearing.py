@@ -53,13 +53,13 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None, uncertainty_type='statistic
             elif uncertainty_type == 'clustering':
                 sigma, x0, p, mu, la = table['val_fit'][iz]
                 trunc = 2000
-                rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc).freeze(sc=p / 2, lo=mu))
-                rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc).freeze(sc=sigma, lo=x0))
+                rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc, loc=mu, scale=p / 2))
+                rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc,loc=x0, scale=sigma))
         elif tracer == 'LRG':
             sigma, x0, p, mu, la = table['val_fit'][iz]
             trunc = 400
-            rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc).freeze(sc=p / 2, lo=mu))
-            rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc).freeze(sc=sigma, lo=x0))
+            rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc, loc=mu, scale=p / 2))
+            rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc,loc=x0, scale=sigma))
         elif tracer in ['ELG', 'BGS']:
             sigma, x0, p, mu, la = table['val_fit'][iz]
             # need to use truncated cauchy (utils.trunccauchy) (range=[a, b]) instead stats.cauchy
@@ -71,8 +71,8 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None, uncertainty_type='statistic
                 trunc = 150
             else:
                 trunc = 150
-            rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc).freeze(sc=p / 2, lo=mu))
-            rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc).freeze(sc=sigma, lo=x0))
+            rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc, loc=mu, scale=p / 2))
+            rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc, loc=x0, scale=sigma))
         laz.append(la)
     laz = np.array(laz)
 
