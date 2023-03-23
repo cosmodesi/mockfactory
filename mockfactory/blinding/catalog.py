@@ -522,6 +522,8 @@ class CutskyCatalogBlinding(BaseClass):
                                             position_type='pos', mpicomm=self.mpicomm, mpiroot=None, **kwargs)
         shifts = recon.read_shifts(data_positions, position_type='pos', mpiroot=None, field='rsd')
         shifted_positions = data_positions - shifts
+        # Just to make sure meshes do not exist anymore
+        recon.mesh_data = recon.mesh_randoms = None
         recon.assign_data(shifted_positions, weights=data_weights, position_type='pos', mpiroot=None)
 
         if randoms_positions is not None:
@@ -529,7 +531,7 @@ class CutskyCatalogBlinding(BaseClass):
 
         if 'weights' not in method and shotnoise_correction:
             raise ValueError('No shot noise correction when blinding is based on particle shifts')
-        
+
         if shotnoise_correction:
             csum_data_weights = mpy.cshape(data_positions)[0]  if data_weights is None else mpy.csum(data_weights)
             csum_randoms_weights = mpy.cshape(randoms_positions)[0] if randoms_weights is None else mpy.csum(randoms_weights)
