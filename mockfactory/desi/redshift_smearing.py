@@ -11,7 +11,7 @@ from mockfactory import RVS2DRedshiftSmearing
 logger = logging.getLogger('Redshift Smearing')
 
 
-def TracerRedshiftSmearingRVS(tracer='QSO', fn=None):
+def TracerRedshiftSmearingRVS(tracer='QSO', fn=None, uncertainty_type='statistical'):
     """
     Return redshifts ``z``, list of continuous random variates for ``z``
     (QSOs are Laplace and Gaussian, ELGs and BGS are Lorentzian, LRGs are Gaussian)
@@ -22,7 +22,10 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None):
     if fn is None:
         dirname = os.path.join(os.path.dirname(__file__), 'data')
         if tracer == 'QSO':
-            fn = ['{}_redshift_smearing_{}.ecsv'.format(tracer, sv) for sv in ['sv1', 'sv3']]
+            if uncertainty_type == 'statistical':
+                fn = ['{}_redshift_smearing_{}.ecsv'.format(tracer, sv) for sv in ['sv1', 'sv3']]
+            elif uncertainty_type == 'clustering':
+                fn = ['{}_redshift_smearing_clustering.ecsv'.format(tracer)]
         else:
             fn = ['{}_redshift_smearing_sv1.ecsv'.format(tracer)]
         fn = [os.path.join(dirname, ff) for ff in fn]
@@ -42,29 +45,40 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None):
     rvs_nongaussian, rvs_gaussian, laz = [], [], []
     for iz, z in enumerate(table['mean_z']):
         if tracer == 'QSO':
-            A0, x0, s0, sg, la = table['val_fit'][iz]
-            s0, sg = s0 / np.sqrt(2), sg / np.sqrt(2)
-            rvs_nongaussian.append(stats.laplace(x0, s0))
-            rvs_gaussian.append(stats.norm(x0, sg))
+            if uncertainty_type == 'statistical':
+                A0, x0, s0, sg, la = table['val_fit'][iz]
+                s0, sg = s0 / np.sqrt(2), sg / np.sqrt(2)
+                rvs_nongaussian.append(stats.laplace(x0, s0))
+                rvs_gaussian.append(stats.norm(x0, sg))
+            elif uncertainty_type == 'clustering':
+                sigma, x0, p, mu, la = table['val_fit'][iz]
+                trunc = 2000
+                rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc, loc=mu, scale=p / 2))
+                rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc,loc=x0, scale=sigma))
         elif tracer == 'LRG':
             sigma, x0, p, mu, la = table['val_fit'][iz]
-            rvs_nongaussian.append(stats.cauchy(scale=p / 2, loc=mu))
-            rvs_gaussian.append(stats.norm(scale=sigma, loc=x0))
+            trunc = 400
+            rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc, loc=mu, scale=p / 2))
+            rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc,loc=x0, scale=sigma))
         elif tracer in ['ELG', 'BGS']:
             sigma, x0, p, mu, la = table['val_fit'][iz]
-            # Use truncated cauchy (utils.trunccauchy) (range=[a, b]) instead of stats.cauchy
-            # In scipy.stats.truncnorm a and b are defined w.r.t. the standard distribution
-            # In utils.truncnorm (as in utils.trunccauchy) a and b are defined w.r.t. to the scaled distribution
-            """TO DO by Jiaxi: split ELG and BGS if they do not have the same range."""
-            trunc = 150
+            # need to use truncated cauchy (utils.trunccauchy) (range=[a, b]) instead stats.cauchy
+            # do not use scipy.stats.truncnorm (strange behavior and do not work here
+            # cannot use scale and loc.. --> sc and lo instead :)
+            # trunc is empirically decided by the distribution of repeat observation
+            # for SV1, trunc is 150 km/s for ELG and BGS
+            if tracer == 'ELG':
+                trunc = 150
+            else:
+                trunc = 150
             rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc, loc=mu, scale=p / 2))
             rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc, loc=x0, scale=sigma))
         laz.append(la)
     laz = np.array(laz)
 
-    if tracer == 'QSO':
+    if (tracer == 'QSO') & (uncertainty_type == 'statistical'):
         def dztransform(z, dz):
-            return dz / (constants.c / 1e3) / (1. + z)  # file unit is dz (1 + z) c [km / s]
+            return dz / (constants.c / 1e3) / (1. + z)  # file unit is c dz * (1 + z) [km / s]
     else:
         def dztransform(z, dz):
             return dz / (constants.c / 1e3) * (1. + z)  # file unit is c dz / (1 + z) [km / s]
@@ -72,18 +86,21 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None):
     return np.asarray(table['mean_z']), [rvs_nongaussian, rvs_gaussian], [laz, 1. - laz], dztransform
 
 
-def TracerRedshiftSmearing(tracer='QSO', fn=None):
+def TracerRedshiftSmearing(tracer='QSO', fn=None, uncertainty_type='statistical'):
     """
     Return :class:`RVS2DRedshiftSmearing` instance given input tabulate file of redshift errors.
     Redshift errors can be sampled through: ``dz = rs.sample(z, seed=42)``.
     """
-    z, rvs, weights, dztransform = TracerRedshiftSmearingRVS(tracer=tracer, fn=fn)
+    z, rvs, weights, dztransform = TracerRedshiftSmearingRVS(tracer=tracer, fn=fn, uncertainty_type='statistical')
     if tracer == 'QSO':
-        dzscale = 5e3
+        if uncertainty_type == 'statistical':
+            dzscale = 5e3
+        elif uncertainty_type == 'clustering':
+            dzscale = 2e3
     elif tracer in ['ELG', 'BGS']:
         dzscale = 150
     elif tracer == 'LRG':
-        dzscale = 200
+        dzscale = 400
     else:
         raise ValueError(f'{tracer} redshift smearing does not exist')
 
@@ -100,6 +117,8 @@ if __name__ == '__main__':
         parser = ArgumentParser(description="Load and display the redshift smearing for args.tracer")
         parser.add_argument("--tracer", type=str, required=True, default='QSO',
                             help="the tracer for redshift smearing: QSO, LRG, ELG, BGS")
+        parser.add_argument("--uncertainty", type=str, required=True, default='statistical',
+                            help="the method to obtain the redshift uncertainty: statistical, clustering")
         return parser.parse_args()
 
     setup_logging()
@@ -109,13 +128,16 @@ if __name__ == '__main__':
     rs = TracerRedshiftSmearing(tracer=args.tracer)
 
     # Load random variates, to get pdf to compare to
-    z, rvs, weights, dztransform = TracerRedshiftSmearingRVS(tracer=args.tracer)
+    z, rvs, weights, dztransform = TracerRedshiftSmearingRVS(tracer=args.tracer, uncertainty_type=args.uncertainty)
 
     # z slices where to plot distributions
     lz = np.linspace(z[0], z[-1], 15)
     # Tabulated dz where to evaluate pdf
     if args.tracer == 'QSO':
-        dvscale = 5e3
+        if args.uncertainty == 'statistical':
+            dvscale = 5e3
+        elif args.uncertainty == 'clustering':
+            dvscale = 2e3
     elif args.tracer in ['ELG', 'BGS']:
         dvscale = 150
     elif args.tracer == 'LRG':
@@ -155,5 +177,5 @@ if __name__ == '__main__':
 
     if rs.mpicomm.rank == 0:
         plt.tight_layout()
-        plt.savefig('test.png')
+        plt.savefig('{}_{}.png'.format(args.tracer,args.uncertainty))
         plt.show()
