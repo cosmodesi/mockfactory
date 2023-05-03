@@ -532,11 +532,6 @@ class CutskyCatalogBlinding(BaseClass):
         if 'weights' not in method and shotnoise_correction:
             raise ValueError('No shot noise correction when blinding is based on particle shifts')
 
-        if shotnoise_correction:
-            csum_data_weights = mpy.cshape(data_positions)[0]  if data_weights is None else mpy.csum(data_weights)
-            csum_randoms_weights = mpy.cshape(randoms_positions)[0] if randoms_weights is None else mpy.csum(randoms_weights)
-            inv_shotnoise = recon._smooth_gaussian(recon.mesh_randoms / np.prod(recon.cellsize) * csum_data_weights / csum_randoms_weights)  # apply a gaussian smoothing
-
         recon.set_density_contrast(smoothing_radius=smoothing_radius)  # divides by bias
         mesh = recon.mesh_delta.r2c()
         b1 = recon.bias
@@ -559,6 +554,27 @@ class CutskyCatalogBlinding(BaseClass):
             slab[~nonzero] = 0.
 
         if shotnoise_correction:
+            #csum_data_weights = mpy.cshape(data_positions)[0]  if data_weights is None else mpy.csum(data_weights)
+            #csum_randoms_weights = mpy.cshape(randoms_positions)[0] if randoms_weights is None else mpy.csum(randoms_weights)
+            #inv_shotnoise = recon._smooth_gaussian(recon.mesh_randoms / np.prod(recon.cellsize) * csum_data_weights / csum_randoms_weights)  # apply a gaussian smoothing
+
+            ndata, nrandoms = mpy.cshape(data_positions)[0], mpy.cshape(randoms_positions)[0]
+
+            recon.mesh_data = None
+            recon.assign_data(data_positions, weights=(data_weights * data_weights), position_type='pos', mpiroot=None)
+            sum_w2 = recon.mesh_data
+
+            recon.mesh_data = None
+            recon.assign_data(data_positions, weights=None, position_type='pos', mpiroot=None)
+            N_gal = recon.mesh_data
+ 
+            recon.mesh_data = None
+            recon.assign_data(randoms_positions, weights=None, position_type='pos', mpiroot=None)
+            nbar = recon.mesh_data / np.prod(recon.cellsize) * ndata / nrandoms
+
+            ratio = sum_w2 / N_gal 
+            ratio[N_gal == 0] = 1
+            inv_shotnoise = recon._smooth_gaussian(nbar / ratio)
 
             # compute the corrective factor at k_pivot
             mu_pivot = 0.6
@@ -580,7 +596,7 @@ class CutskyCatalogBlinding(BaseClass):
 
             # two solutions, keep the positive one.
             shotnoise_factor = (- X_tilde + np.sqrt(X_tilde**2 + Y_tilde * expected_pivot)) / Y_tilde / (bfnl / Tk(k_pivot))
-            # if recon.mpicomm.rank == 0: print(pk_lin.sigma_d(), shotnoise, W, X_tilde, Y_tilde, bfnl / Tk(k_pivot), expected_pivot, shotnoise_factor)
+            if recon.mpicomm.rank == 0: print(pk_lin.sigma_d(), shotnoise, W, X_tilde, Y_tilde, bfnl / Tk(k_pivot), expected_pivot, shotnoise_factor)
         else:
             shotnoise_factor = 1.
 
