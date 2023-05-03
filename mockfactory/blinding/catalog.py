@@ -159,8 +159,8 @@ def _format_positions(positions, position_type='xyz', dtype=None, copy=True, cos
         # Array of shape (3, N)
         positions = list(positions)
         for ip, p in enumerate(positions):
-            # Cast to the input dtype if exists (may be set by previous weights)
-            positions[ip] = np.asarray(p, dtype=dtype)
+            # Cast to the input dtype if exists (may be set by previous positions)
+            positions[ip] = np.array(p, dtype=dtype, copy=copy)
         size = len(positions[0])
         dt = positions[0].dtype
         if not np.issubdtype(dt, np.floating):
@@ -273,7 +273,7 @@ class CutskyCatalogBlinding(BaseClass):
     :meth:`rsd` and :meth:`png` require pip install git+https://github.com/cosmodesi/pyrecon@mpi.
     """
     @CurrentMPIComm.enable
-    def __init__(self, cosmo_fid='DESI', cosmo_blind='DESI', bias=None, z=None, position_type='pos', mpiroot=None, mpicomm=None):
+    def __init__(self, cosmo_fid='DESI', cosmo_blind='DESI', bias=None, z=None, position_type='pos', dtype=None, mpiroot=None, mpicomm=None):
         """
         Initialize :class:`CutskyCatalogBlinding`.
 
@@ -316,6 +316,7 @@ class CutskyCatalogBlinding(BaseClass):
         self.z = z
         self.position_type = position_type
         self.mpiroot = mpiroot
+        self.dtype = dtype
 
     def ap(self, positions, **kwargs):
         """
@@ -338,7 +339,7 @@ class CutskyCatalogBlinding(BaseClass):
         mpiroot = kwargs.pop('mpiroot', self.mpiroot)
         d2z = position_type != 'rdz'
         # No need to apply z -> d transform if position_type == 'rdz'
-        positions = _format_positions(positions, position_type=position_type if d2z else 'rdd', mpicomm=self.mpicomm, mpiroot=mpiroot)
+        positions = _format_positions(positions, position_type=position_type if d2z else 'rdd', dtype=self.dtype, mpicomm=self.mpicomm, mpiroot=mpiroot)
         dist, ra, dec = utils.cartesian_to_sky(positions)
         if d2z:
             from mockfactory import DistanceToRedshift
@@ -375,7 +376,7 @@ class CutskyCatalogBlinding(BaseClass):
         mpiroot = kwargs.pop('mpiroot', self.mpiroot)
         isrdd = position_type in ['rdd', 'rdz']
         if isrdd: position_type = 'xyz'
-        positions = _format_positions(positions, position_type=position_type, copy=True, mpicomm=self.mpicomm, mpiroot=mpiroot)
+        positions = _format_positions(positions, position_type=position_type, dtype=self.dtype, copy=True, mpicomm=self.mpicomm, mpiroot=mpiroot)
         size = len(positions)
         frac = (_get_from_cosmo(self.cosmo_blind, 'f') / _get_from_cosmo(self.cosmo_fid, 'f', z=self.z)) ** 2
         if frac > 1.:
@@ -435,7 +436,7 @@ class CutskyCatalogBlinding(BaseClass):
         """
         position_type = kwargs.pop('position_type', self.position_type)
         mpiroot = kwargs.pop('mpiroot', self.mpiroot)
-        data_positions = _format_positions(data_positions, position_type=position_type, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
+        data_positions = _format_positions(data_positions, position_type=position_type, dtype=self.dtype, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
         # Run reconstruction
         if isinstance(recon, str):
             import pyrecon
@@ -445,7 +446,7 @@ class CutskyCatalogBlinding(BaseClass):
             if not any(name in kwargs for name in ['nmesh', 'cellsize']):
                 kwargs['cellsize'] = 7.
             kwargs.setdefault('smoothing_radius', smoothing_radius)
-            randoms_positions = _format_positions(randoms_positions, position_type=position_type, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
+            randoms_positions = _format_positions(randoms_positions, position_type=position_type, dtype=self.dtype, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
             randoms_weights = _format_weights(randoms_weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
             recon = ReconstructionAlgorithm(data_positions=data_positions, data_weights=data_weights,
                                             randoms_positions=randoms_positions, randoms_weights=randoms_weights, f=f, bias=self.bias,
@@ -504,9 +505,9 @@ class CutskyCatalogBlinding(BaseClass):
             raise ValueError('blinding method {} must be one of {}'.format(method, available_methods))
         position_type = kwargs.pop('position_type', self.position_type)
         mpiroot = kwargs.pop('mpiroot', self.mpiroot)
-        data_positions = _format_positions(data_positions, position_type=position_type, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
+        data_positions = _format_positions(data_positions, position_type=position_type, dtype=self.dtype, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
         data_weights = _format_weights(data_weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
-        randoms_positions = _format_positions(randoms_positions, position_type=position_type, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
+        randoms_positions = _format_positions(randoms_positions, position_type=position_type, dtype=self.dtype, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
         randoms_weights = _format_weights(randoms_weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
         if recon is None:
             recon = 'IterativeFFTReconstruction'
