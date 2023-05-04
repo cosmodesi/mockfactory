@@ -34,7 +34,7 @@ def test_blinding():
     data_png = data.deepcopy()
     randoms_png = randoms.deepcopy()
     method = 'randoms_weights'
-    result = blinding.png(data['Position'], data_weights=data['Weight'], randoms_positions=randoms['Position'], method=method)
+    result = blinding.png(data['Position'], data_weights=data['Weight'], randoms_positions=randoms['Position'], method=method, shotnoise_correction=True)
     if 'data' in method: catalog = data_png
     else: catalog = randoms_png
     if 'weights' in method:

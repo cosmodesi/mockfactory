@@ -559,7 +559,7 @@ class CutskyCatalogBlinding(BaseClass):
             #csum_randoms_weights = mpy.cshape(randoms_positions)[0] if randoms_weights is None else mpy.csum(randoms_weights)
             #inv_shotnoise = recon._smooth_gaussian(recon.mesh_randoms / np.prod(recon.cellsize) * csum_data_weights / csum_randoms_weights)  # apply a gaussian smoothing
 
-            ndata, nrandoms = mpy.cshape(data_positions)[0], mpy.cshape(randoms_positions)[0]
+            ndata, nrandoms = self.mpicomm.allreduce(len(data_positions)), self.mpicomm.allreduce(len(randoms_positions))
 
             recon.mesh_data = None
             recon.assign_data(data_positions, weights=(data_weights * data_weights), position_type='pos', mpiroot=None)
@@ -567,14 +567,14 @@ class CutskyCatalogBlinding(BaseClass):
 
             recon.mesh_data = None
             recon.assign_data(data_positions, weights=None, position_type='pos', mpiroot=None)
-            N_gal = recon.mesh_data
- 
+            ngal = recon.mesh_data
+
             recon.mesh_data = None
             recon.assign_data(randoms_positions, weights=None, position_type='pos', mpiroot=None)
             nbar = recon.mesh_data / np.prod(recon.cellsize) * ndata / nrandoms
 
-            ratio = sum_w2 / N_gal 
-            ratio[N_gal == 0] = 1
+            ratio = sum_w2 / ngal
+            ratio[ngal == 0] = 1
             inv_shotnoise = recon._smooth_gaussian(nbar / ratio)
 
             # compute the corrective factor at k_pivot
@@ -588,8 +588,8 @@ class CutskyCatalogBlinding(BaseClass):
             else:
                 shotnoise = 0.
 
-            sel = W(pk_lin.k) > 1e-4  # to avoid error during the interpolation...
-            sigma_d_2 = pk_lin.clone(k=pk_lin.k[sel], pk=(W(pk_lin.k)**2 * pk_lin(pk_lin.k))[sel]).sigma_d()**2
+            mask = W(pk_lin.k) > 1e-4  # to avoid error during the interpolation...
+            sigma_d_2 = pk_lin.clone(k=pk_lin.k[mask], pk=(W(pk_lin.k)**2 * pk_lin(pk_lin.k))[mask]).sigma_d()**2
 
             X_tilde = b1 * (b1 + f * mu_pivot**2) * W(k_pivot) * pk_lin(k_pivot) + W(k_pivot) * shotnoise * np.exp(- 0.5 * k_pivot**2 * mu_pivot**2 * f**2 * sigma_d_2)
             Y_tilde = b1**2 * W(k_pivot)**2 * pk_lin(k_pivot) + W(k_pivot)**2 * shotnoise
