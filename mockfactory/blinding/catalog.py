@@ -575,6 +575,7 @@ class CutskyCatalogBlinding(BaseClass):
 
             ratio = sum_w2 / ngal
             ratio[ngal == 0] = 1
+
             inv_shotnoise = recon._smooth_gaussian(nbar / ratio)
 
             # compute the corrective factor at k_pivot
