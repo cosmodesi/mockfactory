@@ -249,11 +249,24 @@ def test_poisson():
         plt.show()
 
 
+def test_lognormal():
+    mock = EulerianLinearMock(power, nmesh=256, boxsize=5500, boxcenter=[0, 0, 0], seed=42, unitary_amplitude=False)
+    mock.set_real_delta_field(bias=2, lognormal_transform=True)
+    mock.set_analytic_selection_function(nbar=1e-4)
+    mock.poisson_sample(seed=792)
+    box = mock.to_catalog()
+    position = box.cget('Position')
+    if mock.mpicomm.rank == 0:
+        plt.hist2d(position[:, 0], position[:, 1], bins=100)
+        plt.show()
+
+
 if __name__ == '__main__':
 
     setup_logging()
     # test_pm()
     # test_readout()
-    test_eulerian()
-    test_lagrangian()
+    # test_eulerian()
+    # test_lagrangian()
+    test_lognormal()
     # test_mpi()
