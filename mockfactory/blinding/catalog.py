@@ -564,6 +564,10 @@ class CutskyCatalogBlinding(BaseClass):
             recon.mesh_data = None
             recon.assign_data(data_positions, weights=(data_weights * data_weights), position_type='pos', mpiroot=None)
             sum_w2 = recon.mesh_data
+            
+            recon.mesh_data = None
+            recon.assign_data(data_positions, weights=(data_weights), position_type='pos', mpiroot=None)
+            sum_w = recon.mesh_data
 
             recon.mesh_data = None
             recon.assign_data(data_positions, weights=None, position_type='pos', mpiroot=None)
@@ -572,8 +576,8 @@ class CutskyCatalogBlinding(BaseClass):
             recon.mesh_data = None
             recon.assign_data(randoms_positions, weights=None, position_type='pos', mpiroot=None)
             nbar = recon.mesh_data / np.prod(recon.cellsize) * ndata / nrandoms
-
-            ratio = sum_w2 / ngal
+          
+            ratio = sum_w2 / (sum_w**2 * ngal)
             ratio[ngal == 0] = 1
 
             inv_shotnoise = recon._smooth_gaussian(nbar / ratio)
