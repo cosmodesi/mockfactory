@@ -560,6 +560,8 @@ class CutskyCatalogBlinding(BaseClass):
             #inv_shotnoise = recon._smooth_gaussian(recon.mesh_randoms / np.prod(recon.cellsize) * csum_data_weights / csum_randoms_weights)  # apply a gaussian smoothing
 
             ndata, nrandoms = self.mpicomm.allreduce(len(data_positions)), self.mpicomm.allreduce(len(randoms_positions))
+            data_weights = np.ones(len(data_position)) if data_weights is None else data_weights
+            randoms_weights = np.ones(len(randoms_position)) if randoms_weights is None else randoms_weights
 
             recon.mesh_data = None
             recon.assign_data(data_positions, weights=(data_weights * data_weights), position_type='pos', mpiroot=None)
@@ -567,7 +569,11 @@ class CutskyCatalogBlinding(BaseClass):
             
             recon.mesh_data = None
             recon.assign_data(data_positions, weights=(data_weights), position_type='pos', mpiroot=None)
-            sum_w = recon.mesh_data
+            sum_wd = recon.mesh_data
+            
+            recon.mesh_data = None
+            recon.assign_data(randoms_positions, weights=(randoms_weights), position_type='pos', mpiroot=None)
+            sum_wr = recon.mesh_data
 
             recon.mesh_data = None
             recon.assign_data(data_positions, weights=None, position_type='pos', mpiroot=None)
@@ -577,7 +583,7 @@ class CutskyCatalogBlinding(BaseClass):
             recon.assign_data(randoms_positions, weights=None, position_type='pos', mpiroot=None)
             nbar = recon.mesh_data / np.prod(recon.cellsize) * ndata / nrandoms
           
-            ratio = sum_w2 / (sum_w**2 * ngal)
+            ratio = sum_w2 / (sum_wd * sum_wr * ngal)
             ratio[ngal == 0] = 1
 
             inv_shotnoise = recon._smooth_gaussian(nbar / ratio)
