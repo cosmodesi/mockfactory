@@ -555,27 +555,25 @@ class CutskyCatalogBlinding(BaseClass):
             slab[~nonzero] = 0.
 
         if shotnoise_correction:
-            data_weights = np.ones(len(data_position)) if data_weights is None else data_weights
-            randoms_weights = np.ones(len(randoms_position)) if randoms_weights is None else randoms_weights
-            
-            csum_data_weights = mpy.csum(data_weights)
-            csum_randoms_weights = mpy.csum(randoms_weights)
-            alpha = csum_data_weights / csum_randoms_weights
-            
+
             recon.mesh_data = None
-            recon.assign_data(data_positions, weights=(data_weights * data_weights), position_type='pos', mpiroot=None)
+            recon.assign_data(data_positions, weights=data_weights * data_weights if data_weights is not None else None, position_type='pos', mpiroot=None)
             sum_w2 = recon.mesh_data
-            
+
             recon.mesh_data = None
             recon.assign_data(data_positions, weights=data_weights, position_type='pos', mpiroot=None)
             sum_wd = recon.mesh_data
-            
-            recon.mesh_data = None
-            recon.assign_data(randoms_positions, weights=randoms_weights, position_type='pos', mpiroot=None)
-            sum_wr = recon.mesh_data
-            
+
+            if randoms_positions is not None:
+                recon.mesh_data = None
+                recon.assign_data(randoms_positions, weights=randoms_weights, position_type='pos', mpiroot=None)
+                alpha = mpy.csum(data_weights if data_weights is not None else len(data_positions), mpicomm=self.mpicomm) / mpy.csum(randoms_weights if randoms_weights is not None else len(randoms_positions), mpicomm=self.mpicomm)
+                nbar = alpha / np.prod(recon.cellsize) * recon.mesh_data
+            else:
+                nbar = mpy.csum(data_weights if data_weights is not None else len(data_positions), mpicomm=self.mpicomm) / np.prod(recon.boxsize)
+
             sum_w2[sum_w2 == 0.] = 1.  # just to avoid NaN's below
-            inv_shotnoise = alpha * sum_wd * sum_wr / np.prod(recon.cellsize) / sum_w2
+            inv_shotnoise = sum_wd * nbar / sum_w2
             inv_shotnoise = recon._smooth_gaussian(inv_shotnoise)
 
             # compute the corrective factor at k_pivot
@@ -596,7 +594,7 @@ class CutskyCatalogBlinding(BaseClass):
             Y_tilde = b1**2 * W(k_pivot)**2 * pk_lin(k_pivot) + W(k_pivot)**2 * shotnoise
             expected_pivot = 2 * bfnl / Tk(k_pivot) * b1 * (b1 + f * mu_pivot**2) * pk_lin(k_pivot) + (bfnl / Tk(k_pivot))**2 * b1**2 * pk_lin(k_pivot)
 
-            # two solutions, keep the positive one.
+            # two solutions, keep the positive one
             shotnoise_factor = (- X_tilde + np.sqrt(X_tilde**2 + Y_tilde * expected_pivot)) / Y_tilde / (bfnl / Tk(k_pivot))
             # if recon.mpicomm.rank == 0: print(pk_lin.sigma_d(), shotnoise, W, X_tilde, Y_tilde, bfnl / Tk(k_pivot), expected_pivot, shotnoise_factor)
         else:

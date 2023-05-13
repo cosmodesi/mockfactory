@@ -23,7 +23,7 @@ def test_blinding():
     mock.set_rsd(f=f, los=None)
 
     data = RandomBoxCatalog(nbar=nbar, boxsize=boxsize, boxcenter=boxcenter, seed=seed)
-    data['Weight'] = mock.readout(data['Position'], field='delta', resampler='tsc', compensate=True) + 1.
+    data['Weight'] = np.clip(1. + mock.readout(data['Position'], field='delta', resampler='tsc', compensate=True), 0., 2.)
     randoms = RandomBoxCatalog(nbar=10. * nbar, boxsize=boxsize, boxcenter=boxcenter, seed=seed)
     randoms['Weight'] = randoms.ones()
     cosmo_blind = get_cosmo_blind(cosmo.clone(w0_fld=-0.8, wa_fld=0.5), z=z, seed=42, params={'f': 0.05, 'fnl': 10.})
