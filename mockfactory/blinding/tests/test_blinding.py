@@ -23,7 +23,7 @@ def test_blinding():
     mock.set_rsd(f=f, los=None)
 
     data = RandomBoxCatalog(nbar=nbar, boxsize=boxsize, boxcenter=boxcenter, seed=seed)
-    data['Weight'] = mock.readout(data['Position'], field='delta', resampler='tsc', compensate=True) + 1.
+    data['Weight'] = np.clip(1. + mock.readout(data['Position'], field='delta', resampler='tsc', compensate=True), 0., 2.)
     randoms = RandomBoxCatalog(nbar=10. * nbar, boxsize=boxsize, boxcenter=boxcenter, seed=seed)
     randoms['Weight'] = randoms.ones()
     cosmo_blind = get_cosmo_blind(cosmo.clone(w0_fld=-0.8, wa_fld=0.5), z=z, seed=42, params={'f': 0.05, 'fnl': 10.})
@@ -34,7 +34,7 @@ def test_blinding():
     data_png = data.deepcopy()
     randoms_png = randoms.deepcopy()
     method = 'randoms_weights'
-    result = blinding.png(data['Position'], data_weights=data['Weight'], randoms_positions=randoms['Position'], method=method)
+    result = blinding.png(data['Position'], data_weights=data['Weight'], randoms_positions=randoms['Position'], method=method, shotnoise_correction=True)
     if 'data' in method: catalog = data_png
     else: catalog = randoms_png
     if 'weights' in method:

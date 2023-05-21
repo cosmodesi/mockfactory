@@ -248,7 +248,7 @@ class BaseGaussianMock(BaseClass):
         self.pm = ParticleMesh(BoxSize=_make_array(boxsize, 3, dtype='f8'), Nmesh=_make_array(nmesh, 3, dtype='i8'), dtype=dtype, comm=self.mpicomm)
 
         if los is not None:
-            los = self._get_los(los)
+            los = _get_los(los)
         self.attrs['los'] = los
         self.set_complex_delta_field()
 
