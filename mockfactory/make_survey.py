@@ -500,6 +500,7 @@ class RedshiftDensityInterpolator(BaseClass):
         elif np.ndim(bins) == 0:
             bins = np.linspace(*zrange(z), num=bins + 1, endpoint=True)
 
+        bins = np.array(bins, dtype='f8')
         counts = np.histogram(z, weights=weights, bins=bins)[0]
         counts = mpy.reduce(counts, op='sum', mpicomm=self.mpicomm, mpiroot=Ellipsis)
 
@@ -511,6 +512,7 @@ class RedshiftDensityInterpolator(BaseClass):
             dvol = 1.
         else:
             dvol = fsky * 4. / 3. * np.pi * (dbins[1:]**3 - dbins[:-1]**3)
+        self.edges = bins
         self.z = (bins[:-1] + bins[1:]) / 2.
         self.nbar = counts / dvol
         self.interp = interpolate.UnivariateSpline(self.z, self.nbar, k=interp_order, s=0, ext='zeros')
