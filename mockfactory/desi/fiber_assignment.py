@@ -156,8 +156,10 @@ def _run_assign_init(args, tiles, targets, plate_radec=True, use_sky_targets=Tru
         if args.obsdate is not None:
             # obstime is given, use that for all tiles
             obsdate = astropy.time.Time(args.obsdate)
-            obsmjd = [obsdate.mjd, ] * tiles.shape[0]
-            obsdatestr = [obsdate.isot, ] * tiles.shape[0]
+            #obsmjd = [obsdate.mjd, ] * tiles.shape[0]
+            #obsdatestr = [obsdate.isot, ] * tiles.shape[0]
+            obsmjd = [obsdate.mjd, ] * len(tiles)
+            obsdatestr = [obsdate.isot, ] * len(tiles)
         elif "OBSDATE" in tiles.names:
             # We have the obsdate for every tile in the file.
             obsdate = [astropy.time.Time(x) for x in tiles["OBSDATE"]]
@@ -166,8 +168,10 @@ def _run_assign_init(args, tiles, targets, plate_radec=True, use_sky_targets=Tru
         else:
             # default to middle of the survey
             obsdate = astropy.time.Time('2022-07-01')
-            obsmjd = [obsdate.mjd, ] * tiles.shape[0]
-            obsdatestr = [obsdate.isot, ] * tiles.shape[0]
+            #obsmjd = [obsdate.mjd, ] * tiles.shape[0]
+            #obsdatestr = [obsdate.isot, ] * tiles.shape[0]
+            obsmjd = [obsdate.mjd, ] * len(tiles)
+            obsdatestr = [obsdate.isot, ] * len(tiles)
 
         # Eventually, call a function from desimodel to query the field
         # rotation and hour angle for every tile time.
@@ -179,15 +183,19 @@ def _run_assign_init(args, tiles, targets, plate_radec=True, use_sky_targets=Tru
             theta_obs = np.array(theta_obs)
         else:
             # support scalar or array args.fieldrot inputs
-            theta_obs = np.zeros(tiles.shape[0], dtype=np.float64)
+            #theta_obs = np.zeros(tiles.shape[0], dtype=np.float64)
+            theta_obs = np.zeros(len(tiles), dtype=np.float64)
             theta_obs[:] = args.fieldrot
 
         # default to zero Hour Angle; may be refined later
-        ha_obs = np.zeros(tiles.shape[0], dtype=np.float64)
+        #ha_obs = np.zeros(tiles.shape[0], dtype=np.float64)
+        ha_obs = np.zeros(len(tiles), dtype=np.float64)
         if args.ha is not None:
             ha_obs[:] = args.ha
 
-        return Tiles(tiles["TILEID"].values, tiles["RA"].values, tiles["DEC"].values, tiles["OBSCONDITIONS"].values, obsdatestr, theta_obs, ha_obs)
+        #return Tiles(tiles["TILEID"].values, tiles["RA"].values, tiles["DEC"].values, tiles["OBSCONDITIONS"].values, obsdatestr, theta_obs, ha_obs)
+        return Tiles(tiles["TILEID"], tiles["RA"], tiles["DEC"], tiles["OBSCONDITIONS"], obsdatestr, theta_obs, ha_obs)
+
 
     def convert_targets_to_fiberassign(args, targets, tiles, program, use_sky_targets=True, sky_targets=None):
         """ Adapted from https://github.com/desihub/fiberassign/blob/8e6e8264bf80fde07162de5e3f5343c621d65e3e/py/fiberassign/scripts/assign.py#L281.
@@ -230,7 +238,8 @@ def _run_assign_init(args, tiles, targets, plate_radec=True, use_sky_targets=Tru
     hw = load_hardware(rundate=args.rundate, add_margins=args.margins)
 
     # convert target to fiberassign.Targets Class
-    tgs, tagalong = convert_targets_to_fiberassign(args, targets, tiles, tiles['PROGRAM'].values[0], use_sky_targets=use_sky_targets)
+    #tgs, tagalong = convert_targets_to_fiberassign(args, targets, tiles, tiles['PROGRAM'].values[0], use_sky_targets=use_sky_targets)
+    tgs, tagalong = convert_targets_to_fiberassign(args, targets, tiles, tiles['PROGRAM'][0], use_sky_targets=use_sky_targets)
 
     # convert tiles to fiberassign.Tiles Class
     tiles = convert_tiles_to_fiberassign(args, tiles)
@@ -386,7 +395,11 @@ def _run_fiber_assignment_one_pass(tiles, targets, opts_for_fa, plate_radec=True
 
     # Convert data to fiberassign class
     # targets should be a dtype numpy array here
-    hw, tiles, tgs, tagalong = _run_assign_init(ag, tiles, targets.to_array(), plate_radec=plate_radec, use_sky_targets=use_sky_targets, sky_targets=sky_targets)
+    
+    from astropy.table import Table
+    tiles_new_format = Table(tiles.to_records())
+    
+    hw, tiles, tgs, tagalong = _run_assign_init(ag, tiles_new_format, targets.to_array(), plate_radec=plate_radec, use_sky_targets=use_sky_targets, sky_targets=sky_targets)
 
     # run assignment
     asgn = _run_assign_full(ag, hw, tiles, tgs, tagalong)
