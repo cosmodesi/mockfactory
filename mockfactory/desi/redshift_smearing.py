@@ -27,6 +27,8 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None, uncertainty_type='statistic
             elif uncertainty_type == 'clustering':
                 fn = ['{}_redshift_smearing_clustering.ecsv'.format(tracer)]
         else:
+            if uncertainty_type == 'clustering':
+                raise ValueError(f'The {tracer} redshift uncertainty estimated from clustering effect is consistent with that from statistical method (repeat observation). For more information, you can refer to arxiv:2306.06313')
             fn = ['{}_redshift_smearing_sv1.ecsv'.format(tracer)]
         fn = [os.path.join(dirname, ff) for ff in fn]
 
@@ -54,19 +56,14 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None, uncertainty_type='statistic
                 sigma, x0, p, mu, la = table['val_fit'][iz]
                 trunc = 2000
                 rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc, loc=mu, scale=p / 2))
-                rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc,loc=x0, scale=sigma))
+                rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc, loc=x0, scale=sigma))
         elif tracer == 'LRG':
             sigma, x0, p, mu, la = table['val_fit'][iz]
             trunc = 400
             rvs_nongaussian.append(utils.trunccauchy(a=-trunc, b=trunc, loc=mu, scale=p / 2))
-            rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc,loc=x0, scale=sigma))
+            rvs_gaussian.append(utils.truncnorm(a=-trunc, b=trunc, loc=x0, scale=sigma))
         elif tracer in ['ELG', 'BGS']:
             sigma, x0, p, mu, la = table['val_fit'][iz]
-            # need to use truncated cauchy (utils.trunccauchy) (range=[a, b]) instead stats.cauchy
-            # do not use scipy.stats.truncnorm (strange behavior and do not work here
-            # cannot use scale and loc.. --> sc and lo instead :)
-            # trunc is empirically decided by the distribution of repeat observation
-            # for SV1, trunc is 150 km/s for ELG and BGS
             if tracer == 'ELG':
                 trunc = 150
             else:
@@ -164,16 +161,17 @@ if __name__ == '__main__':
             xmin, xmax = [scale * dz for dz in [xmin, xmax]]
             jacpdf *= 1. / scale
             xpdf *= scale
-        ax.hist(dz, density=True, histtype='step', color='k', bins=np.linspace(xmin, xmax, 50))
+        ax.hist(dz, density=True, histtype='step', color='k', bins=np.linspace(xmin, xmax, 50), label='sampled dz')
         # Compute interpolated pdf
         iz = np.searchsorted(z, zz, side='right') - 1
         alpha = (zz - z[iz]) / (z[iz + 1] - z[iz]) if iz < len(z) - 1 else 0.
         pdf = (1. - alpha) * sum(weight[iz] * rv[iz].pdf(dvpdf) for rv, weight in zip(rvs, weights))
         if alpha != 0.:
             pdf += alpha * sum(weight[iz + 1] * rv[iz + 1].pdf(dvpdf) for rv, weight in zip(rvs, weights))
-        ax.plot(xpdf, jacpdf * pdf, color='r')
+        ax.plot(xpdf, jacpdf * pdf, color='r', label='observed profile')
         ax.set_xlabel(f'${unit}$')
         ax.set_xlim(xmin, xmax)
+        ax.legend()
 
     if rs.mpicomm.rank == 0:
         plt.tight_layout()
