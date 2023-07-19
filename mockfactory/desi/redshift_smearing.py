@@ -91,7 +91,7 @@ def TracerRedshiftSmearing(tracer='QSO', fn=None, uncertainty_type='statistical'
     Return :class:`RVS2DRedshiftSmearing` instance given input tabulate file of redshift errors.
     Redshift errors can be sampled through: ``dz = rs.sample(z, seed=42)``.
     """
-    z, rvs, weights, dztransform = TracerRedshiftSmearingRVS(tracer=tracer, fn=fn, uncertainty_type='statistical')
+    z, rvs, weights, dztransform = TracerRedshiftSmearingRVS(tracer=tracer, fn=fn, uncertainty_type=uncertainty_type)
     if tracer == 'QSO':
         if uncertainty_type == 'statistical':
             dzscale = 5e3
@@ -125,7 +125,7 @@ if __name__ == '__main__':
     args = collect_argparser()
 
     # Instantiate redshift smearing class
-    rs = TracerRedshiftSmearing(tracer=args.tracer)
+    rs = TracerRedshiftSmearing(tracer=args.tracer, uncertainty_type=args.uncertainty)
 
     # Load random variates, to get pdf to compare to
     z, rvs, weights, dztransform = TracerRedshiftSmearingRVS(tracer=args.tracer, uncertainty_type=args.uncertainty)
