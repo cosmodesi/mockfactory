@@ -112,9 +112,9 @@ if __name__ == '__main__':
 
     def collect_argparser():
         parser = ArgumentParser(description="Load and display the redshift smearing for args.tracer")
-        parser.add_argument("--tracer", type=str, required=True, default='QSO',
+        parser.add_argument("--tracer", type=str, default='QSO', choices=['QSO', 'LRG', 'ELG', 'BGS'],
                             help="the tracer for redshift smearing: QSO, LRG, ELG, BGS")
-        parser.add_argument("--uncertainty", type=str, required=True, default='statistical',
+        parser.add_argument("--uncertainty", type=str, default='statistical', choices=['statistical', 'clustering'],
                             help="the method to obtain the redshift uncertainty: statistical, clustering")
         return parser.parse_args()
 
@@ -175,5 +175,5 @@ if __name__ == '__main__':
 
     if rs.mpicomm.rank == 0:
         plt.tight_layout()
-        plt.savefig('{}_{}.png'.format(args.tracer,args.uncertainty))
+        plt.savefig('{}_{}.png'.format(args.tracer, args.uncertainty))
         plt.show()
