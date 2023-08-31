@@ -1446,11 +1446,11 @@ class TabulatedRadialMask(BaseRadialMask):
             self.norm = 1.
             self._set_interp()
 
-            def solve_newton(x, fun, grad):
-                v = fun(x)
-                while (np.abs(v) > 1e-15):
-                    x -= v / grad(x)
-                    v = fun(x)
+            def solve_newton(x, fun, grad, crit):
+                xnew = x - fun(x) / grad(x)
+                while not crit(x, xnew):
+                    x = xnew
+                    xnew -= fun(x) / grad(x)
                 return x
 
             grad = self.interp.derivative()
@@ -1459,7 +1459,16 @@ class TabulatedRadialMask(BaseRadialMask):
             # Finer binning to account for interpolation
             z = np.linspace(self.z[0], self.z[-1], len(self.z) * self.interp_order)
             nz = self.interp(z)
-            nbar_max = self.interp(solve_newton(z[np.argmax(nz)], grad, jac))
+            argmax = np.argmax(nz)
+            if np.allclose(nz, nz[0]):
+                nbar_max = nz[argmax]
+            else:
+                prec = 1e-6 * (nz[argmax] - nz.min())
+
+                def crit(x, xnew):
+                    return np.abs(self.interp(xnew) - self.interp(x)) < prec
+
+                nbar_max = self.interp(solve_newton(z[argmax], grad, jac, crit=crit))
             nbar_max = self.mpicomm.bcast(nbar_max, root=self.mpiroot)
             if np.any(nbar_max < nz):
                 raise ValueError('Could not find maximum of nbar')
