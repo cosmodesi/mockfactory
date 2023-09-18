@@ -1432,7 +1432,8 @@ class TabulatedRadialMask(BaseRadialMask):
         ----------
         norm : float, default=None
             Factor to scale :attr:`nbar`.
-            Defaults to maximum of interpolated :attr:`nbar` in redshift range.
+            Defaults to maximum of interpolated :attr:`nbar`.
+            WARNING: global maximum of :attr:`nbar` is searched for, without condition on :attr:`zrange`.
 
         interp_order : int, default=None
             If not ``None``, replace :attr:`interp_order`.
@@ -1443,36 +1444,41 @@ class TabulatedRadialMask(BaseRadialMask):
             self.interp_order = 3
 
         if norm is None:
-            self.norm = 1.
+            self.norm = None
             self._set_interp()
 
-            def solve_newton(x, fun, grad, crit):
-                xnew = x - fun(x) / grad(x)
-                while not crit(x, xnew):
-                    x = xnew
-                    xnew -= fun(x) / grad(x)
-                return x
-
             grad = self.interp.derivative()
-            jac = grad.derivative()
-
-            # Finer binning to account for interpolation
-            z = np.linspace(self.z[0], self.z[-1], len(self.z) * self.interp_order)
-            nz = self.interp(z)
-            argmax = np.argmax(nz)
-            if np.allclose(nz, nz[0]):
-                nbar_max = nz[argmax]
+            try:
+                jac = grad.derivative()
+            except ValueError:  # no second derivative
+                norm = 1. / np.max(self.nbar)
             else:
-                prec = 1e-6 * (nz[argmax] - nz.min())
 
-                def crit(x, xnew):
-                    return np.abs(self.interp(xnew) - self.interp(x)) < prec
+                def solve_newton(x, fun, grad, crit):
+                    xnew = x - fun(x) / grad(x)
+                    while not crit(x, xnew):
+                        x = xnew
+                        xnew -= fun(x) / grad(x)
+                    return x
 
-                nbar_max = self.interp(solve_newton(z[argmax], grad, jac, crit=crit))
-            nbar_max = self.mpicomm.bcast(nbar_max, root=self.mpiroot)
-            if np.any(nbar_max < nz):
-                raise ValueError('Could not find maximum of nbar')
-            norm = 1. / nbar_max
+                # Finer binning to account for interpolation
+                z = np.linspace(self.z[0], self.z[-1], len(self.z) * self.interp_order)
+                nz = self.interp(z)
+                argmax = np.argmax(nz)
+                if np.allclose(nz, nz[0]):
+                    nbar_max = nz[argmax]
+                else:
+                    prec = 1e-6 * (nz[argmax] - nz.min())
+
+                    def crit(x, xnew):
+                        return np.abs(self.interp(xnew) - self.interp(x)) < prec
+
+                    nbar_max = self.interp(solve_newton(z[argmax], grad, jac, crit=crit))
+                nbar_max = self.mpicomm.bcast(nbar_max, root=self.mpiroot)
+                if np.any(nbar_max < nz):
+                    raise ValueError('Could not find maximum of nbar')
+
+                norm = 1. / nbar_max
 
         self.norm = norm
         self._set_interp()
@@ -1480,7 +1486,9 @@ class TabulatedRadialMask(BaseRadialMask):
 
     def _set_interp(self):
         # Set :attr:`interp`, the end user does not need to call it
-        prob = np.clip(self.norm * self.nbar, 0., 1.)
+        prob = self.nbar
+        if self.norm is not None:
+            prob = np.minimum(self.norm * self.nbar, 1.)
         self.interp = interpolate.UnivariateSpline(self.z, prob, k=self.interp_order, s=0, ext='zeros')
 
     @property

@@ -225,9 +225,10 @@ def test_masks():
 
     z = np.linspace(0.5, 1.5, 100)
     nbar = np.ones_like(z)
-    selection = TabulatedRadialMask(z=z, nbar=nbar, zrange=zrange)
-    mask = selection(z)
-    assert mask[(z >= zrange[0]) & (z <= zrange[1])].all()
+    for interp_order in [1, 2, 3]:
+        selection = TabulatedRadialMask(z=z, nbar=nbar, zrange=zrange, interp_order=interp_order)
+        mask = selection(z)
+        assert mask[(z >= zrange[0]) & (z <= zrange[1])].all()
 
     norm = 0.5
     selection.normalize(0.5)
