@@ -1433,7 +1433,6 @@ class TabulatedRadialMask(BaseRadialMask):
         norm : float, default=None
             Factor to scale :attr:`nbar`.
             Defaults to maximum of interpolated :attr:`nbar`.
-            WARNING: global maximum of :attr:`nbar` is searched for, without condition on :attr:`zrange`.
 
         interp_order : int, default=None
             If not ``None``, replace :attr:`interp_order`.
@@ -1451,11 +1450,14 @@ class TabulatedRadialMask(BaseRadialMask):
             try:
                 jac = grad.derivative()
             except ValueError:  # no second derivative
-                norm = 1. / np.max(self.nbar)
+                m = self.nbar[(self.z >= self.zrange[0]) & (self.z <= self.zrange[-1])].max()
+                norm = 1. / max(m, self.interp(self.zrange[0]), self.interp(self.zrange[-1]))
             else:
 
                 def solve_newton(x, fun, grad, crit):
                     xnew = x - fun(x) / grad(x)
+                    xnew = max(xnew, self.zrange[0])
+                    xnew = min(xnew, self.zrange[-1])
                     while not crit(x, xnew):
                         x = xnew
                         xnew -= fun(x) / grad(x)
