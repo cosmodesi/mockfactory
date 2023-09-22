@@ -1143,7 +1143,7 @@ class RandomCutskyCatalog(CutskyCatalog):
     @CurrentMPIComm.enable
     def __init__(self, rarange=(0., 360.), decrange=(-90., 90.), drange=None, csize=None, nbar=None, seed=None, **kwargs):
         """
-        Initialize :class:`RandomCutskyCatalog`, with a uniform sampling on the sky and as a function of distance.
+        Initialize :class:`RandomCutskyCatalog`, with a uniform sampling on the sky and a constant volume density as a function of distance.
         Set columns 'RA' (degree), 'DEC' (degree), 'Distance' and ``position``.
 
         Parameters
@@ -1628,7 +1628,7 @@ class BaseAngularMask(BaseMask):
     Subclasses should at least implement :meth:`prob`.
     """
     @CurrentMPIComm.enable
-    def __init__(self, rarange=None, decrange=None, mpicomm=None, mpiroot=0):
+    def __init__(self, rarange=None, decrange=None, mpicomm=None):
         """
         Initialize :class:`BaseRadialMask`.
 
@@ -1644,7 +1644,11 @@ class BaseAngularMask(BaseMask):
             The current MPI communicator.
         """
         if rarange is not None:
+            rarange = tuple(rarange)
+            direct = rarange[0] < rarange[-1]
             rarange = utils.wrap_angle(rarange, degree=True)
+            if direct and rarange[1] <= rarange[0]:  # typically, (0., 360.)
+                rarange = (rarange[0], rarange[1] + 360.)
             # if e.g. rarange = (300, 40), we want to select RA > 300 or RA < 40
             self.rarange = tuple(rarange)
         else:

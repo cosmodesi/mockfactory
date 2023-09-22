@@ -45,7 +45,7 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
     survey : string, default='main'
         Type of the survey, 'main' for the standard DESI clustering analysis.
 
-    tiles_fn : string
+    tiles_fn : string, Path
         Template path to csv or fits file of tiles.
 
     return_tile_index : bool

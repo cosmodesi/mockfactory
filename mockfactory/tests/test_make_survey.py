@@ -345,6 +345,42 @@ def test_redshift_density():
     assert np.all((density.z >= z.min()) & (density.z <= z.max() + density.z[-1] - density.z[-2]))
 
 
+def test_random_cutsky():
+    from cosmoprimo.fiducial import DESI
+    cosmo = DESI()
+    distance = cosmo.comoving_radial_distance
+    zrange = [1., 2.]
+    drange = distance(zrange)
+
+    catalog = RandomCutskyCatalog(csize=100000, rarange=[0., 360.], decrange=[-90., 90.], drange=drange, seed=42)
+    assert (catalog['RA'].cmax() > 300) and (catalog['DEC'].cmax() > 80.)
+
+    catalog = RandomCutskyCatalog(csize=100000, rarange=[0., 120.], decrange=[-20., 20], drange=drange)
+    catalog['Z'] = DistanceToRedshift(distance=distance)(catalog['Distance'])
+    density = RedshiftDensityInterpolator(catalog['Z'], weights=None, bins=20, fsky=1., distance=distance, interp_order=1)
+    assert np.std(density.nbar) < 1e-6
+    #ax = plt.gca()
+    #ax.plot(density.z, density.nbar)
+    #plt.show()
+
+
+def test_radial_mask():
+
+    zrange = (0.5, 1.5)
+    zmin, zmax = zrange[0] - 0.2, zrange[1] + 0.2
+    rng = np.random.RandomState(seed=42)
+    z = np.linspace(zmin, zmax, 100)
+    nbar = 10. * np.exp(-(z - 1.)**2 * 10.)
+    for interp_order in [1, 2, 3]:
+        selection = TabulatedRadialMask(z=z, nbar=nbar, zrange=zrange, interp_order=interp_order)
+        s = rng.uniform(zmin, zmax, 100000)
+        mask = selection(s)
+        ax = plt.gca()
+        ax.hist(s[mask], density=True, histtype='step', color='k', bins=100)
+        ax.plot(z, selection.interp(z) / selection.integral())
+        plt.show()
+
+
 def test_rotation_matrix():
 
     def norm(v):
@@ -366,8 +402,10 @@ if __name__ == '__main__':
     test_randoms()
     test_misc()
     test_cutsky()
+    test_random_cutsky()
     test_masks()
     test_redshift_array()
     test_redshift_density()
     test_rotation_matrix()
     test_redshift_smearing()
+    test_radial_mask()
