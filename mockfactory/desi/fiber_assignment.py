@@ -114,14 +114,13 @@ def read_sky_targets(dirname='/global/cfs/cdirs/desi/users/edmondc/desi_targets/
     else:
         if mpicomm.rank == 0: logger.error(f'filetype={filetype} is not expected')
 
-    # Note Catalog.read() reads only header (almost free), nothing is loaded it this time!
+    # Note Catalog.read() reads only header (almost free), nothing is loaded at this time!
     sky_targets = mpy.Catalog.read(fns, filetype=filetype, mpicomm=mpicomm)
 
     # Temporary: there is a strange memory issue if you called sky_targets[mask]['column'] without having read the column before applying mask...
     # For safety: read all the column (load it in memory)
     start = MPI.Wtime()
-    for name in sky_targets.columns():
-        _ = sky_targets[name]
+    sky_targets.get(sky_targets.columns())  # shouldn't be necessary anymore
     mpicomm.Barrier()  # wait all the processes before continuing to avoid MPI waiting failure... (strange but it is like that)
     if mpicomm.rank == 0: logger.info(f'Pre-loaded {len(sky_targets.columns())} columns of all the sky targets done in {MPI.Wtime() - start:3.2} s.')
 
