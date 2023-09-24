@@ -62,7 +62,7 @@ def _write_all_skytargets(dirname, columns=["RA", "DEC", "TARGETID", "DESI_TARGE
             fns = glob(os.path.join(hpdirname, "*fits"))
         fns = list(mpy.bcast(fns, mpiroot=0))
 
-        # Create mlpytools.Catalog
+        # Create mpytools.Catalog
         targets = mpy.Catalog.read(fns, mpicomm=mpicomm)
 
         # first save it in nfiles fits files.
@@ -678,7 +678,7 @@ if __name__ == '__main__':
     program = 'dark'
     npasses = 1
     use_sky_targets = False  # to debug: Use false to speed up the process
-    preload_sky_targets = False  # very usefull if F.A. is applied on several mocks.
+    preload_sky_targets = False  # very useful if F.A. is applied on several mocks.
 
     # Collect tiles from surveyops directory on which the fiber assignment will be applied
     tiles = build_tiles_for_fa(release_tile_path=f'/global/cfs/cdirs/desi/survey/catalogs/{release}/LSS/tiles-{program.upper()}.fits', program=program, npasses=npasses)
@@ -692,50 +692,49 @@ if __name__ == '__main__':
     ts = str(tiles['TILEID'][0]).zfill(6)
     fht = fitsio.read_header(f'/global/cfs/cdirs/desi/target/fiberassign/tiles/trunk/{ts[:3]}/fiberassign-{ts}.fits.gz')
     rundate = fht['RUNDATE']
-    # see fiberassign.scripts.assign.parse_assign (Can modify margins, number of sky fibers for each petal ect...)
+    # see fiberassign.scripts.assign.parse_assign (Can modify margins, number of sky fibers for each petal etc.)
     opts_for_fa = ["--target", " ", "--rundate", rundate, "--mask_column", "DESI_TARGET"]
 
     # Generate example cutsky catalog, scattered on all processes (use a high completeness region):
     cutsky = RandomCutskyCatalog(rarange=(176.5, 182.1), decrange=(-6, 5), nbar=260, seed=44, mpicomm=mpicomm)
-    # save inital ra, dec for plotting purpose (see end of this script)
+    # Save inital ra, dec for plotting purpose (see end of this script)
     ra_ini, dec_ini = cutsky.cget('RA', mpiroot=0), cutsky.cget('DEC', mpiroot=0)
 
-    # To apply F.A., we need to add some information as DESI_TARGET controlling the priority, number of observation per targets ect...
-    # In order to speed the process, fiber assignment on each pass will be parrallelized on the number of tiles. Need also to include list of potential tiles for each targets.
-    # This part should be avoid if the catalog is empty on the process (not check here)
+    # To apply F.A., we need to add some information as DESI_TARGET controlling the priority, number of observation per targets etc.
+    # In order to speed the process, fiber assignment on each pass will be parrallelized on the number of tiles. Need also to include list of potential tiles for each target.
+    # This part should be avoided if the catalog is empty on the process (not checked here).
 
     # Note: here for this small example, we emulate the F.A. for QSO targets. Since they have the highest priority we do not need to add other targets to mimic the real F.A.
-    # To emulate the F.A. for ELG, we will want to add other targets (QSO / LRG) with correct DESI_TARGET column with random postions (it should be enought if no cross-correlation)
+    # To emulate the F.A. for ELG, we will want to add other targets (QSO / LRG) with correct DESI_TARGET column with random postions (it should be enough if no cross-correlation)
     # with the correct density (including the fluctuation from imaging systematics)
-    # For this tiny example, we do not use reobservation for QSO with z>2.1 (could be easly done with the redshift column)
+    # For this tiny example, we do not use reobservation for QSO with z>2.1 (could be easily done with the redshift column).
 
-    # Remove targets without potential observation to mimic the desi footprint (Just to limit the cutsky to real desi cutsky)
-    # Just to not consider targets outside the footprint --> not mandatory !!
+    # Remove targets without potential observation to mimic the desi footprint (just to limit the cutsky to real desi cutsky).
+    # Just to not consider targets outside the footprint --> not mandatory!!
     sel = np.array([(tiles['TILEID'].values[np.array(idx, dtype='int64')].size > 0) for idx in desimodel.footprint.find_tiles_over_point(tiles, cutsky['RA'], cutsky['DEC'])])
     cutsky = cutsky[sel]
     nbr_targets = cutsky.csize
     if mpicomm.rank == 0: logger.info(f'Keep only objects which is in a tile. Working with {nbr_targets} targets')
 
-    # Add requiered columns for F.A.
+    # Add required columns for F.A.
     cutsky['DESI_TARGET'] = 2**2 * np.ones(cutsky.size, dtype='i8')
-    # Warning: the reproducibility (ie) the choice of target when multi-targets are available is done via SUBPRIORITY. Need random generator invariant under MPI scaling !
+    # Warning: the reproducibility i.e. the choice of target when multiple targets are available is done via SUBPRIORITY. Need random generator invariant under MPI scaling!
     cutsky['SUBPRIORITY'] = cutsky.rng(seed=123).uniform(low=0, high=1, dtype='f8')
     cutsky['OBSCONDITIONS'] = 3 * np.ones(cutsky.size, dtype='i8')
     cutsky['NUMOBS_MORE'] = np.ones(cutsky.size, dtype='i8')
-    # take care with MPI ! TARGETID has to be unique !
+    # Take care with MPI! TARGETID has to be unique!
     cumsize = np.cumsum([0] + mpicomm.allgather(cutsky.size))[mpicomm.rank]
     cutsky['TARGETID'] = cumsize + np.arange(cutsky.size)
 
-    # columns needed to run the F.A. and collect the info (They will be exchange between processes during the F.A.)
+    # Columns needed to run the F.A. and collect the info (they will be exchange between processes during the F.A.)
     columns_for_fa = ['RA', 'DEC', 'TARGETID', 'DESI_TARGET', 'SUBPRIORITY', 'OBSCONDITIONS', 'NUMOBS_MORE']
 
     # Let's do the F.A.:
     apply_fiber_assignment(cutsky, tiles, npasses, opts_for_fa, columns_for_fa, mpicomm, use_sky_targets=use_sky_targets, sky_targets=sky_targets)
-    # Compute the completness weight:
-    # if multi-tracer, apply completeness weight once for each tracer independently
+    # Compute the completeness weight: if multi-tracer, apply completeness weight once for each tracer independently
     compute_completeness_weight(cutsky, tiles, npasses, mpicomm)
 
-    # Summarize and plot:
+    # Summarize and plot
     ra, dec = cutsky.cget('RA', mpiroot=0), cutsky.cget('DEC', mpiroot=0)
     numobs, available = cutsky.cget('NUMOBS', mpiroot=0), cutsky.cget('AVAILABLE', mpiroot=0)
     obs_pass, comp_weight = cutsky.cget('OBS_PASS', mpiroot=0), cutsky.cget('COMP_WEIGHT', mpiroot=0)
