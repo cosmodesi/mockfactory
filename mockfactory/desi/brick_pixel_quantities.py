@@ -165,9 +165,9 @@ if __name__ == '__main__':
     # to collect only maskbits, uncomment columns['maskbits'] and comment the rest
     columns = {}
     # default = outside brick primary
-    # columns['maskbits'] = {'fn': '/global/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', 'dtype': 'i2', 'default': 1}
-    # columns['elg_mask'] = {'fn': '/global/cfs/cdirs/desi/survey/catalogs/brickmasks/ELG/v1/{region}/coadd/{brickname:.3s}/{brickname}/{brickname}-elgmask.fits.gz', 'dtype': 'i2', 'default': 0}
-    columns['lrg_mask'] = {'fn': '/global/cfs/cdirs/desi/survey/catalogs/brickmasks/LRG/v1.1/{region}/coadd/{brickname:.3s}/{brickname}/{brickname}-lrgmask.fits.gz', 'dtype': 'i2', 'default': 0}
+    # columns['maskbits'] = {'fn': '/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', 'dtype': 'i2', 'default': 1}
+    # columns['elg_mask'] = {'fn': '/dvs_ro/cfs/cdirs/desi/survey/catalogs/brickmasks/ELG/v1/{region}/coadd/{brickname:.3s}/{brickname}/{brickname}-elgmask.fits.gz', 'dtype': 'i2', 'default': 0}
+    columns['lrg_mask'] = {'fn': '/dvs_ro/cfs/cdirs/desi/survey/catalogs/brickmasks/LRG/v1.1/{region}/coadd/{brickname:.3s}/{brickname}/{brickname}-lrgmask.fits.gz', 'dtype': 'i2', 'default': 0}
     from desitarget import randoms
     columns[randoms.quantities_at_positions_in_a_brick] = {'drdir': '/global/project/projectdirs/cosmo/data/legacysurvey/dr9/{region}/', 'aprad': 1e-9}  # skip apflux
     columns['brickname'] = None

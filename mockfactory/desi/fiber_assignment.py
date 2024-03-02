@@ -364,7 +364,7 @@ def _extract_info_assignment(asgn, verbose=False):
 def _apply_mtl_one_pass(targets, tg_assign, tg_available):
     """
     Proxy of true MTL --> OK FOR THE MOMENT BUT SHOULD BE UPDATEd IN THE FUTURE.
-    (reobservation of QSO z>2.1 has same priority than initial observation of QSO?)
+    (reobservation of QSO z>2.0 has same priority than initial observation of QSO?)
 
     Note we apply fiber assignment pass by pass. Only one observation per target can be done in one pass.
 
@@ -706,7 +706,7 @@ if __name__ == '__main__':
     # Note: here for this small example, we emulate the F.A. for QSO targets. Since they have the highest priority we do not need to add other targets to mimic the real F.A.
     # To emulate the F.A. for ELG, we will want to add other targets (QSO / LRG) with correct DESI_TARGET column with random postions (it should be enough if no cross-correlation)
     # with the correct density (including the fluctuation from imaging systematics)
-    # For this tiny example, we do not use reobservation for QSO with z>2.1 (could be easily done with the redshift column).
+    # For this tiny example, we do not use reobservation for QSO with z>2.0 (could be easily done with the redshift column).
 
     # Remove targets without potential observation to mimic the desi footprint (just to limit the cutsky to real desi cutsky).
     # Just to not consider targets outside the footprint --> not mandatory!!
