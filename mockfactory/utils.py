@@ -39,7 +39,7 @@ def wrap_angle(angle, degree=True):
     return angle / conversion
 
 
-def cartesian_to_sky(position, wrap=True, degree=True):
+def cartesian_to_sky(position, degree=True):
     r"""
     Transform cartesian coordinates into distance, RA, Dec.
 
@@ -47,9 +47,6 @@ def cartesian_to_sky(position, wrap=True, degree=True):
     ----------
     position : array of shape (N, 3)
         Position in cartesian coordinates.
-
-    wrap : bool, default=True
-        Whether to wrap RA in :math:`[0, 2 \pi]` radians.
 
     degree : bool, default=True
         Whether RA, Dec are in degrees (``True``) or radians (``False``).
@@ -67,7 +64,6 @@ def cartesian_to_sky(position, wrap=True, degree=True):
     """
     dist = distance(position)
     ra = np.arctan2(position[..., 1], position[..., 0])
-    ra = wrap_angle(ra, degree=False)
     dec = np.arcsin(position[..., 2] / dist)
     conversion = np.pi / 180. if degree else 1.
     return dist, ra / conversion, dec / conversion

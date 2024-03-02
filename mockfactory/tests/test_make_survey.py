@@ -188,7 +188,7 @@ def test_cutsky():
     assert np.all((cutsky['Distance'] >= drange[0]) & (cutsky['Distance'] <= drange[1])
                    & (cutsky['RA'] >= rarange[0]) & (cutsky['RA'] < rarange[1])
                    & (cutsky['DEC'] >= decrange[0]) & (cutsky['DEC'] <= decrange[1]))
-    dist, ra, dec = utils.cartesian_to_sky(cutsky['Position'], wrap=False)
+    dist, ra, dec = utils.cartesian_to_sky(cutsky['Position'])
     assert np.all((dist >= drange[0]) & (dist <= drange[1]) & (ra >= rarange[0]) & (ra < rarange[1]) & (dec >= decrange[0]) & (dec <= decrange[1]))
 
     catalog = RandomBoxCatalog(boxsize=boxsize * 2.1, csize=10000, boxcenter=10000., seed=42)

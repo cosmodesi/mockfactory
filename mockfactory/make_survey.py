@@ -1019,7 +1019,7 @@ class BoxCatalog(ParticleCatalog):
                                 translational_invariants=catalog._translational_invariants, attrs=catalog.attrs)
         catalog.isometry(isometry)
 
-        dist, ra, dec = utils.cartesian_to_sky(catalog.position, degree=True, wrap=False)
+        dist, ra, dec = utils.cartesian_to_sky(catalog.position, degree=True)
         if rdd is not None:
             for name, array in zip(rdd, [ra, dec, dist]):
                 catalog[name] = array
@@ -1326,11 +1326,13 @@ class BaseRadialMask(BaseMask):
 
         def sample(size, seed=None):
             rng = mpy.random.MPIRandomState(size=size, seed=seed, mpicomm=self.mpicomm)
-            dist = rng.uniform(drange[0], drange[1])
-            prob = dist**2  # jacobian, d^3 r = r^2 dr
-            prob /= prob.max()
-            mask = prob >= rng.uniform(low=0., high=1.)
-            z = DistanceToRedshift(distance, zmax=self.zrange[-1] + 0.1)(dist[mask])
+            #dist = rng.uniform(drange[0], drange[1])
+            #prob = dist**2  # jacobian, d^3 r = r^2 dr
+            #prob /= prob.max()
+            #mask = prob >= rng.uniform(low=0., high=1.)
+            #dist = dist[mask]
+            dist = rng.uniform(drange[0]**3, drange[1]**3)**(1. / 3.)
+            z = DistanceToRedshift(distance, zmax=self.zrange[-1] + 0.1)(dist)
             mask = self(z)
             return z[mask]
 
