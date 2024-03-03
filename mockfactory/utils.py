@@ -64,6 +64,7 @@ def cartesian_to_sky(position, degree=True):
     """
     dist = distance(position)
     ra = np.arctan2(position[..., 1], position[..., 0])
+    ra = wrap_angle(ra, degree=False)
     dec = np.arcsin(position[..., 2] / dist)
     conversion = np.pi / 180. if degree else 1.
     return dist, ra / conversion, dec / conversion
