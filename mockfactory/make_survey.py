@@ -1337,7 +1337,7 @@ class BaseRadialMask(BaseMask):
             return z[mask]
 
         z = []
-        dsize = size
+        dsize = int(size)
         cdsize = self.mpicomm.allreduce(dsize)
         while cdsize > 0:
             seed = mpy.random.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
@@ -1704,7 +1704,7 @@ class BaseAngularMask(BaseMask):
             return ra[mask], dec[mask]
 
         ra, dec = [], []
-        dsize = size
+        dsize = int(size)
         cdsize = self.mpicomm.allreduce(dsize)
         while cdsize > 0:
             seed = mpy.random.bcast_seed(seed=seed, mpicomm=self.mpicomm, size=None) + 1
