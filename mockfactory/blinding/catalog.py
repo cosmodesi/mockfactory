@@ -464,8 +464,8 @@ class CutskyCatalogBlinding(BaseClass):
         The rationale is to change the real-space Fourier galaxy density contrast: :math:`b_{1} \delta(\mathbf{k})` such that it becomes
         :math:`(b_{1} + b_{\phi} f_{NL}^{\mathrm{loc}} \alpha(k)) \delta(\mathbf{k})`.
         The real-space Fourier density contrast :math:`\delta(\mathbf{k})` is obtained through reconstruction,
-        and we add the weight :math:`w_{NL} = - b_{\phi} f_{NL}^{\mathrm{loc}} \alpha \delta` (transformed in configuration space) to each *random* point,
-        namely the result is ``randoms_weights`` (if provided, else 1) multiplied by :math:`1 + w_{NL}`.
+        and we return for each random (resp. data) point the weight :math:`1 - w_{NL}` (resp. :math:`1 + w_{NL}`)
+        where :math:`w_{NL} = b_{\phi} f_{NL}^{\mathrm{loc}} \alpha \delta` (transformed in configuration space).
 
         Parameters
         ----------
@@ -481,7 +481,11 @@ class CutskyCatalogBlinding(BaseClass):
         randoms_weights : array, default=None
             Optionally, randoms weights.
 
-        recon : string, pyrecon.BaseReconstruction, default='IterativeFFTReconstruction'
+        method : str, default='randoms_weights'
+            If 'randoms_weights', apply weights to randoms.
+            If 'data_weigths', apply weights to data.
+
+        recon : str, pyrecon.BaseReconstruction, default='IterativeFFTReconstruction'
             Name of reconstruction algorithm, or (already run) reconstruction instance,
             in which case input ``randoms_positions``, ``randoms_weights`` are ignored.
 
@@ -489,10 +493,10 @@ class CutskyCatalogBlinding(BaseClass):
             Smoothing radius for reconstruction. Larger than for RSD blinding, as we only need large scale RSD to be resolved.
 
         shotnoise_correction : bool, default=False
-            If true, apply shotnoise correction to avoid excess of power at large scales. Need randoms to work.
+            If ``True``, apply shotnoise correction to avoid excess of power at large scales. Requires randoms to work.
 
         kwargs : dict
-            Optionally, reconstruction parameters: ``cellsize`` (defaults to 15.), ``smoothing_radius``, etc.
+            Optionally, reconstruction parameters: ``cellsize`` (defaults to 15.), etc.
             ``position_type``, ``mpiroot`` can be provided to override default :attr:`position_type`, :attr:`mpiroot`.
 
         Returns
@@ -517,10 +521,11 @@ class CutskyCatalogBlinding(BaseClass):
             f = _get_from_cosmo(self.cosmo_fid, 'f', z=self.z)
             if not any(name in kwargs for name in ['nmesh', 'cellsize']):
                 kwargs['cellsize'] = 15.
-            kwargs.setdefault('smoothing_radius', smoothing_radius)
             recon = ReconstructionAlgorithm(data_positions=data_positions, data_weights=data_weights,
                                             randoms_positions=randoms_positions, randoms_weights=randoms_weights, f=f, bias=self.bias,
-                                            position_type='pos', mpicomm=self.mpicomm, mpiroot=None, **kwargs)
+                                            position_type='pos', mpicomm=self.mpicomm, mpiroot=None,
+                                            smoothing_radius=smoothing_radius, **kwargs)
+        sigma1 = recon.smoothing_radius
         shifts = recon.read_shifts(data_positions, position_type='pos', mpiroot=None, field='rsd')
         shifted_positions = data_positions - shifts
         # Just to make sure meshes do not exist anymore
@@ -534,6 +539,7 @@ class CutskyCatalogBlinding(BaseClass):
             raise ValueError('No shot noise correction when blinding is based on particle shifts')
 
         recon.set_density_contrast(smoothing_radius=smoothing_radius)  # divides by bias
+        sigma2 = recon.smoothing_radius
         mesh = recon.mesh_delta.r2c()
         b1 = recon.bias
         bfnl = 2 * 1.686 * (b1 - 1.) * _get_from_cosmo(self.cosmo_blind, 'fnl')
@@ -545,9 +551,6 @@ class CutskyCatalogBlinding(BaseClass):
             pphi_prim = 9 / 25 * 2 * np.pi**2 / k**3 * pk_prim(k) / self.cosmo_fid.h**3
             return (pk_lin(k) / pphi_prim)**0.5
 
-        def W(k, sigma=smoothing_radius):
-            return np.exp(- 0.5 * k**2 * sigma**2)
-
         for kslab, slab in zip(mesh.slabs.x, mesh.slabs):
             k = sum(kk.real**2 for kk in kslab)**0.5
             nonzero = k != 0.
@@ -555,6 +558,12 @@ class CutskyCatalogBlinding(BaseClass):
             slab[~nonzero] = 0.
 
         if shotnoise_correction:
+
+            def S1(k):
+                return np.exp(- 0.5 * k**2 * sigma1**2)
+
+            def S2(k):
+                return np.exp(- 0.5 * k**2 * sigma2**2)
 
             recon.mesh_data = None
             recon.assign_data(data_positions, weights=data_weights * data_weights if data_weights is not None else None, position_type='pos', mpiroot=None)
@@ -587,11 +596,11 @@ class CutskyCatalogBlinding(BaseClass):
             else:
                 shotnoise = 0.
 
-            mask = W(pk_lin.k) > 1e-4  # to avoid error during the interpolation...
-            sigma_d_2 = pk_lin.clone(k=pk_lin.k[mask], pk=(W(pk_lin.k)**2 * pk_lin(pk_lin.k))[mask]).sigma_d()**2
+            mask = S1(pk_lin.k) > 1e-4  # to avoid error during the interpolation...
+            sigma_d_2 = pk_lin.clone(k=pk_lin.k[mask], pk=(S1(pk_lin.k)**2 * pk_lin(pk_lin.k))[mask]).sigma_d()**2
 
-            X_tilde = b1 * (b1 + f * mu_pivot**2) * W(k_pivot) * pk_lin(k_pivot) + W(k_pivot) * shotnoise * np.exp(- 0.5 * k_pivot**2 * mu_pivot**2 * f**2 * sigma_d_2)
-            Y_tilde = b1**2 * W(k_pivot)**2 * pk_lin(k_pivot) + W(k_pivot)**2 * shotnoise
+            X_tilde = (b1 + f * mu_pivot**2) * (b1 + (1. - S1(k_pivot)) * f * mu_pivot**2) * S2(k_pivot) * pk_lin(k_pivot) + S2(k_pivot) * shotnoise * np.exp(- 0.5 * k_pivot**2 * mu_pivot**2 * f**2 * sigma_d_2)
+            Y_tilde = (b1 + (1. - S1(k_pivot)) * f * mu_pivot**2)**2 * S2(k_pivot)**2 * pk_lin(k_pivot) + S2(k_pivot)**2 * shotnoise
             expected_pivot = 2 * bfnl / Tk(k_pivot) * b1 * (b1 + f * mu_pivot**2) * pk_lin(k_pivot) + (bfnl / Tk(k_pivot))**2 * b1**2 * pk_lin(k_pivot)
 
             # two solutions, keep the positive one
