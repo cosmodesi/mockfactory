@@ -29,7 +29,7 @@ def test_blinding():
     cosmo_blind = get_cosmo_blind(cosmo.clone(w0_fld=-0.8, wa_fld=0.5), z=z, seed=42, params={'f': 0.05, 'fnl': 10.})
     assert 'f' in cosmo_blind._derived and 'fnl' in cosmo_blind._derived
     cosmo_blind._derived['f'] = 0.8 * f
-    cosmo_blind._derived['fnl'] = 8.
+    cosmo_blind._derived['fnl'] = 30.
     blinding = CutskyCatalogBlinding(cosmo_fid=cosmo, cosmo_blind=cosmo_blind, bias=bias, z=z)
     data_png = data.deepcopy()
     randoms_png = randoms.deepcopy()
@@ -46,7 +46,7 @@ def test_blinding():
             from matplotlib import pyplot as plt
             plt.hist(cweights)
             plt.show()
-            print('Standard deviation of PNG weights is {:.2f} ({:.2f} - {:.2f})'.format(cstd, cmin, cmax))
+            print('Standard deviation of PNG weights is {:.3f} ({:.3f} - {:.3f})'.format(cstd, cmin, cmax))
     elif 'positions' in method:
         tmp = result - catalog['Position']
         catalog['Position'] = result
