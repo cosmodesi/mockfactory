@@ -156,22 +156,29 @@ if __name__ == '__main__':
     if mpicomm.rank == 0: logger.info('Run simple example to illustrate how to get pixel-level quantities.')
 
     # Generate example cutsky catalog, scattered on all processes
-    cutsky = RandomCutskyCatalog(rarange=(28., 30.), decrange=(1., 2.), csize=10000, seed=44, mpicomm=mpicomm)
+    #cutsky = RandomCutskyCatalog(rarange=(28., 30.), decrange=(1., 2.), csize=10000, seed=44, mpicomm=mpicomm)
+    cutsky = RandomCutskyCatalog(rarange=(28., 30.), decrange=(-10, 35), csize=100000, seed=44, mpicomm=mpicomm)
     ra, dec = cutsky['RA'], cutsky['DEC']
     # to test when empty catalog is given with MPI
-    if mpicomm.rank == 1: ra, dec = [], []
+    #if mpicomm.rank == 1: ra, dec = [], []
 
     start = MPI.Wtime()
     # to collect only maskbits, uncomment columns['maskbits'] and comment the rest
     columns = {}
     # default = outside brick primary
-    # columns['maskbits'] = {'fn': '/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', 'dtype': 'i2', 'default': 1}
+    columns['maskbits'] = {'fn': '/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-maskbits.fits.fz', 'dtype': 'i2', 'default': 1}
+    #columns['nobs_r'] = {'fn': '/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/{brickname}/legacysurvey-{brickname}-nexp-g.fits.fz', 'dtype': 'i2', 'default': 1}
+    
+    
     # columns['elg_mask'] = {'fn': '/dvs_ro/cfs/cdirs/desi/survey/catalogs/brickmasks/ELG/v1/{region}/coadd/{brickname:.3s}/{brickname}/{brickname}-elgmask.fits.gz', 'dtype': 'i2', 'default': 0}
-    columns['lrg_mask'] = {'fn': '/dvs_ro/cfs/cdirs/desi/survey/catalogs/brickmasks/LRG/v1.1/{region}/coadd/{brickname:.3s}/{brickname}/{brickname}-lrgmask.fits.gz', 'dtype': 'i2', 'default': 0}
-    from desitarget import randoms
-    columns[randoms.quantities_at_positions_in_a_brick] = {'drdir': '/global/project/projectdirs/cosmo/data/legacysurvey/dr9/{region}/', 'aprad': 1e-9}  # skip apflux
+    #columns['lrg_mask'] = {'fn': '/dvs_ro/cfs/cdirs/desi/survey/catalogs/brickmasks/LRG/v1.1/{region}/coadd/{brickname:.3s}/{brickname}/{brickname}-lrgmask.fits.gz', 'dtype': 'i2', 'default': 0}
+    
+    #from desitarget import randoms
+    #columns[randoms.quantities_at_positions_in_a_brick] = {'drdir': '/global/project/projectdirs/cosmo/data/legacysurvey/dr9/{region}/', 'aprad': 1e-9}  # skip apflux
+    
     columns['brickname'] = None
     columns['photsys'] = None
+    
     catalog = get_brick_pixel_quantities(ra, dec, columns, mpicomm=mpicomm)
     if mpicomm.rank == 0:
         logger.info('Output columns are {}.'.format(list(catalog.keys())))
