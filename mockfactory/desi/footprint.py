@@ -7,13 +7,20 @@ import numpy as np
 logger = logging.getLogger('DESI footprint')
 
 
-# check if the env variable DESI_SPECTRO_REDUX is defined, otherwise load default path
+# check if the env variable DESI_SPECTRO_REDUX is defined, otherwise load default path:
 try:
     redux_path = os.environ['DESI_SPECTRO_REDUX']
 except KeyError:
     logger.warning("$DESI_SPECTRO_REDUX is not set in the current environment. No assurance for the existence of files. Default path will be used: /global/cfs/cdirs/desi/spectro/redux")
     redux_path = '/global/cfs/cdirs/desi/spectro/redux'
 
+# check if the env variable DESI_SURVEYOPS is defined (needed for desimodel.io.load_tiles()):
+    try:
+        redux_path = os.environ['DESI_SURVEYOPS']
+    except KeyError:
+        # see: https://desisurvey.slack.com/archives/C025RHKPV8R/p1729735768040629?thread_ts=1729733422.550579&cid=C025RHKPV8R
+        logger.warning("$DESI_SURVEYOPS is not set in the current environment. No assurance for the existence of files. Default path will be used: /global/cfs/cdirs/desi/survey/ops/surveyops/trunk")
+        os.environ['DESI_SURVEYOPS'] = '/global/cfs/cdirs/desi/survey/ops/surveyops/trunk'
 
 def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', survey='main',
                          tiles_fn=os.path.join(redux_path, '{redux}/tiles-{redux}.csv'),
@@ -23,7 +30,7 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
 
     Note
     ----
-    Y1 is for the moment defined with the daily catalog, before the fire (20220613).
+    Y1 is defined with the daily catalog, before the fire (20220613) and not from the file in its reduction directory which is equivalent than use redux='iron'.
 
     Parameters
     ----------
@@ -34,7 +41,7 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
         Declination (degree).
 
     release : string, default='m3'
-        Name of the survey. Available: onepercent, m3, y1, y5.
+        Name of the survey. Available: onepercent, m3, y1, y3, y5.
 
     npasses : int, default=None
         Number of passes; ``None`` for all passes.
@@ -67,14 +74,18 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
     elif release == 'y1':
         redux = 'daily'
         lastnight = 20220613
+    elif release == 'y3':
+        redux = 'loa'
     elif release == 'y5':
-        redux = None
+        logger.warning('On 20241010, 231 PASS=0-6 tiles in the DES region (Dec < -20) were added. The expected Y5 footprint generated before 20241010 is therefore not the same... (need some tricks to match it)')
+        redux = None   
     else:
         raise ValueError('Unknown release {}'.format(release))
-
+         
     if redux is None:
         import desimodel.io
         tiles = desimodel.io.load_tiles()
+        tiles = tiles[tiles['PROGRAM'] == program.upper()]
     else:
         import pandas as pd
         tiles_fn = tiles_fn.format(redux=redux)
@@ -95,9 +106,7 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
 
 
 if __name__ == '__main__':
-
     import time
-
     from mockfactory import RandomCutskyCatalog, setup_logging
 
     setup_logging()
@@ -106,7 +115,7 @@ if __name__ == '__main__':
     cutsky = RandomCutskyCatalog(rarange=(200, 250), decrange=(15, 45), csize=10000, seed=44)
     ra, dec = cutsky['RA'], cutsky['DEC']
 
-    for release in ['SV3', 'DA02', 'Y1', 'Y5']:
+    for release in ['SV3', 'DA02', 'Y1', 'Y3', 'Y5']:
         for npasses in [None, 3]:
             t0 = time.time()
             is_in_desi = is_in_desi_footprint(ra, dec, release=release, npasses=npasses, program='dark')
