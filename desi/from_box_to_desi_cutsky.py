@@ -87,10 +87,10 @@ def apply_rsd_and_cutsky(catalog, dmin, dmax, rsd_factor, center_ra=0, center_de
     # Collect distance, ra, dec
     data_cutsky['DISTANCE'], data_cutsky['RA'], data_cutsky['DEC'] = utils.cartesian_to_sky(data_cutsky['RSDPosition'], wrap=True)
     # Apply selection function (purely geometric)
-    mask = mask_radial(data_cutsky['DISTANCE']) & mask_angular(data_cutsky['RA'], data_cutsky['DEC'])
-
-    return data_cutsky[mask]
-
+    # Note: mask_angular from isometry_for_cutsky does not work correcty -> good news we do not need it since we match the n(z) and the desi tiles after.
+    #mask = mask_radial(data_cutsky['DISTANCE']) & mask_angular(data_cutsky['RA'], data_cutsky['DEC'])
+    #return data_cutsky[mask]
+    return data_cutsky
 
 def apply_radial_mask(cutsky, zmin=0., zmax=6., nz_filename='nz_qso_final.dat',
                       apply_redshift_smearing=False, tracer_smearing='QSO',
