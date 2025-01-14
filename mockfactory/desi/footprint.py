@@ -77,7 +77,7 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
     elif release == 'y3':
         redux = 'loa'
     elif release == 'y5':
-        logger.warning('On 20241010, 231 PASS=0-6 tiles in the DES region (Dec < -20) were added. The expected Y5 footprint generated before 20241010 is therefore not the same... (need some tricks to match it)')
+        logger.warning('On 20241010, 231 PASS=0-6 tiles in the DES region (Dec < -20) were added. The expected Y5 footprint generated before 20241010 is therefore not the same... (need some tricks to match it --like recovering with svn the old file.)')
         redux = None   
     else:
         raise ValueError('Unknown release {}'.format(release))
