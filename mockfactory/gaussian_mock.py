@@ -528,7 +528,7 @@ class BaseGaussianMock(BaseClass):
 
         # create uniform grid of particles, one per grid point, in BoxSize coordinates
         positions, ids = self.pm.generate_uniform_particle_grid(shift=0, return_id=True)
-        # no need to do decompose because pos_mesh is strictly within the
+        # no need to do decompose because positions is strictly within the
         # local volume of the RealField.
         number_per_cell = number.readout(positions, resampler='nnb')
         # fight round off errors, if any
