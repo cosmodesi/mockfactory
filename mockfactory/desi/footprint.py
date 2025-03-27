@@ -11,7 +11,7 @@ logger = logging.getLogger('DESI footprint')
 try:
     redux_path = os.environ['DESI_SPECTRO_REDUX']
 except KeyError:
-    logger.warning("$DESI_SPECTRO_REDUX is not set in the current environment. No assurance for the existence of files. Default path will be used: /global/cfs/cdirs/desi/spectro/redux")
+    logger.debug("$DESI_SPECTRO_REDUX is not set in the current environment. No assurance for the existence of files. Default path will be used: /global/cfs/cdirs/desi/spectro/redux")
     redux_path = '/global/cfs/cdirs/desi/spectro/redux'
 
 # check if the env variable DESI_SURVEYOPS is defined (needed for desimodel.io.load_tiles()):
@@ -19,7 +19,7 @@ except KeyError:
         redux_path = os.environ['DESI_SURVEYOPS']
     except KeyError:
         # see: https://desisurvey.slack.com/archives/C025RHKPV8R/p1729735768040629?thread_ts=1729733422.550579&cid=C025RHKPV8R
-        logger.warning("$DESI_SURVEYOPS is not set in the current environment. No assurance for the existence of files. Default path will be used: /global/cfs/cdirs/desi/survey/ops/surveyops/trunk")
+        logger.debug("$DESI_SURVEYOPS is not set in the current environment. No assurance for the existence of files. Default path will be used: /global/cfs/cdirs/desi/survey/ops/surveyops/trunk")
         os.environ['DESI_SURVEYOPS'] = '/global/cfs/cdirs/desi/survey/ops/surveyops/trunk'
 
 def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', survey='main',
