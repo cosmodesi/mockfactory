@@ -22,15 +22,13 @@ from mpi4py import MPI
 logger = logging.getLogger('F.A.')
 
 
-#if os.getenv('DESI_TARGET') is None:
-logger.debug('We are using DESI_TARGET = /dvs_ro/cfs/projectdirs/desi/target/')
-os.environ['DESI_TARGET'] = '/dvs_ro/cfs/projectdirs/desi/target/'
-logger.debug('We are using DESIMODEL = /dvs_ro/common/software/desi/perlmutter/desiconda/current/code/desimodel/main')
-os.environ["DESIMODEL"] = '/dvs_ro/common/software/desi/perlmutter/desiconda/current/code/desimodel/main'
+if os.getenv('DESI_TARGET') is None:
+    logger.debug('We are using DESI_TARGET = /global/cfs/projectdirs/desi/target/s')
+    os.environ['DESI_TARGET'] = '/global/cfs/projectdirs/desi/target/'
 
 
-def build_tiles_for_fa(release_tile_path='/dvs_ro/cfs/cdirs/desi/survey/catalogs/Y1/LSS/tiles-DARK.fits',
-                       surveyops_tile_path='/dvs_ro/cfs/cdirs/desi/survey/ops/surveyops/trunk/ops/tiles-main.ecsv',
+def build_tiles_for_fa(release_tile_path='/global/cfs/cdirs/desi/survey/catalogs/Y1/LSS/tiles-DARK.fits',
+                       surveyops_tile_path='/global/cfs/cdirs/desi/survey/ops/surveyops/trunk/ops/tiles-main.ecsv',
                        program='dark', npasses=7):
     """Load tile properties from surveyops dir selecting only tiles in the desired release/program with enough passes."""
     from desitarget.targetmask import obsconditions
@@ -50,30 +48,98 @@ def build_tiles_for_fa(release_tile_path='/dvs_ro/cfs/cdirs/desi/survey/catalogs
     return tiles
 
 
-def read_sky_targets(tiles):
-    """
-    To avoid to deal with /global/cfs/cdirs/desi/target/catalogs/dr9/1.1.1/ and its 800 fits files in each directory, we read directly the sky targets saved for each tile during the main fiberassign for the real data. 
-    """
+def _write_all_skytargets(dirname, columns=["RA", "DEC", "TARGETID", "DESI_TARGET", "SUBPRIORITY", "OBSCONDITIONS"], program='dark', nfiles=10, mpicomm=None):
+    """It is a real nightmare to work with all the fits file in hpdirname_list more than 800 for each directory. Rewrite it in a smaller number of files."""
+    from glob import glob
+    import mpytools as mpy
+    from fiberassign.fba_launch_io import get_desitarget_paths
 
-    fn = '/dvs_ro/cfs/cdirs/desi/survey/fiberassign/main/{}/{}-sky.fits'
-    fns = [fn.format(f"{tileid:06d}"[:3], f"{tileid:06d}") for tileid in tiles['TILEID']]
+    # Now load the sky target files.  These are main-survey files that we will
+    # force to be treated as the survey type of the other target files.
+    mydirs = get_desitarget_paths('1.1.1', 'main', program, dr='dr9')
+    skydirs = [mydirs["sky"]]
+    if os.path.isdir(mydirs["skysupp"]):
+        skydirs.append(mydirs["skysupp"])
 
-    from mpytools import Catalog
-    # mpicomm=MPI.COMM_SELF -> read files only on this local process.
-    sky_targets = Catalog.read(fns, filetype='fits', mpicomm=MPI.COMM_SELF)
-    sky_targets = sky_targets.to_array()
+    for hpdirname in skydirs:
+        fns = []
+        if mpicomm.rank == 0:
+            fns = glob(os.path.join(hpdirname, "*fits"))
+        fns = list(mpy.bcast(fns, mpiroot=0))
+
+        # Create mpytools.Catalog
+        targets = mpy.Catalog.read(fns, mpicomm=mpicomm)
+
+        # first save it in nfiles fits files.
+        # Create filenames to write targets in less files.
+        basename = '-'.join(os.path.basename(fns[0]).split('-')[:-2])
+        fns_to_save = [os.path.join(dirname, f'{basename}-{i}.fits') for i in range(nfiles)]
+
+        start = MPI.Wtime()
+        targets[columns].write(fns_to_save, filetype='fits')
+        mpicomm.Barrier()
+        if mpicomm.rank == 0: logger.info(f'Write {basename} in {nfiles} done in {MPI.Wtime() - start:2.2f} s.')
+
+        # Save it on one bigfile (more efficient ?)
+        start = MPI.Wtime()
+        targets[columns].write(os.path.join(dirname, f'{basename}'), filetype='bigfile')
+        mpicomm.Barrier()
+        if mpicomm.rank == 0: logger.info(f'Write {basename} in {nfiles} done in {MPI.Wtime() - start:2.2f} s.')
+
+
+def read_sky_targets(dirname='/global/cfs/cdirs/desi/users/edmondc/desi_targets/sky_targets', filetype='fits', tiles=None, mpicomm=None):
+    """
+    To avoid to deal with /global/cfs/cdirs/desi/target/catalogs/dr9/1.1.1/ and its 800 fits files in each directory,
+    we first run _write_all_skytargets in order to reduce the number of files to 20.
+    This function loads sky targets in the corresponding tiles. It is useful to run before the F.A.
+    in order to avoid to spend too much time in reading the sky target fits files during the F.A.
+
+    Remark: dirname is about 34GB. No problem if loaded on several nodes / if you use small number of tiles!
+    """
+    from glob import glob
+    import mpytools as mpy
+    from desimodel.footprint import is_point_in_desi
+
+    t_start = MPI.Wtime()
+    if mpicomm.rank == 0: logger.info(f'Start read sky targets for {tiles.shape[0]} tiles')
+
+    if filetype == 'fits':
+        fns = []
+        if mpicomm.rank == 0:
+            fns = glob(os.path.join(dirname, "*.fits"))
+        fns = list(mpy.bcast(fns, mpiroot=0))
+    elif filetype == 'bigfile':
+        import warnings
+        warnings.simplefilter(action='ignore', category=FutureWarning)
+
+        fns = []
+        if mpicomm.rank == 0:
+            fns = [name for name in glob(os.path.join(dirname, '*')) if len(name.split('.')) == 1]
+        fns = list(mpy.bcast(fns, mpiroot=0))
+    else:
+        if mpicomm.rank == 0: logger.error(f'filetype={filetype} is not expected')
+
+    # Note Catalog.read() reads only header (almost free), nothing is loaded at this time!
+    sky_targets = mpy.Catalog.read(fns, filetype=filetype, mpicomm=mpicomm)
+
+    # Shouldn't be necessary anymore
+    # Temporary: there is a strange memory issue if you called sky_targets[mask]['column'] without having read the column before applying mask...
+    # For safety: read all the column (load it in memory)
+    #start = MPI.Wtime()
+    #sky_targets.get(sky_targets.columns())  # shouldn't be necessary anymore
+    #mpicomm.Barrier()  # wait all the processes before continuing to avoid MPI waiting failure... (strange but it is like that)
+    #if mpicomm.rank == 0: logger.info(f'Pre-loaded {len(sky_targets.columns())} columns of all the sky targets done in {MPI.Wtime() - start:3.2} s.')
+
+    # Keep only targets which are in the desired tiles:
+    sky_targets = sky_targets[is_point_in_desi(tiles, sky_targets['RA'], sky_targets['DEC'])]
+
+    csize = sky_targets.csize
+    if mpicomm.rank == 0: logger.info(f'Loaded {csize} sky targets done in {MPI.Wtime() - t_start:2.2f} s.')
 
     return sky_targets
 
 
-def fafns_for_tiles(tiles):
-    """ To speed up stuck_on_sky. See: https://github.com/desihub/fiberassign/pull/471 """
-    fn = "/dvs_ro/cfs/cdirs/desi/target/fiberassign/tiles/trunk/{}/fiberassign-{}.fits.gz"
-    fns = [fn.format(f"{tileid:06d}"[:3], f"{tileid:06d}") for tileid in tiles['TILEID']]
-    return ','.join(fns)
-
-
-def _run_assign_init(args, tile, targets, plate_radec=True, use_sky_targets=True):
+def _run_assign_init(args, tiles, targets, plate_radec=True, use_sky_targets=True, sky_targets=None):
     """
     Adapted from https://github.com/desihub/fiberassign/blob/8e6e8264bf80fde07162de5e3f5343c621d65e3e/py/fiberassign/scripts/assign.py#L281
 
@@ -81,7 +147,7 @@ def _run_assign_init(args, tile, targets, plate_radec=True, use_sky_targets=True
     """
     from fiberassign.hardware import load_hardware
 
-    def convert_tiles_to_fiberassign(args, tile):
+    def convert_tiles_to_fiberassign(args, tiles):
         """
         Adapted from https://github.com/desihub/fiberassign/blob/8e6e8264bf80fde07162de5e3f5343c621d65e3e/py/fiberassign/tiles.py.
         Do not read the tiles, but take it as an array...
@@ -99,11 +165,11 @@ def _run_assign_init(args, tile, targets, plate_radec=True, use_sky_targets=True
             obsdate = astropy.time.Time(args.obsdate)
             #obsmjd = [obsdate.mjd, ] * tiles.shape[0]
             #obsdatestr = [obsdate.isot, ] * tiles.shape[0]
-            obsmjd = [obsdate.mjd, ] * len(tile)
-            obsdatestr = [obsdate.isot, ] * len(tile)
-        elif "OBSDATE" in tile.names:
+            obsmjd = [obsdate.mjd, ] * len(tiles)
+            obsdatestr = [obsdate.isot, ] * len(tiles)
+        elif "OBSDATE" in tiles.names:
             # We have the obsdate for every tile in the file.
-            obsdate = [astropy.time.Time(x) for x in tile["OBSDATE"]]
+            obsdate = [astropy.time.Time(x) for x in tiles["OBSDATE"]]
             obsmjd = [x.mjd for x in obsdate]
             obsdatestr = [x.isot for x in obsdate]
         else:
@@ -111,29 +177,34 @@ def _run_assign_init(args, tile, targets, plate_radec=True, use_sky_targets=True
             obsdate = astropy.time.Time('2022-07-01')
             #obsmjd = [obsdate.mjd, ] * tiles.shape[0]
             #obsdatestr = [obsdate.isot, ] * tiles.shape[0]
-            obsmjd = [obsdate.mjd, ] * len(tile)
-            obsdatestr = [obsdate.isot, ] * len(tile)
+            obsmjd = [obsdate.mjd, ] * len(tiles)
+            obsdatestr = [obsdate.isot, ] * len(tiles)
 
         # Eventually, call a function from desimodel to query the field
         # rotation and hour angle for every tile time.
         if args.fieldrot is None:
             theta_obs = list()
-            for tra, tdec, mjd in zip(tile["RA"], tile["DEC"], obsmjd):
+            for tra, tdec, mjd in zip(tiles["RA"], tiles["DEC"], obsmjd):
                 th = field_rotation_angle(tra, tdec, mjd)
                 theta_obs.append(th)
             theta_obs = np.array(theta_obs)
         else:
-            theta_obs = np.zeros(len(tile), dtype=np.float64)
+            # support scalar or array args.fieldrot inputs
+            #theta_obs = np.zeros(tiles.shape[0], dtype=np.float64)
+            theta_obs = np.zeros(len(tiles), dtype=np.float64)
             theta_obs[:] = args.fieldrot
 
         # default to zero Hour Angle; may be refined later
-        ha_obs = np.zeros(len(tile), dtype=np.float64)
+        #ha_obs = np.zeros(tiles.shape[0], dtype=np.float64)
+        ha_obs = np.zeros(len(tiles), dtype=np.float64)
         if args.ha is not None:
             ha_obs[:] = args.ha
 
-        return Tiles(tile["TILEID"], tile["RA"], tile["DEC"], tile["OBSCONDITIONS"], obsdatestr, theta_obs, ha_obs)
+        #return Tiles(tiles["TILEID"].values, tiles["RA"].values, tiles["DEC"].values, tiles["OBSCONDITIONS"].values, obsdatestr, theta_obs, ha_obs)
+        return Tiles(tiles["TILEID"], tiles["RA"], tiles["DEC"], tiles["OBSCONDITIONS"], obsdatestr, theta_obs, ha_obs)
 
-    def convert_targets_to_fiberassign(args, targets, tile, program, use_sky_targets=True):
+
+    def convert_targets_to_fiberassign(args, targets, tiles, program, use_sky_targets=True, sky_targets=None):
         """
         Adapted from https://github.com/desihub/fiberassign/blob/8e6e8264bf80fde07162de5e3f5343c621d65e3e/py/fiberassign/scripts/assign.py#L281.
         Do not read the tiles, but take it as an array...
@@ -154,35 +225,36 @@ def _run_assign_init(args, tile, targets, plate_radec=True, use_sky_targets=True
                           rundate=args.rundate)
 
         if use_sky_targets:
-            # Add read sky targets
-            sky_targets = read_sky_targets(tile)
-
+            # If sky_targets is not already loaded, read the minimal one. This very time consumming, you can avoid multiple reading (especially if you apply F.A. on several mocks)
+            if sky_targets is None:
+                # Now load the sky target files. These are main-survey files that we will
+                # force to be treated as the survey type of the other target files.
+                mydirs = get_desitarget_paths('1.1.1', 'main', program, dr='dr9')
+                skydirs = [mydirs["sky"]]
+                if os.path.isdir(mydirs["skysupp"]):
+                    skydirs.append(mydirs["skysupp"])
+                columns = ["RA", "DEC", "TARGETID", "DESI_TARGET", "SUBPRIORITY", "OBSCONDITIONS"]
+                
+                sky_targets = np.concatenate([read_targets_in_tiles(skydir, tiles=tiles, columns=columns, quick=True) for skydir in skydirs])
             # Add sky targets to fiberassign Class objects
             load_target_table(tgs, tagalong, sky_targets, survey=tgs.survey(), typecol=args.mask_column,
-                                sciencemask=args.sciencemask, stdmask=args.stdmask, skymask=args.skymask,
-                                safemask=args.safemask, excludemask=args.excludemask, gaia_stdmask=args.gaia_stdmask,
-                                rundate=args.rundate)
+                              sciencemask=args.sciencemask, stdmask=args.stdmask, skymask=args.skymask,
+                              safemask=args.safemask, excludemask=args.excludemask, gaia_stdmask=args.gaia_stdmask,
+                              rundate=args.rundate)
 
         return tgs, tagalong
 
     # Read hardware properties
-    t_start = MPI.Wtime()
-    fafn = "/dvs_ro/cfs/cdirs/desi/target/fiberassign/tiles/trunk/{}/fiberassign-{}.fits.gz"
-    rundate = fitsio.read_header(fafn.format(f"{tile['TILEID'][0]:06d}"[:3], f"{tile['TILEID'][0]:06d}"), 0)['RUNDATE']
-    hw = load_hardware(rundate=rundate)
-    logger.debug(f'                **** load_hardware took: {MPI.Wtime() - t_start:2.2f} s.')
+    hw = load_hardware(rundate=args.rundate, add_margins=args.margins)
 
     # Convert target to fiberassign.Targets Class
-    t_start = MPI.Wtime()
-    tgs, tagalong = convert_targets_to_fiberassign(args, targets, tile, tile['PROGRAM'][0], use_sky_targets=use_sky_targets)
-    logger.debug(f'                **** convert_targets_to_fiberassign took: {MPI.Wtime() - t_start:2.2f} s.')
+    #tgs, tagalong = convert_targets_to_fiberassign(args, targets, tiles, tiles['PROGRAM'].values[0], use_sky_targets=use_sky_targets)
+    tgs, tagalong = convert_targets_to_fiberassign(args, targets, tiles, tiles['PROGRAM'][0], use_sky_targets=use_sky_targets)
 
     # Convert tiles to fiberassign.Tiles Class
-    t_start = MPI.Wtime()
-    tile = convert_tiles_to_fiberassign(args, tile)
-    logger.debug(f'                **** convert_tiles_to_fiberassign took: {MPI.Wtime() - t_start:2.2f} s.')
+    tiles = convert_tiles_to_fiberassign(args, tiles)
 
-    return (hw, tile, tgs, tagalong)
+    return (hw, tiles, tgs, tagalong)
 
 
 def _run_assign_full(args, hw, tiles, tgs, tagalong):
@@ -191,59 +263,32 @@ def _run_assign_full(args, hw, tiles, tgs, tagalong):
 
     Adapted from https://github.com/desihub/fiberassign/blob/8e6e8264bf80fde07162de5e3f5343c621d65e3e/py/fiberassign/scripts/assign.py
     """
-    from fiberassign.stucksky import stuck_on_sky #, stuck_on_sky_from_fafns
+    from fiberassign.utils import GlobalTimers
+    from fiberassign.stucksky import stuck_on_sky
     from fiberassign.assign import Assignment, run
     from fiberassign.targets import TargetsAvailable, LocationsAvailable, targets_in_tiles
-
-    ## TO BE REMOVED ONCE updated in fiberassign code.
-    def stuck_on_sky_from_fafns(fafns):
-        '''
-        Retrieve the information if STUCK positioners land on good SKY locations from a list of fiberassign-TILEID.fits.gz files.
-
-        Args:
-            fafns: comma-separated list of full paths to fiberassign-TILEID.fits.gz files.
-
-        Returns a nested dict:
-            stuck_sky[tileid][loc] = bool_good_sky
-        '''
-
-        from fiberassign.hardware import FIBER_STATE_STUCK, FIBER_STATE_BROKEN
-        from fiberassign.targets import TARGET_TYPE_SKY
-
-        stuck_sky = dict()
-
-        for fafn in fafns.split(","):
-
-            hdr = fitsio.read_header(fafn, 0)
-            tile_id = hdr["TILEID"]
-
-            stuck_sky[tile_id] = dict()
-            # FIBERASSIGN
-            d = fitsio.read(fafn, "FIBERASSIGN", columns=["LOCATION", "FIBER", "FIBERSTATUS", "OBJTYPE"])
-            sel = (d["FIBERSTATUS"] & (FIBER_STATE_STUCK | FIBER_STATE_BROKEN)) == FIBER_STATE_STUCK
-            for loc, good in zip(d["LOCATION"][sel], d["OBJTYPE"][sel] == "SKY"):
-                stuck_sky[tile_id][loc] = good
-            # ETC
-            d = fitsio.read(fafn, "SKY_MONITOR", columns=["LOCATION", "FA_TYPE"])
-            for loc, good in zip(d["LOCATION"], (d["FA_TYPE"] & TARGET_TYPE_SKY) > 0):
-                stuck_sky[tile_id][loc] = good
-            # re-order by increasing locations, to reproduce stuck_on_sky()
-            stuck_sky[tile_id] = dict(sorted(stuck_sky[tile_id].items()))
-
-        return stuck_sky
 
     from mpi4py import MPI
     mpicomm = MPI.COMM_WORLD
 
+    gt = GlobalTimers.get()
+    gt.start("run_assign_full calculation")
+
     # Find targets within tiles, and project their RA,Dec positions
     # into focal-plane coordinates.
     t_start = MPI.Wtime()
+    gt.start("Compute targets locations in tile")
     tile_targetids, tile_x, tile_y, tile_xy_cs5 = targets_in_tiles(hw, tgs, tiles, tagalong)
+    gt.stop("Compute targets locations in tile")
+    mpicomm.Barrier()
     logger.debug(f'                **** targets_in_tiles took: {MPI.Wtime() - t_start:2.2f} s.')
 
     # Compute the targets available to each fiber for each tile.
     t_start = MPI.Wtime()
+    gt.start("Compute Targets Available")
     tgsavail = TargetsAvailable(hw, tiles, tile_targetids, tile_x, tile_y)
+    gt.stop("Compute Targets Available")
+    mpicomm.Barrier()
     logger.debug(f'                **** TargetsAvailable took: {MPI.Wtime() - t_start:2.2f} s.')
 
     # Free the target locations
@@ -251,26 +296,37 @@ def _run_assign_full(args, hw, tiles, tgs, tagalong):
 
     # Compute the fibers on all tiles available for each target and sky
     t_start = MPI.Wtime()
+    gt.start("Compute Locations Available")
     favail = LocationsAvailable(tgsavail)
+    gt.stop("Compute Locations Available")
+    mpicomm.Barrier()
     logger.debug(f'                **** LocationsAvailable took: {MPI.Wtime() - t_start:2.2f} s.')
 
     # Find stuck positioners and compute whether they will land on acceptable
     # sky locations for each tile.
     t_start = MPI.Wtime()
-    if args.fafns_for_stucksky is not None:
-        stucksky = stuck_on_sky_from_fafns(args.fafns_for_stucksky)
-    else:
-        stucksky = stuck_on_sky(hw, tiles, args.lookup_sky_source, rundate=getattr(args, 'rundate', None))
+    gt.start("Compute Stuck locations on good sky")
+    stucksky = stuck_on_sky(hw, tiles, args.lookup_sky_source, rundate=args.rundate)
+    if stucksky is None:
+        # (the pybind code doesn't like None when a dict is expected...)
+        stucksky = {}
+    gt.stop("Compute Stuck locations on good sky")
+    mpicomm.Barrier()
     logger.debug(f'                **** stuck_on_sky took: {MPI.Wtime() - t_start:2.2f} s.')
 
     # Create assignment object
     t_start = MPI.Wtime()
+    gt.start("Construct Assignment")
     asgn = Assignment(tgs, tgsavail, favail, stucksky)
+    gt.stop("Construct Assignment")
+    mpicomm.Barrier()
     logger.debug(f'                **** Assignment took: {MPI.Wtime() - t_start:2.2f} s.')
 
     t_start = MPI.Wtime()
     run(asgn, args.standards_per_petal, args.sky_per_petal, args.sky_per_slitblock,
         redistribute=not args.no_redistribute, use_zero_obsremain=not args.no_zero_obsremain)
+    gt.stop("run_assign_full calculation")
+    mpicomm.Barrier()
     logger.debug(f'                **** run took: {MPI.Wtime() - t_start:2.2f} s.')
 
     return asgn
@@ -333,97 +389,35 @@ def _extract_info_assignment(asgn, verbose=False):
     return tg_assign, tg_avail
 
 
-def _apply_mtl_one_tile(targets, tg_assign, tg_available, tileid):
+def _apply_mtl_one_pass(targets, tg_assign, tg_available):
     """
     Proxy of true MTL. 
 
-    Note: we apply fiber assignment pass by pass (and in each pass we apply it tile per tile to have the correct hardware). In this configuration, only one observation per target can be done in one pass.
+    Note: we apply fiber assignment pass by pass. Only one observation per target can be done in one pass.
 
     Use AVAILABLE for randoms. Available = can be observed with at least one fiber but not chosen by the F.A. process.
     """
     from desitarget.geomask import match
-    from desitarget.targetmask import zwarn_mask
-    from pandas import read_csv
-    from mpytools import Catalog
 
-    # first load which fibers are correclty worked in the real life:
-    t_start = MPI.Wtime()
-    # collect LASNIGHT value corresponding to the tileid
-    tile_info = read_csv('/dvs_ro/cfs/cdirs/desi/spectro/redux/loa/tiles-loa.csv')
-    lastnight = tile_info['LASTNIGHT'][tile_info['TILEID'] == tileid].values[0]  # not super user-friendly.. 
-    # read zmtl files (Note: we want to work with the daily version since this is what the MTL works with)
-    # warning, these data directory are shit; files are missing when something goes wrong ... 
-    zmtl_fn = [f'/dvs_ro/cfs/cdirs/desi/spectro/redux/daily/tiles/cumulative/{tileid}/{lastnight}/zmtl-{petal}-{tileid}-thru{lastnight}.fits' for petal in range(10)]
-    zwarn = []
-    for i in range(10):
-        if os.path.isfile(zmtl_fn[i]):
-            zwarn.append(Catalog.read(zmtl_fn[i], filetype='fits', mpicomm=MPI.COMM_SELF)['ZWARN']) # read files only on this local process.
-        else:
-            zwarn.append(zwarn_mask.mask("BAD_PETALQA")*np.ones(500, dtype='int'))
-    zwarn = np.concatenate(zwarn)
-    # reject fibers without data + with bad petal + with bad spectrograph quality
-    sel_good_fibers = ~((zwarn & zwarn_mask["NODATA"] != 0) | (zwarn & zwarn_mask.mask("BAD_SPECQA|BAD_PETALQA") != 0))
-    # keep only good fibers 
-    sel = np.in1d(tg_assign["FIBER"], np.arange(0, 5000, 1)[sel_good_fibers])
-    tg_assign = {name: tg_assign[name][sel] for name in tg_assign}
-    sel = np.in1d(tg_available["FIBER"], np.arange(0, 5000, 1)[sel_good_fibers])
-    tg_available = {name: tg_available[name][sel] for name in tg_available}
-    logger.debug(f'                **** keep only tg_available in good fibers took: {MPI.Wtime() - t_start:2.2f} s.')
-
-    # update the targets list for available target:
     idx, idx2 = match(targets['TARGETID'], tg_available['TARGETID'])
     targets['AVAILABLE'][idx] = True
     targets['FIBER'][idx] = np.array(tg_available["FIBER"][idx2], dtype='i8')
-    # update the target list for targed target:
+
     idx, idx2 = match(targets['TARGETID'], tg_assign['TARGETID'])
     targets["NUMOBS_MORE"][idx] -= 1
     targets["NUMOBS"][idx] += 1
     targets["FIBER"][idx] = np.array(tg_assign["FIBER"][idx2], dtype='i8')  # rewrite with the correct assign fiber if several are available.
     targets["OBS_PASS"][idx] = True
 
+    return targets
 
-def _run_fiber_assignment_one_tile(tile, targets, opts_for_fa, plate_radec=True, use_sky_targets=True):
+
+def _run_fiber_assignment_one_pass(tiles, targets, opts_for_fa, plate_radec=True, use_sky_targets=True, sky_targets=None):
     """
-    From tiles and targets run step by step the fiber assignment process for one tile. We need to apply it tile per tile to load
-    the correct hardware status for each tile...
+    From tiles and targets run step by step the fiber assignment process for one pass.
+
     Note: to work with fiberassign package (ie) for _run_assign_init function,
     targets should be a dtype numpy array and not a mpytools.Catalog. Convert it with Catalog.to_array().
-    """
-    from fiberassign.scripts.assign import parse_assign
-    mpicomm = MPI.COMM_WORLD
-
-    # load param for firber assignment
-    ag = parse_assign(opts_for_fa)
-
-    # Add args.fafns_for_stucksky to speed up stuck_on_sky step (see: https://github.com/desihub/fiberassign/pull/471)
-    ag.fafns_for_stucksky = fafns_for_tiles(tile)
-
-    # Convert data to fiberassign class (targets should be a dtype numpy array here)
-    from astropy.table import Table
-    tile_new_format = Table(tile.to_records())
-    t_start = MPI.Wtime()
-    hw, tile, tgs, tagalong = _run_assign_init(ag, tile_new_format, targets.to_array(), plate_radec=plate_radec, use_sky_targets=use_sky_targets)
-    logger.debug(f'            *** _run_assign_init took: {MPI.Wtime() - t_start:2.2f} s.')
-
-    # run assignment
-    t_start = MPI.Wtime()
-    asgn = _run_assign_full(ag, hw, tile, tgs, tagalong)
-    logger.debug(f'            *** _run_assign_full took: {MPI.Wtime() - t_start:2.2f} s.')
-    
-    # from assignment collect which targets is selected and available (useful for randoms !)
-    t_start = MPI.Wtime()
-    tg_assign, tg_available = _extract_info_assignment(asgn)
-    logger.debug(f'            *** _extract_info_assignment took: {MPI.Wtime() - t_start:2.2f} s.')
-    
-    # update targets with 'the observation'
-    t_start = MPI.Wtime()
-    _apply_mtl_one_tile(targets, tg_assign, tg_available, tile_new_format['TILEID'][0])
-    logger.debug(f'            *** _apply_mtl_one_pass took: {MPI.Wtime() - t_start:2.2f} s.')
-
-
-def _run_fiber_assignment_one_pass(tiles, targets, opts_for_fa, plate_radec=True, use_sky_targets=True):
-    """
-    From tiles and targets run the fiber assignment process for one pass, need to apply it tile per tile to load the correct hardware status.
     """
     from fiberassign.scripts.assign import parse_assign
 
@@ -433,16 +427,37 @@ def _run_fiber_assignment_one_pass(tiles, targets, opts_for_fa, plate_radec=True
     # load param for firber assignment
     ag = parse_assign(opts_for_fa)
 
-    for idx_tile in range(tiles['TILEID'].size):
-        # take care with pd.DataFrame
-        tile = tiles[idx_tile:idx_tile+1]
+    # Convert data to fiberassign class
+    # targets should be a dtype numpy array here
 
-        t_start = MPI.Wtime()
-        _run_fiber_assignment_one_tile(tile, targets, opts_for_fa, plate_radec=plate_radec, use_sky_targets=use_sky_targets)
-        logger.debug(f'            *** 1 tile took: {MPI.Wtime() - t_start:2.2f} s.')
+    from astropy.table import Table
+    tiles_new_format = Table(tiles.to_records())
+
+    t_start = MPI.Wtime()
+    hw, tiles, tgs, tagalong = _run_assign_init(ag, tiles_new_format, targets.to_array(), plate_radec=plate_radec, use_sky_targets=use_sky_targets, sky_targets=sky_targets)
+    mpicomm.Barrier()
+    logger.debug(f'            *** _run_assign_init took: {MPI.Wtime() - t_start:2.2f} s.')
+
+    # run assignment
+    t_start = MPI.Wtime()
+    asgn = _run_assign_full(ag, hw, tiles, tgs, tagalong)
+    mpicomm.Barrier()
+    logger.debug(f'            *** _run_assign_full took: {MPI.Wtime() - t_start:2.2f} s.')
+    
+    # from assignment collect which targets is selected and available (useful for randoms !)
+    t_start = MPI.Wtime()
+    tg_assign, tg_available = _extract_info_assignment(asgn)
+    mpicomm.Barrier()
+    logger.debug(f'            *** _extract_info_assignment took: {MPI.Wtime() - t_start:2.2f} s.')
+    
+    # update targets with 'the observation'
+    t_start = MPI.Wtime()
+    targets = _apply_mtl_one_pass(targets, tg_assign, tg_available)
+    mpicomm.Barrier()
+    logger.debug(f'            *** _apply_mtl_one_pass took: {MPI.Wtime() - t_start:2.2f} s.')
 
 
-def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa, mpicomm, use_sky_targets=True):
+def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa, mpicomm, use_sky_targets=True, sky_targets=None):
     """
     Apply fiber assignment with MPI parrallelisation on the number of tiles per pass.
     Targets are expected to be scattered on all MPI processes. Tiles should be load on each rank.
@@ -483,7 +498,7 @@ def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa,
     start = MPI.Wtime()
 
     csize = mpy.gather(targets.size, mpiroot=None)
-    logger.info(f'Start fiber assignment for {csize.sum()} objects and {npasses} pass(es): use sky targets? {use_sky_targets}')
+    logger.info(f'Start fiber assignment for {csize.sum()} objects and {npasses} pass(es): use sky targets? {use_sky_targets} -- use pre-loaded sky targets? {sky_targets is not None}')
 
     # Add columns to collect fiber assign output !
     targets['NUMOBS', 'AVAILABLE', 'FIBER', 'OBS_PASS'] = [np.zeros(targets.size, dtype='i8'), np.zeros(targets.size, dtype='?'),
@@ -493,21 +508,21 @@ def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa,
     for pass_id in range(npasses):
         tiles_in_pass = tiles[tiles['PASS'] == pass_id]
         logger.info(f'    * Pass {pass_id} with {tiles_in_pass.shape[0]} potential tiles')
-        t_start = MPI.Wtime()
+
         # Since we consider only one pass at each time find_tiles_over_point can return only at most one tile for each target
         tile_id = np.array([tiles_in_pass['TILEID'].values[idx[0]] if len(idx) != 0 else -1
                             for idx in desimodel.footprint.find_tiles_over_point(tiles_in_pass, targets['RA'], targets['DEC'])])
         # keep only targets in the correct pass and with potential observation
         sel_targets_in_pass = (tile_id >= 0) & (targets["NUMOBS_MORE"] >= 1)
+        
         # create subcatalog
         targets_in_pass = targets[columns_for_fa + ['NUMOBS', 'AVAILABLE']][sel_targets_in_pass]
+
         targets_in_pass['TILEID', 'OBS_PASS', 'FIBER', 'index'] = [tile_id[sel_targets_in_pass], np.zeros(sel_targets_in_pass.sum(), dtype='?'),
                                                                    -1 * np.ones(sel_targets_in_pass.sum(), dtype='i8'),
                                                                    targets_in_pass.cindex()]
         # Copy unique identification to perform sanity check at the end
         index = targets_in_pass['index']
-        mpicomm.Barrier()
-        logger.debug(f'        ** Build targets_in_pass took: {MPI.Wtime() - t_start:2.2f} s.')
 
         # Sort data to have same number of tileid in each rank
         t_start = MPI.Wtime()
@@ -517,12 +532,40 @@ def apply_fiber_assignment(targets, tiles, npasses, opts_for_fa, columns_for_fa,
         nbr_tiles = mpy.gather(np.unique(targets_in_pass['TILEID']).size, mpiroot=None)
         logger.debug(f'        ** Number of tiles to process per rank = {np.min(nbr_tiles)} - {np.max(nbr_tiles)} (min - max).')
 
+        # sort sky_targets as a function of the TILEID to match the TILEID distribution of targets on all the ranks.
+        sky_targets_in_pass = None
+        if sky_targets is not None:
+            t_start = MPI.Wtime()
+            # sky_targets is supposed to be loaded on all the existing tiles_in_pass
+            # but we want to match the tiles from targets ! sky_targets could be loaded also on tiles where they are no targets.
+            # should scatter this array on all the process.
+            t_start_tmp = MPI.Wtime()
+            target_tile_in_pass = np.unique(mpy.gather(np.unique(targets_in_pass['TILEID']), mpiroot=None))
+            mpicomm.Barrier()
+            logger.info(f'             *** DEBUG: {MPI.Wtime() - t_start_tmp:2.2f} s.')
+
+            t_start_tmp = MPI.Wtime()
+            tile_id = np.array([target_tile_in_pass[idx[0]] if len(idx) != 0 else -1
+                                for idx in desimodel.footprint.find_tiles_over_point(tiles_in_pass[np.isin(tiles_in_pass['TILEID'], target_tile_in_pass)], sky_targets['RA'], sky_targets['DEC'])])
+            # keep only sky_targets in the correct pass and with potential observation
+            sel_sky_targets_in_pass = (tile_id >= 0)
+            # create subcatalog
+            sky_targets_in_pass = sky_targets[sel_sky_targets_in_pass]
+            sky_targets_in_pass['TILEID'] = np.array(tile_id[sel_sky_targets_in_pass], dtype='i8')
+            mpicomm.Barrier()
+            logger.info(f'             *** DEBUG: {MPI.Wtime() - t_start_tmp:2.2f} s.')
+
+            # sort skay targets in order to have exactly the same tileid across all the ranks
+            sky_targets_in_pass = sky_targets_in_pass.csort('TILEID', size='orderby_counts')
+            mpicomm.Barrier()
+            logger.info(f'        ** Sky targets extraction and exchange between all the processes took: {MPI.Wtime() - t_start:2.2f} s.')
+
         # Which tiles are treated on the current process
         t_start = MPI.Wtime()
         sel_tiles_in_process = np.isin(tiles_in_pass['TILEID'], targets_in_pass['TILEID'])
         # run F.A. only on these tiles
         if sel_tiles_in_process.sum() != 0:
-            _run_fiber_assignment_one_pass(tiles_in_pass[sel_tiles_in_process], targets_in_pass, opts_for_fa, use_sky_targets=use_sky_targets)
+            _run_fiber_assignment_one_pass(tiles_in_pass[sel_tiles_in_process], targets_in_pass, opts_for_fa, use_sky_targets=use_sky_targets, sky_targets=sky_targets_in_pass)
         mpicomm.Barrier()
         logger.debug(f'        ** Apply F.A. Pass {pass_id} took: {MPI.Wtime() - t_start:2.2f} s.')
 
@@ -616,17 +659,19 @@ def compute_completeness_weight(targets, tiles, npasses, mpicomm):
 
     start = MPI.Wtime()
 
+    if mpicomm.rank == 0: logger.info('Start completeness weight computation')
+
     # We will use only available targets which are not observed !
     not_used_for_comp_weight = targets['AVAILABLE'] & (targets['NUMOBS'] == 0)
     nbr_targets_for_comp_weight = mpicomm.gather(not_used_for_comp_weight.sum(), root=0)
-    logger.info(f'Starting completeness weight with {np.sum(nbr_targets_for_comp_weight)} unobserved but available targets')
+    if mpicomm.rank == 0: logger.info(f'Starting completeness weight with {np.sum(nbr_targets_for_comp_weight)} unobserved but available targets')
     # Create Comp weight column to store it
     targets['COMP_WEIGHT'] = np.ones(targets.size)
     targets['COMP_WEIGHT'][targets['NUMOBS'] == 0] = np.nan
 
     for pass_id in range(npasses):
         tiles_in_pass = tiles[tiles['PASS'] == pass_id]
-        logger.debug(f'Pass {pass_id} with {tiles_in_pass.shape[0]} potential tiles')
+        if mpicomm.rank == 0: logger.debug(f'Pass {pass_id} with {tiles_in_pass.shape[0]} potential tiles')
 
         # Since we consider only one pass at each time find_tiles_over_point can return only at least one tile for each target
         tile_id = np.array([tiles_in_pass['TILEID'].values[idx[0]] if len(idx) != 0 else -1
@@ -659,8 +704,140 @@ def compute_completeness_weight(targets, tiles, npasses, mpicomm):
         not_used_for_comp_weight[sel_targets_in_pass] = targets_in_pass['NOT_USED_FOR_COMP_WEIGHT']
 
         nbr_targets_for_comp_weight = mpicomm.gather(not_used_for_comp_weight.sum(), root=0)
-        logger.debug(f'   * After pass: {pass_id} it remains {np.sum(nbr_targets_for_comp_weight)} targets available unobserved to compute completeness weight')
+        if mpicomm.rank == 0: logger.info(f'   * After pass: {pass_id} it remains {np.sum(nbr_targets_for_comp_weight)} targets available unobserved to compute completeness weight')
 
     mpicomm.Barrier()
-    logger.info(f'Completeness weight computed in elapsed time {MPI.Wtime() - start:2.2f} s.')
+    if mpicomm.rank == 0: logger.info(f'Completeness weight computed in elapsed time {MPI.Wtime() - start:2.2f} s.')
 
+
+if __name__ == '__main__':
+
+    from mockfactory import RandomCutskyCatalog, setup_logging
+    import desimodel.footprint
+
+    os.environ['DESI_LOGLEVEL'] = 'ERROR'
+
+    setup_logging()
+
+    mpicomm = MPI.COMM_WORLD
+    if mpicomm.rank == 0: logger.info('Run simple example to illustrate how to run fiber assignment.')
+
+    # program info:
+    release = 'Y1'
+    program = 'dark'
+    npasses = 1
+    use_sky_targets = False  # to debug: Use false to speed up the process
+    preload_sky_targets = False  # very useful if F.A. is applied on several mocks.
+
+    # Collect tiles from surveyops directory on which the fiber assignment will be applied
+    tiles = build_tiles_for_fa(release_tile_path=f'/global/cfs/cdirs/desi/survey/catalogs/{release}/LSS/tiles-{program.upper()}.fits', program=program, npasses=npasses)
+
+    sky_targets = None
+    if use_sky_targets and preload_sky_targets:
+        # tiles is not restricted here, we will load sky_targets for all the Y1 footprint
+        sky_targets = read_sky_targets(dirname='/global/cfs/cdirs/desi/users/edmondc/desi_targets/sky_targets/', tiles=tiles, program=program, mpicomm=mpicomm)
+
+    # Get info from origin fiberassign file and setup options for F.A.
+    ts = str(tiles['TILEID'][0]).zfill(6)
+    fht = fitsio.read_header(f'/global/cfs/cdirs/desi/target/fiberassign/tiles/trunk/{ts[:3]}/fiberassign-{ts}.fits.gz')
+    rundate = fht['RUNDATE']
+    # see fiberassign.scripts.assign.parse_assign (Can modify margins, number of sky fibers for each petal etc.)
+    opts_for_fa = ["--target", " ", "--rundate", rundate, "--mask_column", "DESI_TARGET"]
+
+    # Generate example cutsky catalog, scattered on all processes (use a high completeness region):
+    cutsky = RandomCutskyCatalog(rarange=(176.5, 182.1), decrange=(-6, 5), nbar=260, seed=44, mpicomm=mpicomm)
+    # Save inital ra, dec for plotting purpose (see end of this script)
+    ra_ini, dec_ini = cutsky.cget('RA', mpiroot=0), cutsky.cget('DEC', mpiroot=0)
+
+    # To apply F.A., we need to add some information as DESI_TARGET controlling the priority, number of observation per targets etc.
+    # In order to speed the process, fiber assignment on each pass will be parrallelized on the number of tiles. Need also to include list of potential tiles for each target.
+    # This part should be avoided if the catalog is empty on the process (not checked here).
+
+    # Note: here for this small example, we emulate the F.A. for QSO targets. Since they have the highest priority we do not need to add other targets to mimic the real F.A.
+    # To emulate the F.A. for ELG, we will want to add other targets (QSO / LRG) with correct DESI_TARGET column with random postions (it should be enough if no cross-correlation)
+    # with the correct density (including the fluctuation from imaging systematics)
+    # For this tiny example, we do not use reobservation for QSO with z>2.0 (could be easily done with the redshift column).
+
+    # Remove targets without potential observation to mimic the desi footprint (just to limit the cutsky to real desi cutsky).
+    # Just to not consider targets outside the footprint --> not mandatory!!
+    sel = np.array([(tiles['TILEID'].values[np.array(idx, dtype='int64')].size > 0) for idx in desimodel.footprint.find_tiles_over_point(tiles, cutsky['RA'], cutsky['DEC'])])
+    cutsky = cutsky[sel]
+    nbr_targets = cutsky.csize
+    if mpicomm.rank == 0: logger.info(f'Keep only objects which is in a tile. Working with {nbr_targets} targets')
+
+    # Add required columns for F.A.
+    cutsky['DESI_TARGET'] = 2**2 * np.ones(cutsky.size, dtype='i8')
+    # Warning: the reproducibility i.e. the choice of target when multiple targets are available is done via SUBPRIORITY. Need random generator invariant under MPI scaling!
+    cutsky['SUBPRIORITY'] = cutsky.rng(seed=123).uniform(low=0, high=1, dtype='f8')
+    cutsky['OBSCONDITIONS'] = 3 * np.ones(cutsky.size, dtype='i8')
+    cutsky['NUMOBS_MORE'] = np.ones(cutsky.size, dtype='i8')
+    # Take care with MPI! TARGETID has to be unique!
+    cumsize = np.cumsum([0] + mpicomm.allgather(cutsky.size))[mpicomm.rank]
+    cutsky['TARGETID'] = cumsize + np.arange(cutsky.size)
+
+    # Columns needed to run the F.A. and collect the info (they will be exchange between processes during the F.A.)
+    columns_for_fa = ['RA', 'DEC', 'TARGETID', 'DESI_TARGET', 'SUBPRIORITY', 'OBSCONDITIONS', 'NUMOBS_MORE']
+
+    # Let's do the F.A.:
+    apply_fiber_assignment(cutsky, tiles, npasses, opts_for_fa, columns_for_fa, mpicomm, use_sky_targets=use_sky_targets, sky_targets=sky_targets)
+    # Compute the completeness weight: if multi-tracer, apply completeness weight once for each tracer independently
+    compute_completeness_weight(cutsky, tiles, npasses, mpicomm)
+
+    # Summarize and plot
+    ra, dec = cutsky.cget('RA', mpiroot=0), cutsky.cget('DEC', mpiroot=0)
+    numobs, available = cutsky.cget('NUMOBS', mpiroot=0), cutsky.cget('AVAILABLE', mpiroot=0)
+    obs_pass, comp_weight = cutsky.cget('OBS_PASS', mpiroot=0), cutsky.cget('COMP_WEIGHT', mpiroot=0)
+
+    if mpicomm.rank == 0:
+        import matplotlib.pyplot as plt
+
+        logger.info(f"Nbr of targets observed: {(numobs >= 1).sum()} -- per pass: {obs_pass.sum(axis=0)} -- Nbr of targets available: {available.sum()} -- Nbr of targets: {ra.size}")
+        logger.info(f"In percentage: Observed: {(numobs >= 1).sum()/ra.size:2.2%} -- Available: {available.sum()/ra.size:2.2%}")
+        values, counts = np.unique(comp_weight, return_counts=True)
+        logger.info(f'Sanity check for completeness weight: {available.sum() - (numobs >= 1).sum()} avialable unobserved targets and {np.nansum([(val - 1) * count for val, count in zip(values, counts)])} from completeness counts')
+        logger.info(f'Completeness counts: {values} -- {counts}')
+
+        tiles = tiles[tiles['PASS'] < npasses]
+        tile_id = np.unique(np.concatenate([tiles['TILEID'].values[np.array(idx, dtype='int64')] for idx in desimodel.footprint.find_tiles_over_point(tiles, ra, dec)]))
+
+        fig, axs = plt.subplots(1, 2, figsize=(10, 4))
+
+        ax = axs[0]
+        for id in tile_id:
+            tile = tiles[tiles['TILEID'] == id]
+            c = plt.Circle((tile['RA'].values[0], tile['DEC'].values[0]), np.sqrt(8 / 3.14), color='lightgrey', alpha=1)
+            ax.add_patch(c)
+
+        ax.scatter(ra_ini, dec_ini, c='red', s=0.3, label='random')
+        ax.scatter(ra, dec, c='green', s=0.3, label='in desi footprint')
+        ax.legend()
+        ax.set_xlabel('R.A. [deg]')
+        ax.set_ylabel('Dec. [deg]')
+
+        ax = axs[1]
+        for id in tile_id:
+            tile = tiles[tiles['TILEID'] == id]
+            c = plt.Circle((tile['RA'].values[0], tile['DEC'].values[0]), np.sqrt(8 / 3.14), color='lightgrey', alpha=1)
+            ax.add_patch(c)
+
+        ax.scatter(ra, dec, c='red', s=0.3, label='targets')
+        ax.scatter(ra[available], dec[available], c='orange', s=0.3, label=f'available: {available.sum() / ra.size:2.2%}')
+
+        from matplotlib.axes._axes import _log as matplotlib_axes_logger
+        matplotlib_axes_logger.setLevel('ERROR')
+        colors = plt.cm.BuGn(np.linspace(0.6, 1, npasses))
+        for i in range(npasses):
+            if i == (npasses - 1):
+                # ax.scatter(ra[obs_pass[:, i]], dec[obs_pass[:, i]], c=colors[i], s=0.3, label=f'Pass {i}: {obs_pass[:, i].sum() / ra.size:2.2%}')
+                ax.scatter(ra[obs_pass[:, i]], dec[obs_pass[:, i]], c=colors[i], s=0.3, label=f'Pass {i}: {(numobs >= 1).sum() / ra.size:2.2%}')
+            else:
+                ax.scatter(ra[obs_pass[:, i]], dec[obs_pass[:, i]], c=colors[i], s=0.3, label=f'Pass {i}')
+        ax.legend()
+        ax.set_xlabel('R.A. [deg]')
+
+        plt.suptitle(f'Fiber assignment for {release} release - {program} program - {npasses} passes', y=0.96)
+
+        plt.tight_layout()
+        plt.savefig(f'fiberasignment_{npasses}npasses.png')
+        plt.close()
+        logger.info(f'Plot save in fiberasignment_{npasses}npasses.png')
