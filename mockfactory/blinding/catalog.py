@@ -247,6 +247,139 @@ def _format_output_weights(weights, mpicomm=None, mpiroot=None):
     return toret
 
 
+def _gather_to_all(array, mpicomm=None):
+    """Gather an MPI-scattered array and broadcast the gathered copy."""
+    if array is None or mpicomm is None or mpicomm.size == 1:
+        return array
+    array = mpy.gather(array, mpicomm=mpicomm, mpiroot=0)
+    if mpicomm.rank == 0:
+        array = np.asarray(array)
+    return mpicomm.bcast(array, root=0)
+
+
+def _pop_recon_kwargs(kwargs, default_cellsize):
+    kwargs = dict(kwargs)
+    if not any(name in kwargs for name in ['nmesh', 'meshsize', 'cellsize']):
+        kwargs['cellsize'] = default_cellsize
+
+    mesh_kwargs = {}
+    if 'nmesh' in kwargs:
+        mesh_kwargs['meshsize'] = kwargs.pop('nmesh')
+    for name in ['meshsize', 'boxsize', 'boxcenter', 'cellsize', 'boxpad', 'check', 'approximate',
+                 'dtype', 'primes', 'divisors', 'sharding_mesh', 'fft_backend']:
+        if name in kwargs:
+            mesh_kwargs[name] = kwargs.pop(name)
+
+    recon_kwargs = {}
+    for name, default in [('los', None), ('resampler', 'cic'), ('halo_add', 0),
+                          ('threshold_randoms', ('noise', 0.01)), ('niterations', 3)]:
+        recon_kwargs[name] = kwargs.pop(name, default)
+
+    if kwargs:
+        raise TypeError('Unknown reconstruction keyword argument(s): {}'.format(', '.join(sorted(kwargs))))
+    return mesh_kwargs, recon_kwargs
+
+
+def _make_particle_field(positions, weights=None, attrs=None, mpicomm=None):
+    from jaxpower import ParticleField
+    positions = _gather_to_all(positions, mpicomm=mpicomm)
+    weights = _gather_to_all(weights, mpicomm=mpicomm)
+    return ParticleField(positions, weights, attrs=attrs)
+
+
+def _build_reconstruction(data_positions, data_weights=None, randoms_positions=None, randoms_weights=None,
+                          f=None, bias=None, smoothing_radius=15., dtype=None, mpicomm=None,
+                          default_cellsize=7., **kwargs):
+    from jaxpower import FKPField, get_mesh_attrs
+    from jaxrecon.zeldovich import IterativeFFTReconstruction
+
+    mesh_kwargs, recon_kwargs = _pop_recon_kwargs(kwargs, default_cellsize=default_cellsize)
+    if dtype is not None:
+        mesh_kwargs.setdefault('dtype', dtype)
+
+    data_positions_all = _gather_to_all(data_positions, mpicomm=mpicomm)
+    randoms_positions_all = _gather_to_all(randoms_positions, mpicomm=mpicomm)
+    positions = [pos for pos in [data_positions_all, randoms_positions_all] if pos is not None]
+    attrs = get_mesh_attrs(*positions, **mesh_kwargs)
+
+    data = _make_particle_field(data_positions, data_weights, attrs=attrs, mpicomm=mpicomm)
+    randoms = None
+    if randoms_positions is not None:
+        randoms = _make_particle_field(randoms_positions, randoms_weights, attrs=attrs, mpicomm=mpicomm)
+    particles = FKPField(data, randoms, attrs=attrs) if randoms is not None else data
+    recon = IterativeFFTReconstruction(particles, growth_rate=f, bias=bias, los=recon_kwargs['los'],
+                                       resampler=recon_kwargs['resampler'], halo_add=recon_kwargs['halo_add'],
+                                       smoothing_radius=smoothing_radius,
+                                       threshold_randoms=recon_kwargs['threshold_randoms'],
+                                       niterations=recon_kwargs['niterations'])
+    return recon, attrs, recon_kwargs
+
+
+def _paint_particles(positions, weights=None, attrs=None, resampler='cic', halo_add=0, mpicomm=None):
+    particles = _make_particle_field(positions, weights=weights, attrs=attrs, mpicomm=mpicomm)
+    mesh = particles.paint(resampler=resampler, compensate=False, interlacing=0, halo_add=halo_add, out='real')
+    return mesh, particles
+
+
+def _get_threshold_randoms(randoms, threshold_randoms=0.01):
+    if randoms is None or threshold_randoms is None:
+        return None
+    if isinstance(threshold_randoms, tuple):
+        threshold_method, threshold_value = threshold_randoms
+    else:
+        threshold_method, threshold_value = 'noise', threshold_randoms
+    if threshold_method not in ['noise', 'mean']:
+        raise ValueError('threshold_randoms method must be "noise" or "mean"')
+    if threshold_method == 'noise':
+        return threshold_value * (randoms.weights**2).sum() / randoms.sum()
+    return threshold_value * randoms.sum() / randoms.size
+
+
+def _density_contrast(mesh_data, mesh_randoms=None, randoms=None, bias=1., smoothing_radius=15., threshold_randoms=0.01):
+    from jaxrecon.zeldovich import estimate_mesh_delta
+    threshold_randoms = _get_threshold_randoms(randoms, threshold_randoms=threshold_randoms)
+    return estimate_mesh_delta(mesh_data, mesh_randoms=mesh_randoms, threshold_randoms=threshold_randoms,
+                               smoothing_radius=smoothing_radius) / bias
+
+
+def _apply_png_transfer(mesh, bfnl, Tk):
+    """Apply PNG transfer function to a jaxpower complex mesh."""
+    import jax.numpy as jnp
+    k = sum(np.asarray(kk)**2 for kk in mesh.attrs.kcoords(sparse=True))**0.5
+    transfer = np.zeros(k.shape, dtype=np.asarray(mesh.value).real.dtype)
+    nonzero = k != 0.
+    transfer[nonzero] = bfnl / Tk(k[nonzero])
+    return mesh * jnp.asarray(transfer)
+
+
+def _replace_mesh_zeros(mesh):
+    """Replace zero mesh values by one."""
+    import jax.numpy as jnp
+    return mesh.clone(value=jnp.where(mesh.value == 0., 1., mesh.value))
+
+
+def _smooth_mesh(mesh, smoothing_radius=15.):
+    from jaxrecon.zeldovich import kernel_gaussian
+    return (mesh.r2c() * kernel_gaussian(mesh.attrs, smoothing_radius=smoothing_radius)).c2r()
+
+
+def _read_mesh(mesh, positions, resampler='cic', halo_add=0):
+    return np.asarray(mesh.read(positions, resampler=resampler, compensate=False, halo_add=halo_add))
+
+
+def _gradient_shifts(mesh, positions, resampler='cic', halo_add=0):
+    """Return gradient readouts from a complex jaxpower mesh."""
+    import jax.numpy as jnp
+    kcoords = mesh.attrs.kcoords(sparse=True)
+    k2 = sum(kk**2 for kk in kcoords)
+    k2 = jnp.where(k2 == 0., 1., k2)
+    disps = []
+    for iaxis in range(mesh.attrs.ndim):
+        psi = (mesh * (1j * kcoords[iaxis] / k2)).c2r()
+        disps.append(_read_mesh(psi, positions, resampler=resampler, halo_add=halo_add))
+    return np.column_stack(disps)
+
+
 class CutskyCatalogBlinding(BaseClass):
     """
     Apply catalog-level blinding. A typical blinding procedure would be:
@@ -270,7 +403,7 @@ class CutskyCatalogBlinding(BaseClass):
 
     Note
     ----
-    :meth:`rsd` and :meth:`png` require pip install git+https://github.com/cosmodesi/pyrecon@mpi.
+    :meth:`rsd` and :meth:`png` require ``jax-recon``.
     """
     @CurrentMPIComm.enable
     def __init__(self, cosmo_fid='DESI', cosmo_blind='DESI', bias=None, z=None, position_type='pos', dtype=None, mpiroot=None, mpicomm=None):
@@ -400,7 +533,7 @@ class CutskyCatalogBlinding(BaseClass):
             positions[mask, ...] *= dist_masked_shuffled[..., None] / dist_masked[..., None]
         return _format_output_positions(positions, position_type=position_type, mpicomm=self.mpicomm, mpiroot=mpiroot)
 
-    def rsd(self, data_positions, data_weights=None, randoms_positions=None, randoms_weights=None, recon='IterativeFFTReconstruction', smoothing_radius=15., **kwargs):
+    def rsd(self, data_positions, data_weights=None, randoms_positions=None, randoms_weights=None, smoothing_radius=15., **kwargs):
         """
         Apply RSD blinding, changing RSD displacements of input positions according to blinded f.
 
@@ -418,10 +551,6 @@ class CutskyCatalogBlinding(BaseClass):
         randoms_weights : array, default=None
             Optionally, randoms weights.
 
-        recon : string, pyrecon.BaseReconstruction, default='IterativeFFTReconstruction'
-            Name of reconstruction algorithm, or (already run) reconstruction instance,
-            in which case input ``randoms_positions``, ``randoms_weights`` are ignored.
-
         smoothing_radius : float, default=15.
             Smoothing radius for reconstruction.
 
@@ -437,28 +566,23 @@ class CutskyCatalogBlinding(BaseClass):
         position_type = kwargs.pop('position_type', self.position_type)
         mpiroot = kwargs.pop('mpiroot', self.mpiroot)
         data_positions = _format_positions(data_positions, position_type=position_type, dtype=self.dtype, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
-        # Run reconstruction
-        if isinstance(recon, str):
-            import pyrecon
-            ReconstructionAlgorithm = getattr(pyrecon, recon)
-            data_weights = _format_weights(data_weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
-            f = _get_from_cosmo(self.cosmo_fid, 'f', z=self.z)
-            if not any(name in kwargs for name in ['nmesh', 'cellsize']):
-                kwargs['cellsize'] = 7.
-            kwargs.setdefault('smoothing_radius', smoothing_radius)
-            randoms_positions = _format_positions(randoms_positions, position_type=position_type, dtype=self.dtype, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
-            randoms_weights = _format_weights(randoms_weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
-            recon = ReconstructionAlgorithm(data_positions=data_positions, data_weights=data_weights,
-                                            randoms_positions=randoms_positions, randoms_weights=randoms_weights, f=f, bias=self.bias,
-                                            position_type='pos', mpicomm=self.mpicomm, mpiroot=None, **kwargs)
-        shifts = recon.read_shifts(data_positions, position_type='pos', mpiroot=None, field='rsd')
+        data_weights = _format_weights(data_weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
+        randoms_positions = _format_positions(randoms_positions, position_type=position_type, dtype=self.dtype, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
+        randoms_weights = _format_weights(randoms_weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
+        f = _get_from_cosmo(self.cosmo_fid, 'f', z=self.z)
+        recon, attrs, recon_kwargs = _build_reconstruction(data_positions, data_weights=data_weights,
+                                                               randoms_positions=randoms_positions, randoms_weights=randoms_weights,
+                                                               f=f, bias=self.bias, smoothing_radius=smoothing_radius,
+                                                               dtype=self.dtype, mpicomm=self.mpicomm, default_cellsize=7., **kwargs)
+        del attrs, recon_kwargs
+        shifts = np.asarray(recon.read_shifts(data_positions, field='rsd'))
         f_blind = _get_from_cosmo(self.cosmo_blind, 'f')
         # Change RSD displacements depending on blind f
-        data_positions = data_positions + (f_blind / recon.f - 1.) * shifts
+        data_positions = data_positions + (f_blind / f - 1.) * shifts
         return _format_output_positions(data_positions, position_type=position_type, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
 
     def png(self, data_positions, data_weights=None, randoms_positions=None, randoms_weights=None, method='randoms_weights',
-            recon='IterativeFFTReconstruction', smoothing_radius=30., shotnoise_correction=False, **kwargs):
+            smoothing_radius=30., shotnoise_correction=False, **kwargs):
         r"""
         Apply local primordial non-Gaussianity blinding, computing weights to apply scale-dependent bias on large scales.
         The rationale is to change the real-space Fourier galaxy density contrast: :math:`b_{1} \delta(\mathbf{k})` such that it becomes
@@ -485,10 +609,6 @@ class CutskyCatalogBlinding(BaseClass):
             If 'randoms_weights', apply weights to randoms.
             If 'data_weigths', apply weights to data.
 
-        recon : str, pyrecon.BaseReconstruction, default='IterativeFFTReconstruction'
-            Name of reconstruction algorithm, or (already run) reconstruction instance,
-            in which case input ``randoms_positions``, ``randoms_weights`` are ignored.
-
         smoothing_radius : float, default=30.
             Smoothing radius for reconstruction. Larger than for RSD blinding, as we only need large scale RSD to be resolved.
 
@@ -513,35 +633,31 @@ class CutskyCatalogBlinding(BaseClass):
         data_weights = _format_weights(data_weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
         randoms_positions = _format_positions(randoms_positions, position_type=position_type, dtype=self.dtype, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
         randoms_weights = _format_weights(randoms_weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
-        if recon is None:
-            recon = 'IterativeFFTReconstruction'
-        if isinstance(recon, str):
-            import pyrecon
-            ReconstructionAlgorithm = getattr(pyrecon, recon)
-            f = _get_from_cosmo(self.cosmo_fid, 'f', z=self.z)
-            if not any(name in kwargs for name in ['nmesh', 'cellsize']):
-                kwargs['cellsize'] = 15.
-            recon = ReconstructionAlgorithm(data_positions=data_positions, data_weights=data_weights,
-                                            randoms_positions=randoms_positions, randoms_weights=randoms_weights, f=f, bias=self.bias,
-                                            position_type='pos', mpicomm=self.mpicomm, mpiroot=None,
-                                            smoothing_radius=smoothing_radius, **kwargs)
-        sigma1 = recon.smoothing_radius
-        shifts = recon.read_shifts(data_positions, position_type='pos', mpiroot=None, field='rsd')
+        f = _get_from_cosmo(self.cosmo_fid, 'f', z=self.z)
+        recon, attrs, recon_kwargs = _build_reconstruction(data_positions, data_weights=data_weights,
+                                                               randoms_positions=randoms_positions, randoms_weights=randoms_weights,
+                                                               f=f, bias=self.bias, smoothing_radius=smoothing_radius,
+                                                               dtype=self.dtype, mpicomm=self.mpicomm, default_cellsize=15., **kwargs)
+        resampler, halo_add = recon_kwargs['resampler'], recon_kwargs['halo_add']
+        threshold_randoms = recon_kwargs['threshold_randoms']
+        sigma1 = smoothing_radius
+        shifts = np.asarray(recon.read_shifts(data_positions, field='rsd'))
         shifted_positions = data_positions - shifts
-        # Just to make sure meshes do not exist anymore
-        recon.mesh_data = recon.mesh_randoms = None
-        recon.assign_data(shifted_positions, weights=data_weights, position_type='pos', mpiroot=None)
-
+        mesh_data, _ = _paint_particles(shifted_positions, weights=data_weights, attrs=attrs,
+                                            resampler=resampler, halo_add=halo_add, mpicomm=self.mpicomm)
+        mesh_randoms, randoms = None, None
         if randoms_positions is not None:
-            recon.assign_randoms(randoms_positions, weights=randoms_weights, position_type='pos', mpiroot=None)
+            mesh_randoms, randoms = _paint_particles(randoms_positions, weights=randoms_weights, attrs=attrs,
+                                                         resampler=resampler, halo_add=halo_add, mpicomm=self.mpicomm)
 
         if 'weights' not in method and shotnoise_correction:
             raise ValueError('No shot noise correction when blinding is based on particle shifts')
 
-        recon.set_density_contrast(smoothing_radius=smoothing_radius)  # divides by bias
-        sigma2 = recon.smoothing_radius
-        mesh = recon.mesh_delta.r2c()
-        b1 = recon.bias
+        mesh_delta = _density_contrast(mesh_data, mesh_randoms=mesh_randoms, randoms=randoms, bias=self.bias,
+                                           smoothing_radius=smoothing_radius, threshold_randoms=threshold_randoms)
+        sigma2 = smoothing_radius
+        mesh = mesh_delta.r2c()
+        b1 = self.bias
         bfnl = 2 * 1.686 * (b1 - 1.) * _get_from_cosmo(self.cosmo_blind, 'fnl')
 
         pk_prim = self.cosmo_fid.get_primordial().pk_interpolator(mode='scalar')
@@ -551,11 +667,7 @@ class CutskyCatalogBlinding(BaseClass):
             pphi_prim = 9 / 25 * 2 * np.pi**2 / k**3 * pk_prim(k) / self.cosmo_fid.h**3
             return (pk_lin(k) / pphi_prim)**0.5
 
-        for kslab, slab in zip(mesh.slabs.x, mesh.slabs):
-            k = sum(kk.real**2 for kk in kslab)**0.5
-            nonzero = k != 0.
-            slab[nonzero] *= bfnl / Tk(k[nonzero])
-            slab[~nonzero] = 0.
+        mesh = _apply_png_transfer(mesh, bfnl, Tk)
 
         if shotnoise_correction:
 
@@ -565,34 +677,32 @@ class CutskyCatalogBlinding(BaseClass):
             def S2(k):
                 return np.exp(- 0.5 * k**2 * sigma2**2)
 
-            recon.mesh_data = None
-            recon.assign_data(data_positions, weights=data_weights * data_weights if data_weights is not None else None, position_type='pos', mpiroot=None)
-            sum_w2 = recon.mesh_data
+            sum_w2, _ = _paint_particles(data_positions, weights=data_weights * data_weights if data_weights is not None else None,
+                                             attrs=attrs, resampler=resampler, halo_add=halo_add, mpicomm=self.mpicomm)
 
-            recon.mesh_data = None
-            recon.assign_data(data_positions, weights=data_weights, position_type='pos', mpiroot=None)
-            sum_wd = recon.mesh_data
+            sum_wd, _ = _paint_particles(data_positions, weights=data_weights, attrs=attrs,
+                                             resampler=resampler, halo_add=halo_add, mpicomm=self.mpicomm)
 
             if randoms_positions is not None:
-                recon.mesh_data = None
-                recon.assign_data(randoms_positions, weights=randoms_weights, position_type='pos', mpiroot=None)
+                mesh_nbar, _ = _paint_particles(randoms_positions, weights=randoms_weights, attrs=attrs,
+                                                    resampler=resampler, halo_add=halo_add, mpicomm=self.mpicomm)
                 alpha = mpy.csum(data_weights if data_weights is not None else len(data_positions), mpicomm=self.mpicomm) / mpy.csum(randoms_weights if randoms_weights is not None else len(randoms_positions), mpicomm=self.mpicomm)
-                nbar = alpha / np.prod(recon.cellsize) * recon.mesh_data
+                nbar = alpha / np.prod(np.asarray(attrs.cellsize)) * mesh_nbar
             else:
-                nbar = mpy.csum(data_weights if data_weights is not None else len(data_positions), mpicomm=self.mpicomm) / np.prod(recon.boxsize)
+                nbar = mpy.csum(data_weights if data_weights is not None else len(data_positions), mpicomm=self.mpicomm) / np.prod(np.asarray(attrs.boxsize))
 
-            sum_w2[sum_w2 == 0.] = 1.  # just to avoid NaN's below
+            sum_w2 = _replace_mesh_zeros(sum_w2)  # just to avoid NaN's below
             inv_shotnoise = sum_wd * nbar / sum_w2
-            inv_shotnoise = recon._smooth_gaussian(inv_shotnoise)
+            inv_shotnoise = _smooth_mesh(inv_shotnoise, smoothing_radius=smoothing_radius)
 
             # compute the corrective factor at k_pivot
             mu_pivot = 0.6
             k_pivot = 4e-3 if bfnl >= 0 else 8e-3
 
             if 'data' in method:
-                shotnoise = 1 / recon._readout(inv_shotnoise, data_positions)
+                shotnoise = 1 / _read_mesh(inv_shotnoise, data_positions, resampler=resampler, halo_add=halo_add)
             elif 'randoms' in method:
-                shotnoise = 1 / recon._readout(inv_shotnoise, randoms_positions)
+                shotnoise = 1 / _read_mesh(inv_shotnoise, randoms_positions, resampler=resampler, halo_add=halo_add)
             else:
                 shotnoise = 0.
 
@@ -612,24 +722,15 @@ class CutskyCatalogBlinding(BaseClass):
         if 'weights' in method:
             mesh = mesh.c2r()
             if 'data' in method:
-                weights = recon._readout(mesh, data_positions)
+                weights = _read_mesh(mesh, data_positions, resampler=resampler, halo_add=halo_add)
                 weights = (1. if data_weights is None else data_weights) * (1. + shotnoise_factor * weights)
             elif 'randoms' in method:
-                weights = recon._readout(mesh, randoms_positions)
+                weights = _read_mesh(mesh, randoms_positions, resampler=resampler, halo_add=halo_add)
                 weights = (1. if randoms_weights is None else randoms_weights) * (1. - shotnoise_factor * weights)
             return _format_output_weights(weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
         else:
             positions = data_positions if 'data' in method else randoms_positions
-            disps = []
-            for iaxis in range(mesh.ndim):
-                psi = mesh.copy()
-                for kslab, slab in zip(psi.slabs.x, psi.slabs):
-                    k2 = sum(kk**2 for kk in kslab)
-                    k2[k2 == 0.] = 1.  # avoid dividing by zero
-                    slab[...] *= 1j * kslab[iaxis] / k2
-                psi = psi.c2r()
-                disps.append(recon._readout(psi, positions))
-            shifts = np.column_stack(disps)
+            shifts = _gradient_shifts(mesh, positions, resampler=resampler, halo_add=halo_add)
             shifts -= mpy.cmean(shifts)
             positions = positions + (shifts if 'data' in method else - shifts)
-            return _format_output_weights(positions, mpicomm=self.mpicomm, mpiroot=mpiroot)
+            return _format_output_positions(positions, position_type=position_type, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
