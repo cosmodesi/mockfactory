@@ -280,6 +280,17 @@ def _pop_recon_kwargs(kwargs, default_cellsize):
     return mesh_kwargs, recon_kwargs
 
 
+def _get_reconstruction_class(recon):
+    from jaxrecon import zeldovich
+    if not isinstance(recon, str):
+        return recon
+    try:
+        cls = getattr(zeldovich, recon)
+    except AttributeError as exc:
+        raise ValueError('Unknown jax-recon reconstruction {!r}'.format(recon)) from exc
+    return cls
+
+
 def _make_particle_field(positions, weights=None, attrs=None, mpicomm=None):
     from jaxpower import ParticleField
     positions = _gather_to_all(positions, mpicomm=mpicomm)
@@ -289,10 +300,10 @@ def _make_particle_field(positions, weights=None, attrs=None, mpicomm=None):
 
 def _build_reconstruction(data_positions, data_weights=None, randoms_positions=None, randoms_weights=None,
                           f=None, bias=None, smoothing_radius=15., dtype=None, mpicomm=None,
-                          default_cellsize=7., **kwargs):
+                          default_cellsize=7., recon='IterativeFFTReconstruction', **kwargs):
     from jaxpower import FKPField, get_mesh_attrs
-    from jaxrecon.zeldovich import IterativeFFTReconstruction
 
+    ReconstructionAlgorithm = _get_reconstruction_class(recon)
     mesh_kwargs, recon_kwargs = _pop_recon_kwargs(kwargs, default_cellsize=default_cellsize)
     if dtype is not None:
         mesh_kwargs.setdefault('dtype', dtype)
@@ -307,11 +318,11 @@ def _build_reconstruction(data_positions, data_weights=None, randoms_positions=N
     if randoms_positions is not None:
         randoms = _make_particle_field(randoms_positions, randoms_weights, attrs=attrs, mpicomm=mpicomm)
     particles = FKPField(data, randoms, attrs=attrs) if randoms is not None else data
-    recon = IterativeFFTReconstruction(particles, growth_rate=f, bias=bias, los=recon_kwargs['los'],
-                                       resampler=recon_kwargs['resampler'], halo_add=recon_kwargs['halo_add'],
-                                       smoothing_radius=smoothing_radius,
-                                       threshold_randoms=recon_kwargs['threshold_randoms'],
-                                       niterations=recon_kwargs['niterations'])
+    kwargs_recon = dict(resampler=recon_kwargs['resampler'], halo_add=recon_kwargs['halo_add'],
+                        smoothing_radius=smoothing_radius, threshold_randoms=recon_kwargs['threshold_randoms'])
+    if ReconstructionAlgorithm.__name__ in ['IterativeFFTReconstruction', 'IterativeFFTParticleReconstruction']:
+        kwargs_recon['niterations'] = recon_kwargs['niterations']
+    recon = ReconstructionAlgorithm(particles, growth_rate=f, bias=bias, los=recon_kwargs['los'], **kwargs_recon)
     return recon, attrs, recon_kwargs
 
 
@@ -533,7 +544,8 @@ class CutskyCatalogBlinding(BaseClass):
             positions[mask, ...] *= dist_masked_shuffled[..., None] / dist_masked[..., None]
         return _format_output_positions(positions, position_type=position_type, mpicomm=self.mpicomm, mpiroot=mpiroot)
 
-    def rsd(self, data_positions, data_weights=None, randoms_positions=None, randoms_weights=None, smoothing_radius=15., **kwargs):
+    def rsd(self, data_positions, data_weights=None, randoms_positions=None, randoms_weights=None,
+            recon='IterativeFFTReconstruction', smoothing_radius=15., **kwargs):
         """
         Apply RSD blinding, changing RSD displacements of input positions according to blinded f.
 
@@ -550,6 +562,9 @@ class CutskyCatalogBlinding(BaseClass):
 
         randoms_weights : array, default=None
             Optionally, randoms weights.
+
+        recon : str, default='IterativeFFTReconstruction'
+            Name of jax-recon reconstruction algorithm.
 
         smoothing_radius : float, default=15.
             Smoothing radius for reconstruction.
@@ -571,9 +586,10 @@ class CutskyCatalogBlinding(BaseClass):
         randoms_weights = _format_weights(randoms_weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
         f = _get_from_cosmo(self.cosmo_fid, 'f', z=self.z)
         recon, attrs, recon_kwargs = _build_reconstruction(data_positions, data_weights=data_weights,
-                                                               randoms_positions=randoms_positions, randoms_weights=randoms_weights,
-                                                               f=f, bias=self.bias, smoothing_radius=smoothing_radius,
-                                                               dtype=self.dtype, mpicomm=self.mpicomm, default_cellsize=7., **kwargs)
+                                                           randoms_positions=randoms_positions, randoms_weights=randoms_weights,
+                                                           f=f, bias=self.bias, smoothing_radius=smoothing_radius,
+                                                           dtype=self.dtype, mpicomm=self.mpicomm, default_cellsize=7.,
+                                                           recon=recon, **kwargs)
         del attrs, recon_kwargs
         shifts = np.asarray(recon.read_shifts(data_positions, field='rsd'))
         f_blind = _get_from_cosmo(self.cosmo_blind, 'f')
@@ -582,7 +598,7 @@ class CutskyCatalogBlinding(BaseClass):
         return _format_output_positions(data_positions, position_type=position_type, cosmo=self.cosmo_fid, mpicomm=self.mpicomm, mpiroot=mpiroot)
 
     def png(self, data_positions, data_weights=None, randoms_positions=None, randoms_weights=None, method='randoms_weights',
-            smoothing_radius=30., shotnoise_correction=False, **kwargs):
+            recon='IterativeFFTReconstruction', smoothing_radius=30., shotnoise_correction=False, **kwargs):
         r"""
         Apply local primordial non-Gaussianity blinding, computing weights to apply scale-dependent bias on large scales.
         The rationale is to change the real-space Fourier galaxy density contrast: :math:`b_{1} \delta(\mathbf{k})` such that it becomes
@@ -608,6 +624,9 @@ class CutskyCatalogBlinding(BaseClass):
         method : str, default='randoms_weights'
             If 'randoms_weights', apply weights to randoms.
             If 'data_weigths', apply weights to data.
+
+        recon : str, default='IterativeFFTReconstruction'
+            Name of jax-recon reconstruction algorithm.
 
         smoothing_radius : float, default=30.
             Smoothing radius for reconstruction. Larger than for RSD blinding, as we only need large scale RSD to be resolved.
@@ -635,9 +654,10 @@ class CutskyCatalogBlinding(BaseClass):
         randoms_weights = _format_weights(randoms_weights, mpicomm=self.mpicomm, mpiroot=mpiroot)
         f = _get_from_cosmo(self.cosmo_fid, 'f', z=self.z)
         recon, attrs, recon_kwargs = _build_reconstruction(data_positions, data_weights=data_weights,
-                                                               randoms_positions=randoms_positions, randoms_weights=randoms_weights,
-                                                               f=f, bias=self.bias, smoothing_radius=smoothing_radius,
-                                                               dtype=self.dtype, mpicomm=self.mpicomm, default_cellsize=15., **kwargs)
+                                                           randoms_positions=randoms_positions, randoms_weights=randoms_weights,
+                                                           f=f, bias=self.bias, smoothing_radius=smoothing_radius,
+                                                           dtype=self.dtype, mpicomm=self.mpicomm, default_cellsize=15.,
+                                                           recon=recon, **kwargs)
         resampler, halo_add = recon_kwargs['resampler'], recon_kwargs['halo_add']
         threshold_randoms = recon_kwargs['threshold_randoms']
         sigma1 = smoothing_radius

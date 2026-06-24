@@ -147,3 +147,38 @@ def test_jax_recon_matches_pyrecon_for_blinding():
                                                  randoms_positions, randoms_weights, f=f, bias=bias,
                                                  shotnoise_correction=shotnoise_correction, **kwargs)
         assert np.allclose(weights_jax, weights_pyrecon, atol=1e-10, rtol=1e-10)
+
+
+def test_plane_parallel_reconstruction_blinding_smoke():
+    pytest.importorskip('jaxrecon')
+
+    from mockfactory.blinding import CutskyCatalogBlinding
+
+    cosmo, cosmo_blind, z, bias, f, data_positions, data_weights, randoms_positions, randoms_weights, kwargs = _make_case()
+    del f
+    blinding = CutskyCatalogBlinding(cosmo_fid=cosmo, cosmo_blind=cosmo_blind, bias=bias, z=z, dtype='f8')
+    kwargs = dict(kwargs, los='z')
+
+    rsd_positions = blinding.rsd(data_positions, data_weights=data_weights, randoms_positions=randoms_positions,
+                                 randoms_weights=randoms_weights, recon='PlaneParallelFFTReconstruction', **kwargs)
+    assert rsd_positions.shape == data_positions.shape
+    assert np.all(np.isfinite(rsd_positions))
+
+    png_weights = blinding.png(data_positions, data_weights=data_weights, randoms_positions=randoms_positions,
+                               randoms_weights=randoms_weights, recon='PlaneParallelFFTReconstruction', **kwargs)
+    assert png_weights.shape == randoms_weights.shape
+    assert np.all(np.isfinite(png_weights))
+
+
+def test_invalid_reconstruction_name_raises():
+    pytest.importorskip('jaxrecon')
+
+    from mockfactory.blinding import CutskyCatalogBlinding
+
+    cosmo, cosmo_blind, z, bias, f, data_positions, data_weights, randoms_positions, randoms_weights, kwargs = _make_case()
+    del f
+    blinding = CutskyCatalogBlinding(cosmo_fid=cosmo, cosmo_blind=cosmo_blind, bias=bias, z=z, dtype='f8')
+
+    with pytest.raises(ValueError, match='Unknown jax-recon reconstruction'):
+        blinding.rsd(data_positions, data_weights=data_weights, randoms_positions=randoms_positions,
+                     randoms_weights=randoms_weights, recon='NotAReconstruction', **kwargs)
