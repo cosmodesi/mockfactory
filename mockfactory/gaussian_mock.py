@@ -348,7 +348,7 @@ class BaseGaussianMock(BaseClass):
                 for islabs in zip(mesh_delta_r.slabs.x, mesh_delta_r.slabs):
                     rslab, delta_slab = islabs[:2]
                     rslab = _transform_rslab(rslab, self.boxsize)
-                    rnorm = np.sum((r + o)**2 for r, o in zip(rslab, offset))**0.5
+                    rnorm = sum((r + o)**2 for r, o in zip(rslab, offset))**0.5
                     delta_slab[...].flat = bias(delta_slab.flatten(), rnorm.flatten())
             else:
                 mesh_delta_r *= bias
