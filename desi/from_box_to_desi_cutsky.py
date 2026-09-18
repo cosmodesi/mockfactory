@@ -289,12 +289,9 @@ if __name__ == '__main__':
     """
     from mpi4py import MPI
 
-    from mockfactory import DistanceToRedshift, setup_logging
+    from mockfactory import DistanceToRedshift, RandomBoxCatalog, setup_logging
     from mockfactory.desi import get_brick_pixel_quantities
-
-    # To remove the following warning from pmesh (no need for pmesh version in cosmodesiconda)
-    # import warnings
-    # warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
+    from mpytools.random import MPIRandomState
 
     from cosmoprimo.fiducial import DESI
 
@@ -328,18 +325,16 @@ if __name__ == '__main__':
     fmt = 'fits'
     # fmt = 'bigfile'
 
-    # Lognormal mock as a placeholder #
+    # Uniform mock as a placeholder: unclustered, only the geometry is exercised #
     z = (zmin + zmax) / 2.
-    # Linear power spectrum at median z
-    power = cosmo.get_fourier().pk_interpolator().to_1d(z=z)
-    from mockfactory import LagrangianLinearMock
-    mock = LagrangianLinearMock(power, nmesh=512, boxsize=5500, boxcenter=[0, 0, 0], seed=42, unitary_amplitude=False)
-    mpicomm, rank = mock.mpicomm, mock.mpicomm.rank
-    mock.set_real_delta_field(bias=(2. - 1))  # this is Lagrangian bias, Eulerian bias - 1
-    mock.set_analytic_selection_function(nbar=1e-5)
-    mock.poisson_sample(seed=792)
-    box = mock.to_catalog()
-    rsd_factor = cosmo.sigma8_z(z=z, of='theta_cb') / cosmo.sigma8_z(z=z, of='delta_cb')  # growth rate
+    box = RandomBoxCatalog(nbar=1e-5, boxsize=5500, boxcenter=[0, 0, 0], seed=42)
+    mpicomm, rank = box.mpicomm, box.mpicomm.rank
+    # Velocities in km/s, with a typical peculiar velocity dispersion
+    rng = MPIRandomState(size=box.size, seed=792, mpicomm=mpicomm)
+    box['Velocity'] = rng.normal(loc=0., scale=300., itemshape=3)
+    # rsd_factor is the factor to multiply velocity with to get displacements (in position units)
+    # Here velocities are in km/s, so this is 1 / (a H), in Mpc/h
+    rsd_factor = 1 / (1 / (1 + z) * 100 * cosmo.efunc(z))
 
     # The following code requests a mockfactory.BoxCatalog to work.
     # mockfactory.BoxCatalog proposes different ways to read catalog in different formats with MPI

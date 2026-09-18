@@ -1,23 +1,22 @@
 # mockfactory
 
-**mockfactory** is a MPI-parallel Python toolkit to generate Gaussian and lognormal mocks and apply cut-sky geometry to box galaxy mocks.
+**mockfactory** is a MPI-parallel Python toolkit to apply cut-sky geometry to box galaxy mocks.
 Its main purpose is to study geometry effects on the power spectrum.
 
 ![My image](https://github.com/echaussidon/mockfactory/blob/main/remap.png)
 
-A typical run, generating lognormal mocks and applying some cutsky geometry is
+A typical run, applying some cutsky geometry to a box mock is
 (pseudo-code, for an example with all variables defined see [this notebook](https://github.com/cosmodesi/mockfactory/blob/main/nb/basic_examples.ipynb)):
 ```
-from mockfactory import LagrangianLinearMock, utils, setup_logging
+from mockfactory import BoxCatalog, utils, setup_logging
 
-# First generate mock in box
-# power is the callable power spectrum as a function of k
-mock = LagrangianLinearMock(power, nmesh=nmesh, boxsize=boxsize, boxcenter=boxcenter, unitary_amplitude=False)
-# This is Lagrangian bias, Eulerian bias - 1
-mock.set_real_delta_field(bias=bias - 1)
-mock.set_analytic_selection_function(nbar=nbar)
-mock.poisson_sample(seed=43)
-data = mock.to_catalog()
+# Start from a box mock, read with MPI from disk
+data = BoxCatalog.read(data_fn, filetype='fits', position='Position', velocity='Velocity',
+                       boxsize=boxsize, boxcenter=boxcenter)
+# To ensure that the box is centered: data.recenter()
+# A BoxCatalog can also be built directly from a (dictionary of) numpy array(s) split over ranks:
+# data = BoxCatalog(data=array, columns=['Position', 'Velocity'], position='Position', velocity='Velocity',
+#                   boxsize=boxsize, boxcenter=boxcenter)
 
 # We've got data, now turn to randoms
 from mockfactory.make_survey import RandomBoxCatalog
@@ -68,7 +67,7 @@ remapped_randoms = randoms.remap(*basis)
 ```
 
 Example notebooks are provided in directory nb/.
-Example scripts are provided in directory mockfactory/tests/scripts.
+Example scripts are provided in directory desi/.
 
 ## Requirements
 
@@ -77,7 +76,6 @@ Strict requirements are:
   - numpy
   - scipy
   - mpi4py
-  - pmesh
   - mpytools
 
 ## Installation
@@ -110,8 +108,7 @@ python setup.py develop --user
 
 ## Credits
 
-[nbodykit](https://github.com/bccp/nbodykit) for recipe for [lognormal mocks](https://github.com/bccp/nbodykit/blob/master/nbodykit/source/catalog/lognormal.py),
-and mpi helper functions.
+[nbodykit](https://github.com/bccp/nbodykit) for mpi helper functions.
 [cuboid_remap](https://github.com/duncandc/cuboid_remap) by Duncan Campbell, based on [Jordan Carlson and Martin White's algorithm](https://arxiv.org/abs/1003.3178).
 Edmond Chaussidon for box-to-cutsky debugging and DESI cutsky script.
 Antoine Rocher for DESI SV3 cutsky script and debugging.

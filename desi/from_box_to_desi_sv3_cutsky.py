@@ -160,18 +160,16 @@ if __name__ == '__main__':
             box = BoxCatalog.read(args.mock_fn.format(imock), boxsize=boxsize, boxcenter=boxcenter)
             rsd_factor = 1 / (1 / (1 + z) * 100 * cosmo.efunc(z))
         else:
-            # Lognormal mock as a placeholder:
-            power = cosmo.get_fourier().pk_interpolator().to_1d(z=z)
-            from mockfactory import LagrangianLinearMock
-            mock = LagrangianLinearMock(power, nmesh=256, boxsize=boxsize, boxcenter=boxcenter, seed=imock + 1, unitary_amplitude=False)
-            mpicomm, rank = mock.mpicomm, mock.mpicomm.rank
-            mock.set_real_delta_field(bias=1.2 - 1.)  # Lagrangian bias
-            mock.set_analytic_selection_function(nbar=nbar)
-            mock.poisson_sample(seed=None)
-            box = mock.to_catalog()
+            # Uniform mock as a placeholder: unclustered, only the geometry is exercised
+            box = RandomBoxCatalog(nbar=nbar, boxsize=boxsize, boxcenter=boxcenter, seed=imock + 1)
+            # Velocities in km/s, with a typical peculiar velocity dispersion
+            rng = MPIRandomState(size=box.size, seed=imock + 1, mpicomm=box.mpicomm)
+            box['Velocity'] = rng.normal(loc=0., scale=300., itemshape=3)
             # rsd_factor is the factor to multiply velocity with to get displacements (in position units)
-            # For this mock it is just f, but it can be e.g. 1 / (a H); 1 / (100 a E) to use Mpc/h
-            rsd_factor = cosmo.sigma8_z(z=z, of='theta_cb') / cosmo.sigma8_z(z=z, of='delta_cb')  # growth rate
+            # Here velocities are in km/s, so this is 1 / (a H), in Mpc/h
+            rsd_factor = 1 / (1 / (1 + z) * 100 * cosmo.efunc(z))
+
+        mpicomm, rank = box.mpicomm, box.mpicomm.rank
 
         # The following code requests a mockfactory.BoxCatalog to work.
         # mockfactory.BoxCatalog proposes different ways to read catalog in different formats with MPI

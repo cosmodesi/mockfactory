@@ -9,9 +9,9 @@ requires = [
 [project]
 name = "mockfactory"
 authors = [{name = "cosmodesi"}]
-description = "pmesh-based package to produce Gaussian mocks for validation of clustering pipelines"
+description = "MPI-parallel package to apply cut-sky geometry to box galaxy mocks, for validation of clustering pipelines"
 version = "1.0.0"
-dependencies = ["numpy", "scipy", "mpi4py", "pmesh @ git+https://github.com/MP-Gadget/pmesh", "mpytools @ git+https://github.com/adematti/mpytools"]
+dependencies = ["numpy", "scipy", "mpi4py", "mpytools @ git+https://github.com/adematti/mpytools"]
 readme = "README.md"
 requires-python = ">=3.10"
 urls = {Repository = "http://github.com/cosmodesi/mockfactory"}
