@@ -47,7 +47,10 @@ class LedgerState(object):
         # Sorted by target, so that a row can be found by binary search.
         self.current = current[np.argsort(current['TARGETID'])]
         self.history = []
+        # Healpix of every row, kept alongside it: reprocessing asks for a few pixels at a
+        # time, and recomputing it over the whole catalog each time is O(catalog) per action.
         self._pixel = self._healpix(self.current['RA'], self.current['DEC'])
+        self._history_pixel = []
 
     def _healpix(self, ra, dec):
         import healpy as hp
@@ -185,7 +188,9 @@ class LedgerState(object):
                              'state'.format(int((index < 0).sum())))
         # Keep what is being replaced: reprocessing replays a target's observations from its
         # unobserved state, so the superseded rows have to survive.
-        self.history.append(self.current[index].copy())
+        superseded = self.current[index].copy()
+        self.history.append(superseded)
+        self._history_pixel.append(self._pixel[index].copy())
         for name in updated.dtype.names:
             self.current[name][index] = updated[name]
         return len(updated)
@@ -214,6 +219,11 @@ class LedgerState(object):
         if not self.history:
             return self.current
         return np.concatenate(self.history + [self.current])
+
+    @property
+    def nrows(self):
+        """Number of rows held, counting superseded ones."""
+        return len(self.current) + sum(len(block) for block in self.history)
 
     def _ledger_meta(self, healpix, survey='main', obscon='dark'):
         """The header a ledger carries, which desitarget reads to make sense of the directory."""
@@ -255,12 +265,25 @@ class LedgerState(object):
 
         ledger_dir = get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon)
         utils.mkdir(ledger_dir)
-        rows = self.all_rows()
-        pixel = self._healpix(rows['RA'], rows['DEC'])
         if healpixels is None:
-            healpixels = np.unique(pixel)
+            healpixels = self.healpixels
+        healpixels = np.atleast_1d(healpixels)
+        # Cut the catalog down to the requested pixels in one pass, then group within the
+        # remainder: reprocessing asks for a handful of pixels out of thousands.
+        rows, pixel = [], []
+        for block, block_pixel in zip(self.history, self._history_pixel):
+            mask = np.isin(block_pixel, healpixels)
+            if mask.any():
+                rows.append(block[mask])
+                pixel.append(block_pixel[mask])
+        mask = np.isin(self._pixel, healpixels)
+        rows.append(self.current[mask])
+        pixel.append(self._pixel[mask])
+        rows = np.concatenate(rows) if len(rows) > 1 else rows[0]
+        pixel = np.concatenate(pixel) if len(pixel) > 1 else pixel[0]
+
         nwritten = 0
-        for healpix in np.atleast_1d(healpixels):
+        for healpix in healpixels:
             fn = os.path.join(ledger_dir, 'mtl-{}-hp-{:d}.ecsv'.format(obscon.lower(), int(healpix)))
             if os.path.isfile(fn) and not overwrite:
                 continue
@@ -300,17 +323,83 @@ class LedgerState(object):
         latest, superseded = rows[order[is_last]], rows[order[~is_last]]
 
         # Drop what this state held for those healpixels, then put the new rows in its place.
-        self.history = [block[~np.isin(self._healpix(block['RA'], block['DEC']), healpixels)]
-                        for block in self.history]
-        self.history = [block for block in self.history if len(block)]
-        if len(superseded): self.history.append(superseded)
+        keep = [~np.isin(pixel, healpixels) for pixel in self._history_pixel]
+        self.history = [block[mask] for block, mask in zip(self.history, keep) if mask.any()]
+        self._history_pixel = [pixel[mask] for pixel, mask in zip(self._history_pixel, keep)
+                               if mask.any()]
+        if len(superseded):
+            self.history.append(superseded)
+            self._history_pixel.append(self._healpix(superseded['RA'], superseded['DEC']))
 
-        keep = ~np.isin(self.current['TARGETID'], latest['TARGETID'])
-        current = np.concatenate([self.current[keep], latest.astype(self.current.dtype)])
-        self.current = current[np.argsort(current['TARGETID'])]
-        self._pixel = self._healpix(self.current['RA'], self.current['DEC'])
+        # Write the new states over the rows they replace, rather than rebuilding the whole
+        # catalog: reprocessing touches a few thousand targets out of tens of millions, and a
+        # concatenate plus argsort of everything costs far more than the update itself.
+        latest = latest.astype(self.current.dtype)
+        index = self._index_of(latest['TARGETID'])
+        known = index >= 0
+        for name in latest.dtype.names:
+            self.current[name][index[known]] = latest[name][known]
+        self._pixel[index[known]] = self._healpix(latest['RA'][known], latest['DEC'][known])
+        if not known.all():
+            # A target the state did not hold. It should not happen, since reprocessing only
+            # revisits targets that were already there, so say so rather than absorb it.
+            raise ValueError('reprocessing returned {:d} target(s) absent from the '
+                             'state'.format(int((~known).sum())))
         return len(rows)
 
     def healpixels_of(self, ra, dec):
         """Return the distinct healpixels the given positions fall in."""
         return np.unique(self._healpix(ra, dec))
+
+    def rows_in_healpixels(self, healpixels):
+        """
+        Return every row this state holds for ``healpixels``, superseded ones included.
+
+        This is what reading those healpix ledgers without taking the latest row of each
+        target would give, and it is what a replay from the unobserved state needs.
+        """
+        healpixels = np.atleast_1d(healpixels)
+        rows = []
+        for block, pixel in zip(self.history, self._history_pixel):
+            mask = np.isin(pixel, healpixels)
+            if mask.any(): rows.append(block[mask])
+        rows.append(self.current[np.isin(self._pixel, healpixels)])
+        return np.concatenate(rows) if len(rows) > 1 else rows[0]
+
+    def absorb_rows(self, rows):
+        """
+        Fold rows produced by a replay back in, newest last.
+
+        The last row of a target is its state now; the others are what it passed through, and
+        so is whatever the state held for it before, since the replay supersedes all of it.
+
+        Returns
+        -------
+        nupdated : int
+            Number of targets whose state changed.
+        """
+        from .reprocess import last_of_each
+
+        if not len(rows):
+            return 0
+        rows = np.asarray(rows).astype(self.current.dtype)
+        is_last = np.zeros(len(rows), dtype='?')
+        is_last[last_of_each(rows['TARGETID'])] = True
+        latest, superseded = rows[is_last], rows[~is_last]
+
+        index = self._index_of(latest['TARGETID'])
+        if (index < 0).any():
+            raise ValueError('the replay returned {:d} target(s) absent from the state'.format(
+                int((index < 0).sum())))
+        # What the state held for these targets is now superseded too.
+        blocks, pixels = [self.current[index]], [self._pixel[index]]
+        if len(superseded):
+            blocks.append(superseded)
+            pixels.append(self._healpix(superseded['RA'], superseded['DEC']))
+        self.history.append(np.concatenate(blocks) if len(blocks) > 1 else blocks[0])
+        self._history_pixel.append(np.concatenate(pixels) if len(pixels) > 1 else pixels[0])
+
+        for name in latest.dtype.names:
+            self.current[name][index] = latest[name]
+        self._pixel[index] = self._healpix(latest['RA'], latest['DEC'])
+        return len(latest)

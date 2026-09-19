@@ -20,6 +20,7 @@ import numpy as np
 
 from . import utils
 from .assignment import do_fiber_assignment
+from .reprocess import reprocess_state
 from .ledger import get_ledger_dir
 from .tiletracker import SUPPORTED_ACTIONTYPES, get_actions, mark_actions_done, read_tile_tracker
 
@@ -100,7 +101,7 @@ def update_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', 
 
 
 def reprocess_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', zcat_dir=None,
-                      state=None, scratch_dir=None):
+                      state=None, scratch_dir=None, via_ledgers=False):
     """
     Carry out one ``reproc`` action: refold a tile the spectroscopic pipeline reprocessed.
 
@@ -134,8 +135,13 @@ def reprocess_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark
         State to reprocess within, instead of the healpix ledgers.
 
     scratch_dir : str, default=None
-        Where to put the ledgers handed to desitarget when working from a state. Defaults to
+        Where to put the ledgers handed to desitarget when ``via_ledgers`` is set. Defaults to
         the system temporary directory, which on a compute node is local and therefore fast.
+
+    via_ledgers : bool, default=False
+        Whether to replay by handing healpix ledgers to desitarget rather than against the
+        state directly. Slower by more than an order of magnitude, and kept because it is what
+        the in-memory replay was checked against.
 
     Returns
     -------
@@ -180,23 +186,22 @@ def reprocess_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark
         return reprocess_ledger(get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon), alt_zcat,
                                 obscon=obscon.upper())
 
-    # Replaying a target from its unobserved state needs its whole history, which the state
-    # keeps but desitarget only reads from ledgers. Rather than reimplement a replay this
-    # delicate, hand the few healpixels involved to desitarget on disk and take the result
-    # back. Reprocessing is 2% of the actions of a survey, so the round trip is affordable.
-    healpixels = state.healpixels_of(alt_zcat['RA'], alt_zcat['DEC'])
-    tmpdir = tempfile.mkdtemp(prefix='altmtl-reproc-', dir=scratch_dir)
-    try:
-        state.write_ledgers(tmpdir, survey=survey, obscon=obscon, healpixels=healpixels)
-        timestamps = reprocess_ledger(get_ledger_dir(tmpdir, survey=survey, obscon=obscon),
-                                      alt_zcat, obscon=obscon.upper())
-        nrows = state.absorb_ledgers(get_ledger_dir(tmpdir, survey=survey, obscon=obscon),
-                                     healpixels, survey=survey, obscon=obscon)
-        logger.debug('Tile {}: reprocessed through {:d} healpixel(s), {:d} rows back.'.format(
-            action['TILEID'], len(healpixels), nrows))
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-    return timestamps
+    # The replay happens against the state itself. Handing the healpixels to desitarget on
+    # disk instead works too and is what validated this, but the round trip through ecsv and
+    # its per-row Python loops cost around 25 s a tile, against 268 of them for DA2.
+    if via_ledgers:
+        healpixels = state.healpixels_of(alt_zcat['RA'], alt_zcat['DEC'])
+        tmpdir = tempfile.mkdtemp(prefix='altmtl-reproc-', dir=scratch_dir)
+        try:
+            state.write_ledgers(tmpdir, survey=survey, obscon=obscon, healpixels=healpixels)
+            timestamps = reprocess_ledger(get_ledger_dir(tmpdir, survey=survey, obscon=obscon),
+                                          alt_zcat, obscon=obscon.upper())
+            state.absorb_ledgers(get_ledger_dir(tmpdir, survey=survey, obscon=obscon),
+                                 healpixels, survey=survey, obscon=obscon)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        return timestamps
+    return reprocess_state(state, alt_zcat, obscon=obscon, survey=survey)
 
 
 def update_batch(altmtl_dir, actions, fiber_maps, state, survey='main', obscon='dark',

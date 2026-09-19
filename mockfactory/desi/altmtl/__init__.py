@@ -40,6 +40,7 @@ from .assignment import FiberMap, do_fiber_assignment, make_fiber_map
 from .loop import (run_altmtl, run_realization, update_ledgers, reprocess_ledgers, group_actions,
                    update_batch, read_zcats)
 from .state import LedgerState
+from .reprocess import reprocess_state
 from .pota import compute_potential_assignments
 from .bitweights import compute_bitweights, write_bitweights, pack_bitweights, unpack_bitweights
 from .targets import make_targets, write_targets, get_target_bits, get_priority_numobs

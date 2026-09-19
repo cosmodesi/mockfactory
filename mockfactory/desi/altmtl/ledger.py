@@ -116,7 +116,7 @@ def _shuffle_subpriority(fn, seed):
 
 def initialize_realization(initial_dir, altmtl_dir, realization=0, survey='main', obscon='dark',
                            seed=None, shuffle_subpriority=True, start_date=None, end_date=None,
-                           tiles_specstatus_fn=None, overwrite=False, **kwargs):
+                           tiles_specstatus_fn=None, ledgers=True, overwrite=False, **kwargs):
     """
     Set up one alternative realization: ledgers, tile tracker and specstatus.
 
@@ -156,6 +156,11 @@ def initialize_realization(initial_dir, altmtl_dir, realization=0, survey='main'
     tiles_specstatus_fn : str, default=None
         Path of the tiles-specstatus file. Defaults to the surveyops copy.
 
+    ledgers : bool, default=True
+        Whether to copy the healpix ledgers. Pass ``False`` when replaying against a
+        :class:`mockfactory.desi.altmtl.state.LedgerState`, which never reads them: only the
+        tile tracker and the observing history are then set up.
+
     overwrite : bool, default=False
         Whether to rebuild ledgers and tile tracker that already exist.
 
@@ -175,26 +180,31 @@ def initialize_realization(initial_dir, altmtl_dir, realization=0, survey='main'
         raise ValueError('refusing to write alternative ledgers to {}: the path looks like the real '
                          'surveyops ledgers'.format(altmtl_dir))
 
-    initial_ledger_dir = get_ledger_dir(initial_dir, survey=survey, obscon=obscon)
-    healpixels = get_healpixels(initial_ledger_dir, obscon=obscon)
-    if not healpixels.size:
-        raise ValueError('no initial ledger found in {}'.format(initial_ledger_dir))
-
-    ledger_dir = get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon)
-    if os.path.isdir(ledger_dir) and len(get_healpixels(ledger_dir, obscon=obscon)) and not overwrite:
-        logger.info('Ledgers already in {}, not rebuilding.'.format(ledger_dir))
+    if not ledgers:
+        utils.mkdir(altmtl_dir)
+        logger.info('Realization {:d}: no ledgers, the replay reads its state from memory.'.format(
+            realization))
     else:
-        utils.mkdir(ledger_dir)
-        nrows = 0
-        for healpix in healpixels:
-            basename = 'mtl-{}-hp-{:d}.ecsv'.format(obscon.lower(), healpix)
-            fn = os.path.join(ledger_dir, basename)
-            shutil.copyfile(os.path.join(initial_ledger_dir, basename), fn)
-            if shuffle_subpriority:
-                nrows += _shuffle_subpriority(fn, seed + int(healpix) + realization)
-        logger.info('Realization {:d}: copied {:d} ledgers to {}{}.'.format(
-            realization, healpixels.size, ledger_dir,
-            ', reshuffling {:d} subpriorities'.format(nrows) if shuffle_subpriority else ''))
+        initial_ledger_dir = get_ledger_dir(initial_dir, survey=survey, obscon=obscon)
+        healpixels = get_healpixels(initial_ledger_dir, obscon=obscon)
+        if not healpixels.size:
+            raise ValueError('no initial ledger found in {}'.format(initial_ledger_dir))
+
+        ledger_dir = get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon)
+        if os.path.isdir(ledger_dir) and len(get_healpixels(ledger_dir, obscon=obscon)) and not overwrite:
+            logger.info('Ledgers already in {}, not rebuilding.'.format(ledger_dir))
+        else:
+            utils.mkdir(ledger_dir)
+            nrows = 0
+            for healpix in healpixels:
+                basename = 'mtl-{}-hp-{:d}.ecsv'.format(obscon.lower(), healpix)
+                fn = os.path.join(ledger_dir, basename)
+                shutil.copyfile(os.path.join(initial_ledger_dir, basename), fn)
+                if shuffle_subpriority:
+                    nrows += _shuffle_subpriority(fn, seed + int(healpix) + realization)
+            logger.info('Realization {:d}: copied {:d} ledgers to {}{}.'.format(
+                realization, healpixels.size, ledger_dir,
+                ', reshuffling {:d} subpriorities'.format(nrows) if shuffle_subpriority else ''))
 
     # The loop does not read this copy, but downstream tools expect to find the observing
     # history next to the ledgers it produced.
