@@ -100,7 +100,7 @@ def update_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', 
 
 
 def reprocess_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', zcat_dir=None,
-                      state=None):
+                      state=None, scratch_dir=None):
     """
     Carry out one ``reproc`` action: refold a tile the spectroscopic pipeline reprocessed.
 
@@ -130,19 +130,23 @@ def reprocess_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark
     zcat_dir : str, default=None
         Directory holding the real redshift catalogs.
 
+    state : LedgerState, default=None
+        State to reprocess within, instead of the healpix ledgers.
+
+    scratch_dir : str, default=None
+        Where to put the ledgers handed to desitarget when working from a state. Defaults to
+        the system temporary directory, which on a compute node is local and therefore fast.
+
     Returns
     -------
     timestamps : dict
         Timestamp at which each reprocessed tile was refolded.
     """
+    import tempfile
+    import shutil
     from astropy.table import Table
     from desitarget.mtl import make_zcat, reprocess_ledger
 
-    if state is not None:
-        raise NotImplementedError(
-            'reprocessing replays every observation of a target from its unobserved state, which '
-            'desitarget only does against ledgers on disk; run this action list with ledgers, or '
-            'cut the date range short of the first reproc action')
     if zcat_dir is None: zcat_dir = utils.ZCAT_DIR
 
     # Reprocessing revisits tiles that overlap the one being reprocessed, so a target may
@@ -151,8 +155,48 @@ def reprocess_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark
     alt_zcat = zcat.copy()
     alt_zcat['TARGETID'] = fiber_map.real_to_alt(zcat['TARGETID'])
 
-    return reprocess_ledger(get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon), alt_zcat,
-                            obscon=obscon.upper())
+    # Relabelling a redshift catalog rewrites which target an observation belongs to, but the
+    # positions in it are still the real survey's. An update never writes them, so it does not
+    # matter there; reprocessing does write them, and a mock target would end up sitting where
+    # the real target it replaced sat, up to a fiber patrol radius away. So the positions are
+    # substituted too.
+    if state is not None:
+        index = state._index_of(alt_zcat['TARGETID'])
+        found = index >= 0
+        for name in ['RA', 'DEC']:
+            if name in alt_zcat.colnames:
+                values = np.asarray(alt_zcat[name]).copy()
+                values[found] = state.current[name][index[found]]
+                alt_zcat[name] = values
+        nmoved = int((np.asarray(zcat['RA'])[found] != np.asarray(alt_zcat['RA'])[found]).sum())
+        if nmoved:
+            logger.debug('Tile {}: restored the mock positions of {:d} reprocessed '
+                         'target(s).'.format(action['TILEID'], nmoved))
+    else:
+        logger.warning('Reprocessing against ledgers writes the real survey positions onto the '
+                       'reprocessed mock targets; pass a state to avoid it.')
+
+    if state is None:
+        return reprocess_ledger(get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon), alt_zcat,
+                                obscon=obscon.upper())
+
+    # Replaying a target from its unobserved state needs its whole history, which the state
+    # keeps but desitarget only reads from ledgers. Rather than reimplement a replay this
+    # delicate, hand the few healpixels involved to desitarget on disk and take the result
+    # back. Reprocessing is 2% of the actions of a survey, so the round trip is affordable.
+    healpixels = state.healpixels_of(alt_zcat['RA'], alt_zcat['DEC'])
+    tmpdir = tempfile.mkdtemp(prefix='altmtl-reproc-', dir=scratch_dir)
+    try:
+        state.write_ledgers(tmpdir, survey=survey, obscon=obscon, healpixels=healpixels)
+        timestamps = reprocess_ledger(get_ledger_dir(tmpdir, survey=survey, obscon=obscon),
+                                      alt_zcat, obscon=obscon.upper())
+        nrows = state.absorb_ledgers(get_ledger_dir(tmpdir, survey=survey, obscon=obscon),
+                                     healpixels, survey=survey, obscon=obscon)
+        logger.debug('Tile {}: reprocessed through {:d} healpixel(s), {:d} rows back.'.format(
+            action['TILEID'], len(healpixels), nrows))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    return timestamps
 
 
 def update_batch(altmtl_dir, actions, fiber_maps, state, survey='main', obscon='dark',
@@ -327,7 +371,7 @@ def warm_hardware(tileids, fiberassign_dir=None):
 
 def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, numobs_from_ledger=True,
                     overwrite=False, fiberassign_dir=None, fiberassign_input_dir=None, nactions=None,
-                    numproc=1, state=None):
+                    numproc=1, state=None, scratch_dir=None):
     """
     Replay the survey for one realization, carrying out every action not yet done.
 
@@ -369,6 +413,9 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
         Merged target list to replay against, held in memory. The healpix ledgers are then
         never read or written, which is most of the cost of a replay. A batch of assignments
         inherits it by fork, and the updates that follow change it in the parent.
+
+    scratch_dir : str, default=None
+        Where to put the ledgers handed to desitarget when reprocessing against a state.
 
     Returns
     -------
@@ -446,7 +493,8 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
                     logger.debug('Tile {:d}: folded in {:d} redshift(s).'.format(tileid, nz))
                 else:
                     timestamps = reprocess_ledgers(altmtl_dir, action, fiber_map, survey=survey,
-                                                   obscon=obscon, zcat_dir=zcat_dir, state=state)
+                                                   obscon=obscon, zcat_dir=zcat_dir, state=state,
+                                                   scratch_dir=scratch_dir)
                     logger.debug('Tile {:d}: reprocessed, {:d} tile(s) refolded.'.format(
                         tileid, len(timestamps)))
             mark_actions_done(altmtl_dir, [action], survey=survey, obscon=obscon)

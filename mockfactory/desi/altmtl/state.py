@@ -209,29 +209,108 @@ class LedgerState(object):
         numobs[found] = self.current['NUMOBS'][index[found]]
         return targetid, numobs
 
-    def write_ledgers(self, altmtl_dir, survey='main', obscon='dark', overwrite=False):
+    def all_rows(self):
+        """Every row this state holds, superseded ones first, as an append-only ledger would."""
+        if not self.history:
+            return self.current
+        return np.concatenate(self.history + [self.current])
+
+    def _ledger_meta(self, healpix, survey='main', obscon='dark'):
+        """The header a ledger carries, which desitarget reads to make sense of the directory."""
+        return {'DR': 0, 'EXTNAME': 'MTL', 'FILEHPX': int(healpix), 'FILENEST': True,
+                'FILENSID': int(self.nside), 'INDIR': 'mockfactory.desi.altmtl',
+                'OBSCON': obscon.upper(), 'OVERRIDE': False, 'SCND': False, 'SURVEY': survey}
+
+    def write_ledgers(self, altmtl_dir, survey='main', obscon='dark', healpixels=None,
+                      overwrite=True):
         """
-        Write the state out as healpix ledgers, once, in the format the real survey uses.
+        Write the state out as healpix ledgers, in the format the real survey uses.
 
         Anything downstream that expects ledgers reads these; the loop itself never does.
+
+        Parameters
+        ----------
+        altmtl_dir : str
+            Directory of the realization to write under.
+
+        survey : str, default='main'
+            Survey the ledgers belong to.
+
+        obscon : str, default='dark'
+            Observing conditions.
+
+        healpixels : array, default=None
+            Write only these healpixels. Defaults to all of them.
+
+        overwrite : bool, default=True
+            Whether to replace ledgers that already exist.
+
+        Returns
+        -------
+        ledger_dir : str
+            Directory the ledgers were written to.
         """
         from astropy.table import Table
-        from desitarget.mtl import make_ledger_in_hp
         from .ledger import get_ledger_dir
 
         ledger_dir = get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon)
         utils.mkdir(ledger_dir)
-        rows = np.concatenate(self.history + [self.current]) if self.history else self.current
+        rows = self.all_rows()
         pixel = self._healpix(rows['RA'], rows['DEC'])
+        if healpixels is None:
+            healpixels = np.unique(pixel)
         nwritten = 0
-        for healpix in np.unique(pixel):
-            fn = os.path.join(ledger_dir, 'mtl-{}-hp-{:d}.ecsv'.format(obscon.lower(), healpix))
+        for healpix in np.atleast_1d(healpixels):
+            fn = os.path.join(ledger_dir, 'mtl-{}-hp-{:d}.ecsv'.format(obscon.lower(), int(healpix)))
             if os.path.isfile(fn) and not overwrite:
                 continue
             block = rows[pixel == healpix]
             # An append-only ledger is ordered by the time each row was written.
             block = block[np.argsort(block['TIMESTAMP'], kind='stable')]
-            Table(block).write(fn, format='ascii.ecsv', overwrite=True)
+            table = Table(block)
+            table.meta.update(self._ledger_meta(healpix, survey=survey, obscon=obscon))
+            table.write(fn, format='ascii.ecsv', overwrite=True)
             nwritten += 1
         logger.info('Wrote {:d} healpix ledgers to {}.'.format(nwritten, ledger_dir))
         return ledger_dir
+
+    def absorb_ledgers(self, ledger_dir, healpixels, survey='main', obscon='dark'):
+        """
+        Replace everything this state holds for ``healpixels`` with what those ledgers hold.
+
+        Used after handing a few healpixels to desitarget for reprocessing: the ledgers are
+        then the authority on those targets, both their latest state and their history.
+
+        Returns
+        -------
+        nrows : int
+            Number of rows read back.
+        """
+        from desitarget import io
+
+        healpixels = [int(healpix) for healpix in np.atleast_1d(healpixels)]
+        rows = np.asarray(io.read_mtl_in_hp(ledger_dir, self.nside, healpixels, unique=False,
+                                            tabform='ascii.ecsv'))
+        # The last row of a target is its state now; the others are what it passed through.
+        order = np.lexsort((np.arange(len(rows)), rows['TARGETID']))
+        sorted_targetid = rows['TARGETID'][order]
+        is_last = np.empty(len(order), dtype='?')
+        is_last[-1:] = True
+        is_last[:-1] = sorted_targetid[1:] != sorted_targetid[:-1]
+        latest, superseded = rows[order[is_last]], rows[order[~is_last]]
+
+        # Drop what this state held for those healpixels, then put the new rows in its place.
+        self.history = [block[~np.isin(self._healpix(block['RA'], block['DEC']), healpixels)]
+                        for block in self.history]
+        self.history = [block for block in self.history if len(block)]
+        if len(superseded): self.history.append(superseded)
+
+        keep = ~np.isin(self.current['TARGETID'], latest['TARGETID'])
+        current = np.concatenate([self.current[keep], latest.astype(self.current.dtype)])
+        self.current = current[np.argsort(current['TARGETID'])]
+        self._pixel = self._healpix(self.current['RA'], self.current['DEC'])
+        return len(rows)
+
+    def healpixels_of(self, ra, dec):
+        """Return the distinct healpixels the given positions fall in."""
+        return np.unique(self._healpix(ra, dec))
