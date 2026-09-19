@@ -155,6 +155,76 @@ def reprocess_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark
                             obscon=obscon.upper())
 
 
+def update_batch(altmtl_dir, actions, fiber_maps, state, survey='main', obscon='dark',
+                 zcat_dir=None, numobs_from_ledger=True, numproc=1):
+    """
+    Fold a whole batch of observed tiles into the state at once.
+
+    The real survey updated its ledgers for a pass of tiles in one go, and the work divides the
+    same way here: the redshift catalogs are read in parallel, relabelled through each tile's
+    fiber map, and then handed to :func:`desitarget.mtl.make_mtl` as a single catalog. One call
+    over a batch costs a fraction of one call per tile.
+
+    That merge is only sound while no target was observed on two tiles of the batch, since the
+    number of observations of such a target would be raised once instead of twice. It is
+    checked rather than assumed, and the batch falls back to one update per tile when it fails.
+
+    Parameters
+    ----------
+    altmtl_dir : str
+        Directory of the realization.
+
+    actions : list
+        Update actions sharing a timestamp.
+
+    fiber_maps : dict
+        Fiber map of each tile of the batch.
+
+    state : LedgerState
+        State to fold the observations into.
+
+    survey : str, default='main'
+        Survey to replay.
+
+    obscon : str, default='dark'
+        Observing conditions.
+
+    zcat_dir : str, default=None
+        Directory holding the real redshift catalogs.
+
+    numobs_from_ledger : bool, default=True
+        Whether to take the number of observations so far from the state.
+
+    numproc : int, default=1
+        Number of processes to read the redshift catalogs with.
+
+    Returns
+    -------
+    nupdated : int
+        Number of targets whose state changed.
+    """
+    from astropy.table import vstack
+
+    zcats = read_zcats(actions, survey=survey, obscon=obscon, zcat_dir=zcat_dir, numproc=numproc)
+    relabelled = []
+    for action in actions:
+        tileid = int(action['TILEID'])
+        zcat = zcats[tileid].copy()
+        zcat['TARGETID'] = fiber_maps[tileid].real_to_alt(zcats[tileid]['TARGETID'])
+        relabelled.append(zcat)
+
+    merged = vstack(relabelled)
+    targetid = np.asarray(merged['TARGETID'])
+    # Only targets this realization holds can collide; the others go to sky and are dropped.
+    held = targetid[state._index_of(targetid) >= 0]
+    if np.unique(held).size != held.size:
+        logger.info('{:d} target(s) were observed on more than one tile of this batch; folding '
+                    'the tiles in one at a time.'.format(held.size - np.unique(held).size))
+        return sum(state.update(zcat, obscon=obscon, numobs_from_ledger=numobs_from_ledger)
+                   for zcat in relabelled)
+    return state.update(merged, obscon=obscon, numobs_from_ledger=numobs_from_ledger)
+
+
 #: Set in the parent before forking, so that the workers of a fiber assignment batch inherit
 #: it rather than being handed it through a pickle: a loaded focal plane does not pickle.
 _batch_options = {}
@@ -166,14 +236,46 @@ def _assign_one(tileid):
     return tileid
 
 
+def _read_zcat(action):
+    """Read the real redshift catalog of one tile. Read-only, so it parallelises freely."""
+    from astropy.table import Table
+    from desitarget.mtl import make_zcat
+
+    options = _batch_options
+    zcat = _to_big_endian(Table(make_zcat(options['zcat_dir'], [action], options['obscon'].upper(),
+                                          options['survey'])))
+    return int(action['TILEID']), zcat
+
+
+def read_zcats(actions, survey='main', obscon='dark', zcat_dir=None, numproc=1):
+    """
+    Read the redshift catalogs of ``actions``, in parallel.
+
+    Each one reads the ten petal files of a tile, which is half the cost of an update and is
+    pure input, so it is worth doing for the whole batch at once.
+
+    Returns
+    -------
+    zcats : dict
+        Redshift catalog of each tile.
+    """
+    if zcat_dir is None: zcat_dir = utils.ZCAT_DIR
+    _batch_options.update(zcat_dir=zcat_dir, survey=survey, obscon=obscon)
+    if numproc > 1 and len(actions) > 1:
+        with get_context('fork').Pool(processes=min(numproc, len(actions))) as pool:
+            return dict(pool.map(_read_zcat, list(actions)))
+    return dict(_read_zcat(action) for action in actions)
+
+
 def group_actions(actions):
     """
     Split ``actions`` into the runs that can be carried out together.
 
-    Fiber assignment actions sharing a timestamp are one run: the real survey assigned those
-    tiles in a single pass, from one state of the ledgers, and none of them writes to the
-    ledgers, so they are independent of each other. Everything else is its own run, because an
-    update rewrites the ledgers that the next assignment reads.
+    Actions of the same type sharing a timestamp are one run: the real survey carried those
+    tiles out in a single pass. Assignments in a run read one state of the ledgers and none of
+    them writes, so they are plainly independent. Updates in a run do write, so they are only
+    independent while no target was observed on two of their tiles, which the caller checks.
+    Anything else is its own run, because an update changes what the next assignment reads.
 
     Parameters
     ----------
@@ -187,7 +289,7 @@ def group_actions(actions):
     """
     run = []
     for action in actions:
-        if run and action['ACTIONTYPE'] == 'fa' == run[0]['ACTIONTYPE'] \
+        if run and action['ACTIONTYPE'] == run[0]['ACTIONTYPE'] in ('fa', 'update') \
                 and action['ACTIONTIME'] == run[0]['ACTIONTIME']:
             run.append(action)
             continue
@@ -298,7 +400,24 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
                   fiberassign_input_dir=fiberassign_input_dir, state=state)
     idone = 0
     for run in group_actions(actions):
-        if len(run) > 1 and numproc > 1:
+        if run[0]['ACTIONTYPE'] == 'update' and len(run) > 1 and state is not None:
+            # A pass of observed tiles, folded into the state in one go.
+            start = time.time()
+            fiber_maps = {int(action['TILEID']):
+                          do_fiber_assignment(altmtl_dir, int(action['TILEID']),
+                                              **dict(kwargs, overwrite=False))
+                          for action in run}
+            nupdated = update_batch(altmtl_dir, run, fiber_maps, state, survey=survey,
+                                    obscon=obscon, zcat_dir=zcat_dir,
+                                    numobs_from_ledger=numobs_from_ledger, numproc=numproc)
+            mark_actions_done(altmtl_dir, run, survey=survey, obscon=obscon)
+            idone += len(run)
+            logger.info('Actions {:d}/{:d} done: update on {:d} tiles, {:d} targets changed, '
+                        'in {:.1f} s.'.format(idone, len(actions), len(run), nupdated,
+                                              time.time() - start))
+            continue
+
+        if run[0]['ACTIONTYPE'] == 'fa' and len(run) > 1 and numproc > 1:
             # A batch of assignments, all reading the same state of the ledgers.
             tileids = [int(action['TILEID']) for action in run]
             start = time.time()

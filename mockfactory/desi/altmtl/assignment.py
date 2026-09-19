@@ -197,7 +197,8 @@ def write_alt_targets(tileid, ledger_dir, output_fn, footprint_fn, isodate=None,
         targets = io.read_targets_in_tiles(ledger_dir, tiles, quick=False, mtl=True, unique=True,
                                            isodate=isodate, tabform='ascii.ecsv')
     if not len(targets):
-        raise ValueError('no target read from {} over tile {:d}'.format(ledger_dir, tileid))
+        raise ValueError('no target over tile {:d}, read from {}; does the mock cover this '
+                         'tile?'.format(tileid, 'the state in memory' if state is not None else ledger_dir))
     utils.mkdir(os.path.dirname(output_fn))
     Table(targets).write(output_fn, format='fits', overwrite=True)
     return len(targets)
