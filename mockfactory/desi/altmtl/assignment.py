@@ -153,7 +153,7 @@ def make_fiber_map(real_assignment, alt_assignment):
     return FiberMap(real_targetid[mask], alt_targetid[index[mask]])
 
 
-def write_alt_targets(tileid, ledger_dir, output_fn, footprint_fn, isodate=None):
+def write_alt_targets(tileid, ledger_dir, output_fn, footprint_fn, isodate=None, state=None):
     """
     Write the science target file the alternative assignment of ``tileid`` runs on.
 
@@ -178,6 +178,9 @@ def write_alt_targets(tileid, ledger_dir, output_fn, footprint_fn, isodate=None)
     isodate : str, default=None
         Read the ledgers as they were at this timestamp. ``None`` reads their latest state.
 
+    state : LedgerState, default=None
+        State to read the targets from, instead of the ledgers in ``ledger_dir``.
+
     Returns
     -------
     ntargets : int
@@ -185,11 +188,14 @@ def write_alt_targets(tileid, ledger_dir, output_fn, footprint_fn, isodate=None)
     """
     import fitsio
     from astropy.table import Table
-    from desitarget import io
 
     tiles = fitsio.read(footprint_fn)
-    targets = io.read_targets_in_tiles(ledger_dir, tiles, quick=False, mtl=True, unique=True,
-                                       isodate=isodate, tabform='ascii.ecsv')
+    if state is not None:
+        targets = state.targets_in_tiles(tiles)
+    else:
+        from desitarget import io
+        targets = io.read_targets_in_tiles(ledger_dir, tiles, quick=False, mtl=True, unique=True,
+                                           isodate=isodate, tabform='ascii.ecsv')
     if not len(targets):
         raise ValueError('no target read from {} over tile {:d}'.format(ledger_dir, tileid))
     utils.mkdir(os.path.dirname(output_fn))
@@ -286,7 +292,7 @@ def run_fiber_assignment(tileid, targets_fn, output_dir, header, footprint_fn, s
 
 
 def do_fiber_assignment(altmtl_dir, tileid, survey='main', obscon='dark', overwrite=False,
-                        fiberassign_dir=None, fiberassign_input_dir=None):
+                        fiberassign_dir=None, fiberassign_input_dir=None, state=None):
     """
     Carry out one ``fa`` action: assign a tile and record the fiber map.
 
@@ -312,6 +318,9 @@ def do_fiber_assignment(altmtl_dir, tileid, survey='main', obscon='dark', overwr
 
     fiberassign_input_dir : str, default=None
         Directory of the real per-tile assignment inputs.
+
+    state : LedgerState, default=None
+        State to read the targets from, instead of the healpix ledgers.
 
     Returns
     -------
@@ -347,8 +356,8 @@ def do_fiber_assignment(altmtl_dir, tileid, survey='main', obscon='dark', overwr
     if not os.path.isfile(too_fn): too_fn = None
 
     targets_fn = os.path.join(fa_dir, '{}-targ.fits'.format(ts))
-    ntargets = write_alt_targets(tileid, get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon),
-                                 targets_fn, footprint_fn)
+    ledger_dir = None if state is not None else get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon)
+    ntargets = write_alt_targets(tileid, ledger_dir, targets_fn, footprint_fn, state=state)
     logger.debug('Tile {:d}: {:d} alternative targets in footprint.'.format(tileid, ntargets))
 
     run_fiber_assignment(tileid, targets_fn, fa_dir, header, footprint_fn, sky_fn,

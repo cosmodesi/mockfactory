@@ -45,7 +45,7 @@ def _to_big_endian(table):
 
 
 def update_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', zcat_dir=None,
-                   numobs_from_ledger=True):
+                   numobs_from_ledger=True, state=None):
     """
     Carry out one ``update`` action: fold the real observations of a tile into the ledgers.
 
@@ -73,6 +73,9 @@ def update_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', 
         Whether to take the number of observations so far from the ledger rather than from the
         redshift catalog.
 
+    state : LedgerState, default=None
+        State to fold the observations into, instead of the healpix ledgers.
+
     Returns
     -------
     nz : int
@@ -89,12 +92,15 @@ def update_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', 
     alt_zcat = zcat.copy()
     alt_zcat['TARGETID'] = fiber_map.real_to_alt(zcat['TARGETID'])
 
+    if state is not None:
+        return state.update(alt_zcat, obscon=obscon, numobs_from_ledger=numobs_from_ledger)
     update_ledger(get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon), alt_zcat,
                   obscon=obscon.upper(), numobs_from_ledger=numobs_from_ledger, tabform='ascii.ecsv')
     return len(alt_zcat)
 
 
-def reprocess_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', zcat_dir=None):
+def reprocess_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', zcat_dir=None,
+                      state=None):
     """
     Carry out one ``reproc`` action: refold a tile the spectroscopic pipeline reprocessed.
 
@@ -132,6 +138,11 @@ def reprocess_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark
     from astropy.table import Table
     from desitarget.mtl import make_zcat, reprocess_ledger
 
+    if state is not None:
+        raise NotImplementedError(
+            'reprocessing replays every observation of a target from its unobserved state, which '
+            'desitarget only does against ledgers on disk; run this action list with ledgers, or '
+            'cut the date range short of the first reproc action')
     if zcat_dir is None: zcat_dir = utils.ZCAT_DIR
 
     # Reprocessing revisits tiles that overlap the one being reprocessed, so a target may
@@ -214,7 +225,7 @@ def warm_hardware(tileids, fiberassign_dir=None):
 
 def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, numobs_from_ledger=True,
                     overwrite=False, fiberassign_dir=None, fiberassign_input_dir=None, nactions=None,
-                    numproc=1):
+                    numproc=1, state=None):
     """
     Replay the survey for one realization, carrying out every action not yet done.
 
@@ -252,6 +263,11 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
         are independent, so they run together; updates stay sequential, as each rewrites the
         ledgers the next assignment reads.
 
+    state : LedgerState, default=None
+        Merged target list to replay against, held in memory. The healpix ledgers are then
+        never read or written, which is most of the cost of a replay. A batch of assignments
+        inherits it by fork, and the updates that follow change it in the parent.
+
     Returns
     -------
     nactions : int
@@ -279,7 +295,7 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
                        'oversubscribe the node and run slower than sequentially.'.format(
                            os.environ.get('OMP_NUM_THREADS', 'unset'), numproc))
     kwargs = dict(survey=survey, obscon=obscon, overwrite=overwrite, fiberassign_dir=fiberassign_dir,
-                  fiberassign_input_dir=fiberassign_input_dir)
+                  fiberassign_input_dir=fiberassign_input_dir, state=state)
     idone = 0
     for run in group_actions(actions):
         if len(run) > 1 and numproc > 1:
@@ -306,11 +322,12 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
                 fiber_map = do_fiber_assignment(altmtl_dir, tileid, **dict(kwargs, overwrite=False))
                 if action['ACTIONTYPE'] == 'update':
                     nz = update_ledgers(altmtl_dir, action, fiber_map, survey=survey, obscon=obscon,
-                                        zcat_dir=zcat_dir, numobs_from_ledger=numobs_from_ledger)
+                                        zcat_dir=zcat_dir, numobs_from_ledger=numobs_from_ledger,
+                                        state=state)
                     logger.debug('Tile {:d}: folded in {:d} redshift(s).'.format(tileid, nz))
                 else:
                     timestamps = reprocess_ledgers(altmtl_dir, action, fiber_map, survey=survey,
-                                                   obscon=obscon, zcat_dir=zcat_dir)
+                                                   obscon=obscon, zcat_dir=zcat_dir, state=state)
                     logger.debug('Tile {:d}: reprocessed, {:d} tile(s) refolded.'.format(
                         tileid, len(timestamps)))
             mark_actions_done(altmtl_dir, [action], survey=survey, obscon=obscon)
