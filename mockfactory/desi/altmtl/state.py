@@ -51,6 +51,9 @@ class LedgerState(object):
         # time, and recomputing it over the whole catalog each time is O(catalog) per action.
         self._pixel = self._healpix(self.current['RA'], self.current['DEC'])
         self._history_pixel = []
+        # Rows ordered by healpix, built on demand: a tile asks for a handful of pixels, and
+        # scanning the whole catalog for them costs the same as the assignment itself.
+        self._pixel_index = None
 
     def _healpix(self, ra, dec):
         import healpy as hp
@@ -64,6 +67,40 @@ class LedgerState(object):
     def healpixels(self):
         """Healpixels the targets fall in."""
         return np.unique(self._pixel)
+
+    def _set_pixel(self, index, pixel):
+        """
+        Record the healpix of the rows at ``index``, keeping the index if none of them moved.
+
+        Rebuilding the index sorts the whole catalog, seconds at tens of millions of targets,
+        and reprocessing writes a few thousand rows at a time. Those rows keep the positions
+        they had, since the replay preserves them, so almost always nothing moves and the
+        index still stands.
+        """
+        pixel = np.asarray(pixel)
+        if self._pixel_index is not None and not np.array_equal(self._pixel[index], pixel):
+            self._pixel_index = None
+        self._pixel[index] = pixel
+
+    def _rows_of_healpixels(self, healpixels):
+        """
+        Return the rows of :attr:`current` that fall in ``healpixels``.
+
+        The rows are indexed by healpix once and then looked up by binary search, rather than
+        the whole catalog being scanned for every tile. With tens of millions of targets and a
+        worker per core, that scan is memory traffic the assignment has to queue behind.
+        """
+        if self._pixel_index is None:
+            order = np.argsort(self._pixel, kind='stable')
+            self._pixel_index = (order, self._pixel[order])
+        order, sorted_pixel = self._pixel_index
+        healpixels = np.unique(np.asarray(healpixels))
+        start = np.searchsorted(sorted_pixel, healpixels, side='left')
+        stop = np.searchsorted(sorted_pixel, healpixels, side='right')
+        blocks = [order[i:j] for i, j in zip(start, stop) if j > i]
+        if not blocks:
+            return np.zeros(0, dtype='i8')
+        return np.concatenate(blocks) if len(blocks) > 1 else blocks[0]
 
     @classmethod
     def from_targets(cls, targets_fn, obscon='dark', survey='main', nside=None):
@@ -106,13 +143,14 @@ class LedgerState(object):
     def from_ledgers(cls, altmtl_dir, survey='main', obscon='dark', nside=None):
         """Build the state by reading existing healpix ledgers, to pick a run up again."""
         from desitarget import io
+        from .compat import supported
         from .ledger import get_ledger_dir, get_healpixels, MTL_NSIDE
 
         if nside is None: nside = MTL_NSIDE
         ledger_dir = get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon)
         healpixels = get_healpixels(ledger_dir, obscon=obscon)
         current = io.read_mtl_in_hp(ledger_dir, nside, [int(h) for h in healpixels], unique=True,
-                                    tabform='ascii.ecsv')
+                                    **supported(io.read_mtl_in_hp, tabform='ascii.ecsv'))
         logger.info('Read state of {:d} targets from {}.'.format(len(current), ledger_dir))
         return cls(np.asarray(current), nside=nside)
 
@@ -126,7 +164,7 @@ class LedgerState(object):
         import desimodel.footprint
 
         pixels = desimodel.footprint.tiles2pix(self.nside, tiles=tiles)
-        targets = self.current[np.isin(self._pixel, pixels)]
+        targets = self.current[self._rows_of_healpixels(pixels)]
         mask = desimodel.footprint.is_point_in_desi(tiles, targets['RA'], targets['DEC'])
         return targets[mask]
 
@@ -160,6 +198,7 @@ class LedgerState(object):
         """
         from astropy.table import Table
         from desitarget.mtl import make_mtl
+        from .compat import supported
 
         index = self._index_of(zcat['TARGETID'])
         found = index >= 0
@@ -178,7 +217,7 @@ class LedgerState(object):
 
         # trimtozcat keeps only the targets the catalog updated, and drops bad observations.
         updated = np.asarray(make_mtl(targets, obscon.upper(), zcat=zcat, trimtozcat=True,
-                                      trimcols=True, ext=ext))
+                                      trimcols=True, **supported(make_mtl, ext=ext)))
         if not len(updated):
             return 0
 
@@ -310,10 +349,11 @@ class LedgerState(object):
             Number of rows read back.
         """
         from desitarget import io
+        from .compat import supported
 
         healpixels = [int(healpix) for healpix in np.atleast_1d(healpixels)]
         rows = np.asarray(io.read_mtl_in_hp(ledger_dir, self.nside, healpixels, unique=False,
-                                            tabform='ascii.ecsv'))
+                                            **supported(io.read_mtl_in_hp, tabform='ascii.ecsv')))
         # The last row of a target is its state now; the others are what it passed through.
         order = np.lexsort((np.arange(len(rows)), rows['TARGETID']))
         sorted_targetid = rows['TARGETID'][order]
@@ -340,12 +380,31 @@ class LedgerState(object):
         for name in latest.dtype.names:
             self.current[name][index[known]] = latest[name][known]
         self._pixel[index[known]] = self._healpix(latest['RA'][known], latest['DEC'][known])
+        self._pixel_index = None
         if not known.all():
             # A target the state did not hold. It should not happen, since reprocessing only
             # revisits targets that were already there, so say so rather than absorb it.
             raise ValueError('reprocessing returned {:d} target(s) absent from the '
                              'state'.format(int((~known).sum())))
         return len(rows)
+
+    def build_index(self):
+        """
+        Build the healpix index, if it is not already there.
+
+        It is built on demand, and the demand comes from
+        :meth:`targets_in_tiles`, which is called in the workers that assign tiles and nowhere
+        else: an update is keyed on the target identifier and never needs it. So a forked
+        worker finds it missing, argsorts the whole catalog to build it, uses it for its own
+        tiles and takes it with it when it exits, and the next worker does the same. At tens of
+        millions of targets that is five seconds a worker, against sixty milliseconds once it
+        exists, and a pool of them argsorting at once is worse than the sum of its parts.
+
+        Calling this in the parent before forking means the index is built once and inherited.
+        """
+        if self._pixel_index is None:
+            self.rows_in_healpixels(self._pixel[:1])
+        return self
 
     def healpixels_of(self, ra, dec):
         """Return the distinct healpixels the given positions fall in."""
@@ -363,7 +422,7 @@ class LedgerState(object):
         for block, pixel in zip(self.history, self._history_pixel):
             mask = np.isin(pixel, healpixels)
             if mask.any(): rows.append(block[mask])
-        rows.append(self.current[np.isin(self._pixel, healpixels)])
+        rows.append(self.current[self._rows_of_healpixels(healpixels)])
         return np.concatenate(rows) if len(rows) > 1 else rows[0]
 
     def absorb_rows(self, rows):
@@ -401,5 +460,5 @@ class LedgerState(object):
 
         for name in latest.dtype.names:
             self.current[name][index] = latest[name]
-        self._pixel[index] = self._healpix(latest['RA'], latest['DEC'])
+        self._set_pixel(index, self._healpix(latest['RA'], latest['DEC']))
         return len(latest)

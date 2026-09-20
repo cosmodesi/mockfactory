@@ -60,7 +60,7 @@ if __name__ == '__main__':
     import desimodel.footprint
     from mockfactory.remap import Cuboid
     from mockfactory.make_survey import Catalog, DistanceToRedshift, box_to_cutsky, RandomBoxCatalog, BoxCatalog, EuclideanIsometry, RedshiftDensityInterpolator, TabulatedRadialMask
-    from mockfactory.desi import get_brick_pixel_quantities
+    from mockfactory.desi.base import get_brick_pixel_quantities
     from mockfactory import utils, setup_logging
     from mpytools.random import MPIRandomState
     from cosmoprimo.fiducial import DESI

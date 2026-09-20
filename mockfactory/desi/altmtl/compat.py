@@ -18,6 +18,7 @@ one ``np.unique`` return an array that ``int()`` still accepts, for the duration
 It is a no-op on a numpy that does not need it.
 """
 
+import inspect
 import contextlib
 import logging
 
@@ -88,3 +89,20 @@ def patch_write_mtl():
         yield True
     finally:
         desitarget.io.np = original
+
+
+def supported(func, **kwargs):
+    """
+    Return those of ``kwargs`` that ``func`` accepts.
+
+    desitarget grew several of these arguments over time, and the mocks of a given data
+    release were made with the version of the day: ``make_mtl`` took no ``ext`` before the 1b
+    programs, and the ledger readers took no ``tabform`` before the alternative merged target
+    lists needed ecsv. Passing them blindly rules out reproducing an older run with the stack
+    that produced it.
+    """
+    try:
+        names = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return dict(kwargs)
+    return {name: value for name, value in kwargs.items() if name in names}

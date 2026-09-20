@@ -5,7 +5,7 @@ This example can be run with `srun -n 16 python brick_pixel_quantities.py`,
 but one will typically import:
 
 ```
-from mockfactory.desi import get_brick_pixel_quantities
+from mockfactory.desi.base import get_brick_pixel_quantities
 ```
 
 For an example, see desi/from_box_to_desi_cutsky script.

@@ -142,7 +142,7 @@ def apply_radial_mask(cutsky, zmin=0., zmax=6., nz_filename='nz_qso_final.dat',
     mask_radial = TabulatedRadialMask(z=zbin_mid, nbar=n_z / volume, interp_order=2, zrange=(zmin, zmax))
 
     if apply_redshift_smearing:
-        from mockfactory.desi import TracerRedshiftSmearing
+        from mockfactory.desi.base import TracerRedshiftSmearing
         # Note: apply redshift smearing before the n(z) match since n(z) is what we observe (ie) containing the smearing
         cutsky['Z'] = cutsky['Z'] + TracerRedshiftSmearing(tracer=tracer_smearing).sample(cutsky['Z'], seed=seed + 13)
 
@@ -258,7 +258,7 @@ def apply_photo_desi_footprint(cutsky, region, release, program='dark', npasses=
     Remove part of the cutsky to match as best as possible (precision is healpix map at nside)
     the DESI release (e.g. y1) footprint and DR9 photometric footprint.
     """
-    from mockfactory.desi import is_in_desi_footprint
+    from mockfactory.desi.base import is_in_desi_footprint
 
     # Mask objects outside DESI footprint:
     is_in_desi = is_in_desi_footprint(cutsky['RA'], cutsky['DEC'], release=release, program=program, npasses=npasses)
@@ -290,7 +290,7 @@ if __name__ == '__main__':
     from mpi4py import MPI
 
     from mockfactory import DistanceToRedshift, RandomBoxCatalog, setup_logging
-    from mockfactory.desi import get_brick_pixel_quantities
+    from mockfactory.desi.base import get_brick_pixel_quantities
     from mpytools.random import MPIRandomState
 
     from cosmoprimo.fiducial import DESI

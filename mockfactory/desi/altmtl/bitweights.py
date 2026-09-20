@@ -84,11 +84,12 @@ def _read_observed(altmtl_dir, healpixels, survey='main', obscon='dark', good_ti
         probability of observation comes out too high.
     """
     from desitarget import io
+    from .compat import supported
     from .ledger import MTL_NSIDE, get_ledger_dir
 
     ledger = io.read_mtl_in_hp(get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon), MTL_NSIDE,
                                healpixels, unique=True, isodate=None, returnfn=False, initial=False,
-                               leq=False, tabform='ascii.ecsv')
+                               leq=False, **supported(io.read_mtl_in_hp, tabform='ascii.ecsv'))
     # Not np.sort(..., order=...): the ledgers can come back as a masked record array, which
     # does not take the copy order that call needs.
     ledger = ledger[np.argsort(ledger['TARGETID'])]

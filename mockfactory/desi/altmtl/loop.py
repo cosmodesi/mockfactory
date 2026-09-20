@@ -95,8 +95,10 @@ def update_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', 
 
     if state is not None:
         return state.update(alt_zcat, obscon=obscon, numobs_from_ledger=numobs_from_ledger)
+    from .compat import supported
     update_ledger(get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon), alt_zcat,
-                  obscon=obscon.upper(), numobs_from_ledger=numobs_from_ledger, tabform='ascii.ecsv')
+                  obscon=obscon.upper(), numobs_from_ledger=numobs_from_ledger,
+                  **supported(update_ledger, tabform='ascii.ecsv'))
     return len(alt_zcat)
 
 
@@ -320,10 +322,16 @@ def group_actions(actions):
     """
     Split ``actions`` into the runs that can be carried out together.
 
-    Actions of the same type sharing a timestamp are one run: the real survey carried those
-    tiles out in a single pass. Assignments in a run read one state of the ledgers and none of
-    them writes, so they are plainly independent. Updates in a run do write, so they are only
-    independent while no target was observed on two of their tiles, which the caller checks.
+    An assignment reads the ledgers and does not write them, so any run of consecutive
+    assignments is independent whatever their timestamps, and they are grouped on that alone.
+    The real survey assigned tiles in passes, but it also assigned them one at a time, and
+    requiring a shared timestamp leaves those singletons taking a whole round each: over DA2
+    it is the difference between 304 groups with 97 singletons and 148 groups with 4.
+
+    Updates do write, so they are grouped only when they share a timestamp, which is what the
+    real survey did in one pass, and they are independent of each other only while no target
+    was observed on two of their tiles, which the caller checks.
+
     Anything else is its own run, because an update changes what the next assignment reads.
 
     Parameters
@@ -338,8 +346,10 @@ def group_actions(actions):
     """
     run = []
     for action in actions:
-        if run and action['ACTIONTYPE'] == run[0]['ACTIONTYPE'] in ('fa', 'update') \
-                and action['ACTIONTIME'] == run[0]['ACTIONTIME']:
+        if run and action['ACTIONTYPE'] == run[0]['ACTIONTYPE'] \
+                and (run[0]['ACTIONTYPE'] == 'fa'
+                     or (run[0]['ACTIONTYPE'] == 'update'
+                         and action['ACTIONTIME'] == run[0]['ACTIONTIME'])):
             run.append(action)
             continue
         if run: yield run
@@ -376,7 +386,7 @@ def warm_hardware(tileids, fiberassign_dir=None):
 
 def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, numobs_from_ledger=True,
                     overwrite=False, fiberassign_dir=None, fiberassign_input_dir=None, nactions=None,
-                    numproc=1, state=None, scratch_dir=None):
+                    numproc=1, state=None, scratch_dir=None, tmp_dir=None, load_targets='file'):
     """
     Replay the survey for one realization, carrying out every action not yet done.
 
@@ -422,6 +432,10 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
     scratch_dir : str, default=None
         Where to put the ledgers handed to desitarget when reprocessing against a state.
 
+    tmp_dir : str, default=None
+        Where to put the per-tile target files, which are read once and thrown away. Defaults
+        to memory.
+
     Returns
     -------
     nactions : int
@@ -449,7 +463,8 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
                        'oversubscribe the node and run slower than sequentially.'.format(
                            os.environ.get('OMP_NUM_THREADS', 'unset'), numproc))
     kwargs = dict(survey=survey, obscon=obscon, overwrite=overwrite, fiberassign_dir=fiberassign_dir,
-                  fiberassign_input_dir=fiberassign_input_dir, state=state)
+                  fiberassign_input_dir=fiberassign_input_dir, state=state, tmp_dir=tmp_dir,
+                  load_targets=load_targets)
     idone = 0
     for run in group_actions(actions):
         if run[0]['ACTIONTYPE'] == 'update' and len(run) > 1 and state is not None:
@@ -474,6 +489,9 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
             tileids = [int(action['TILEID']) for action in run]
             start = time.time()
             rundates = warm_hardware(tileids, fiberassign_dir=fiberassign_dir)
+            if state is not None:
+                # Built once here rather than once per worker; see LedgerState.build_index.
+                state.build_index()
             _batch_options.update(altmtl_dir=altmtl_dir, kwargs=kwargs)
             # Forked workers inherit the focal planes just loaded; spawned ones would not.
             with get_context('fork').Pool(processes=min(numproc, len(tileids))) as pool:

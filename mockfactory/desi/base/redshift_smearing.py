@@ -20,7 +20,8 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None, uncertainty_type='statistic
     from astropy.table import Table, vstack
 
     if fn is None:
-        dirname = os.path.join(os.path.dirname(__file__), 'data')
+        # The tables live beside the desi package, one level up from here.
+        dirname = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
         if tracer == 'QSO':
             if uncertainty_type == 'statistical':
                 fn = ['{}_redshift_smearing_{}.ecsv'.format(tracer, sv) for sv in ['sv1', 'sv3']]

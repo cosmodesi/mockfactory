@@ -4,7 +4,7 @@ Script to apply fiber assignment from pre-loaded catalogs.
 This example can be run with `srun -n 5 python fiber_assignment.py` (will take typically 1 minute for 1 pass),
 but one will typically import:
 ```
-from mockfactory.fiber_assignment import apply_fiber_assignment
+from mockfactory.desi.base import apply_fiber_assignment
 ```
 For an example, see desi/apply_fiber_assignment_example.py script.
 """

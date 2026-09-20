@@ -31,6 +31,25 @@ def mkdir(dirname):
     os.makedirs(dirname, exist_ok=True)
 
 
+def get_tmp_dir(tmp_dir=None):
+    """
+    Return a directory for files that are written, read once and thrown away.
+
+    A tile's target file is handed to fiberassign and never looked at again, so it has no
+    business on a parallel file system: with a worker per core the pipeline writes and reads
+    tens of gigabytes of it over a survey. ``/dev/shm`` is memory, so the round trip costs
+    nothing; anything else falls back to the caller's directory.
+    """
+    if tmp_dir is not None:
+        return tmp_dir
+    # /dev/shm only, or nothing: it is memory, whereas the other usual candidates are either a
+    # parallel file system, which is what this avoids, or /tmp, which is node-local disk.
+    for candidate in [os.environ.get('ALTMTL_TMPDIR'), '/dev/shm']:
+        if candidate and os.path.isdir(candidate) and os.access(candidate, os.W_OK):
+            return candidate
+    return None
+
+
 def tile_string(tileid):
     """Return the 6-digit, zero-padded string that names all per-tile survey files."""
     return '{:06d}'.format(int(tileid))
