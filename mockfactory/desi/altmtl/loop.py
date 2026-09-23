@@ -45,8 +45,48 @@ def _to_big_endian(table):
     return table.copy()
 
 
+def read_zfix(zfix):
+    """
+    Read the redshifts that replace the real ones for some targets, as ``(targetid, z)``.
+
+    ``zfix`` is a text file with two columns, TARGETID and redshift, the format of the
+    ``qsos/qso<i>.txt`` files of the DR2 mocks; or the pair already read, which is returned as is.
+    Targets are sorted by TARGETID, so :func:`fix_redshifts` can look them up by binary search.
+    """
+    if zfix is None or isinstance(zfix, tuple):
+        return zfix
+    # Read as floats, then cast, as LSS does: TARGETIDs of mock targets are far below 2**53.
+    targetid, z = np.loadtxt(zfix, unpack=True)
+    targetid = targetid.astype('i8')
+    order = np.argsort(targetid)
+    return targetid[order], z[order]
+
+
+def fix_redshifts(zcat, zfix):
+    """
+    Give the targets of ``zfix`` their own redshift, in place, rather than the real one.
+
+    An alternative observation reuses the redshift of the real target on the same fiber, so a
+    mock quasar would otherwise have the number of observations of whatever the survey saw
+    there. The DR2 mocks replace it with the mock quasar's own redshift, which is what decides
+    whether it is followed up as a high redshift quasar, and zero ``Z_QN``, as LSS
+    `update_alt_ledger` does with ``zfix``. Only updates are fixed, not reprocessing, also as
+    LSS does.
+    """
+    if zfix is None:
+        return zcat
+    targetid, z = zfix
+    tid = np.asarray(zcat['TARGETID'])
+    index = np.clip(np.searchsorted(targetid, tid), 0, targetid.size - 1)
+    mask = targetid[index] == tid
+    zcat['Z'][mask] = z[index[mask]].astype(zcat['Z'].dtype)
+    if 'Z_QN' in zcat.colnames:
+        zcat['Z_QN'][mask] = 0.
+    return zcat
+
+
 def update_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', zcat_dir=None,
-                   numobs_from_ledger=True, state=None):
+                   numobs_from_ledger=True, state=None, zfix=None):
     """
     Carry out one ``update`` action: fold the real observations of a tile into the ledgers.
 
@@ -77,6 +117,9 @@ def update_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', 
     state : LedgerState, default=None
         State to fold the observations into, instead of the healpix ledgers.
 
+    zfix : str, tuple, default=None
+        Redshifts replacing the real ones for some targets, see :func:`read_zfix`.
+
     Returns
     -------
     nz : int
@@ -92,6 +135,7 @@ def update_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', 
     # alternative assignment put on that same fiber.
     alt_zcat = zcat.copy()
     alt_zcat['TARGETID'] = fiber_map.real_to_alt(zcat['TARGETID'])
+    fix_redshifts(alt_zcat, read_zfix(zfix))
 
     if state is not None:
         return state.update(alt_zcat, obscon=obscon, numobs_from_ledger=numobs_from_ledger)
@@ -207,7 +251,7 @@ def reprocess_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark
 
 
 def update_batch(altmtl_dir, actions, fiber_maps, state, survey='main', obscon='dark',
-                 zcat_dir=None, numobs_from_ledger=True, numproc=1):
+                 zcat_dir=None, numobs_from_ledger=True, numproc=1, zfix=None):
     """
     Fold a whole batch of observed tiles into the state at once.
 
@@ -249,6 +293,9 @@ def update_batch(altmtl_dir, actions, fiber_maps, state, survey='main', obscon='
     numproc : int, default=1
         Number of processes to read the redshift catalogs with.
 
+    zfix : str, tuple, default=None
+        Redshifts replacing the real ones for some targets, see :func:`read_zfix`.
+
     Returns
     -------
     nupdated : int
@@ -257,12 +304,13 @@ def update_batch(altmtl_dir, actions, fiber_maps, state, survey='main', obscon='
     from astropy.table import vstack
 
     zcats = read_zcats(actions, survey=survey, obscon=obscon, zcat_dir=zcat_dir, numproc=numproc)
+    zfix = read_zfix(zfix)
     relabelled = []
     for action in actions:
         tileid = int(action['TILEID'])
         zcat = zcats[tileid].copy()
         zcat['TARGETID'] = fiber_maps[tileid].real_to_alt(zcats[tileid]['TARGETID'])
-        relabelled.append(zcat)
+        relabelled.append(fix_redshifts(zcat, zfix))
 
     merged = vstack(relabelled)
     targetid = np.asarray(merged['TARGETID'])
@@ -386,7 +434,8 @@ def warm_hardware(tileids, fiberassign_dir=None):
 
 def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, numobs_from_ledger=True,
                     overwrite=False, fiberassign_dir=None, fiberassign_input_dir=None, nactions=None,
-                    numproc=1, state=None, scratch_dir=None, tmp_dir=None, load_targets='file'):
+                    numproc=1, state=None, scratch_dir=None, tmp_dir=None, load_targets='file',
+                    zfix=None):
     """
     Replay the survey for one realization, carrying out every action not yet done.
 
@@ -436,6 +485,10 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
         Where to put the per-tile target files, which are read once and thrown away. Defaults
         to memory.
 
+    zfix : str, tuple, default=None
+        Redshifts replacing the real ones for some targets on every update, see
+        :func:`read_zfix`. The DR2 mocks give their quasars their own redshift this way.
+
     Returns
     -------
     nactions : int
@@ -456,6 +509,9 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
 
     logger.info('{}: carrying out {:d} action(s) with {:d} process(es).'.format(
         altmtl_dir, len(actions), numproc))
+    zfix = read_zfix(zfix)
+    if zfix is not None:
+        logger.info('Updates take the redshift of {:d} target(s) from zfix.'.format(zfix[0].size))
     if numproc > 1 and os.environ.get('OMP_NUM_THREADS') != '1':
         # fiberassign is threaded, so each worker would otherwise spawn as many threads as the
         # node has cores. Leaving it unset turns an 8x speed-up into a slowdown.
@@ -476,7 +532,8 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
                           for action in run}
             nupdated = update_batch(altmtl_dir, run, fiber_maps, state, survey=survey,
                                     obscon=obscon, zcat_dir=zcat_dir,
-                                    numobs_from_ledger=numobs_from_ledger, numproc=numproc)
+                                    numobs_from_ledger=numobs_from_ledger, numproc=numproc,
+                                    zfix=zfix)
             mark_actions_done(altmtl_dir, run, survey=survey, obscon=obscon)
             idone += len(run)
             logger.info('Actions {:d}/{:d} done: update on {:d} tiles, {:d} targets changed, '
@@ -512,7 +569,7 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
                 if action['ACTIONTYPE'] == 'update':
                     nz = update_ledgers(altmtl_dir, action, fiber_map, survey=survey, obscon=obscon,
                                         zcat_dir=zcat_dir, numobs_from_ledger=numobs_from_ledger,
-                                        state=state)
+                                        state=state, zfix=zfix)
                     logger.debug('Tile {:d}: folded in {:d} redshift(s).'.format(tileid, nz))
                 else:
                     timestamps = reprocess_ledgers(altmtl_dir, action, fiber_map, survey=survey,

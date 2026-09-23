@@ -171,8 +171,10 @@ compare against `desitarget` directly.
 
 ## Things that will bite you
 
-- **`OMP_NUM_THREADS=1` is mandatory.** fiberassign is threaded, so each worker otherwise
-  spawns a thread per core and a batch runs slower than a serial loop.
+- **Set `OMP_NUM_THREADS=1` before running with `numproc > 1`.** fiberassign is threaded, so
+  each of the `numproc` workers otherwise spawns a thread per core: the node is oversubscribed
+  and the batch runs slower than a plain serial loop. `numproc=1` is the default and needs
+  nothing; `run_realization` warns when `numproc > 1` and the variable is not 1.
 - **Assignment batches are small**, a median of 29 tiles for dark and 24 for bright, and the
   pool is sized by the batch. So more than about 32 workers per mock is wasted: 64 workers sit
   at 54% occupancy. Ten mocks at 6 workers each reach nearly twice the node throughput of one
@@ -181,14 +183,75 @@ compare against `desitarget` directly.
   for end dates from 2025 on.
 - Compute nodes only, inside an interactive allocation.
 
+## What makes it fast
+
+Against the survey's own altMTL -- one tile at a time, the MTL persisted as ecsv ledgers -- on a
+mock at the real dark-time density. Both levers leave assignments and final state bit for bit
+identical:
+
+| change | gain |
+| --- | --- |
+| batch the passes: tiles sharing an `ACTIONTIME` read one state and none writes, so they run in a forked pool | 5.00 -> 0.60 s a tile, 8.3x |
+| hold the MTL in memory (`LedgerState`) rather than rewriting ecsv ledgers | `read_targets_in_tiles` 1.5 -> 0.12 s a tile, and no 2 GB ledger copy a realization |
+| **one dark realization, end to end** | **9.3 h -> 0.6 h, 15x** |
+
+Set `OMP_NUM_THREADS=1` whenever `numproc > 1`, or each worker spawns a thread per core and the
+8.3x becomes a slowdown; `run_realization` warns. The survey's scripts set it too, so it is not
+a gain over them, and no production wall clock was measured here, so the 15x is against the
+approach rather than against a timed run.
+
+Cost is set by occupancy, not by per-tile speed: removing 40% of the per-tile work changes the
+total by nothing. Two optimisations are real per tile and vanish end to end --
+`targets_in_memory` (1.6-1.7x a tile, 1.00x overall) and warming `LedgerState._pixel_index`
+(84x cold, 1.01x overall). Quote them only as per-tile numbers. What does pay is filling the
+node: ten bright mocks at `numproc=6` run 9.5 tiles a second against 5.96 for one at
+`numproc=32`.
+
 ## Validation
+
+**Verdict: this implementation is taken to be correct.** Every difference from production's own
+replays has been traced to its cause, and each one is outside this code -- one in the
+fiberassign build, one in `LSS`. Given the same software and the same inputs the replay is bit
+for bit identical to production, and where it is not, it is the side following the rules
+`desitarget` publishes. Nothing unexplained is left in the comparison.
+
+That is a conclusion drawn from two productions, DA2 bright and DA2 dark, over 13 realizations.
+It rests on the assignments and the merged target list state; end-to-end clustering statistics
+are a separate question, and a third production could still turn something up.
 
 Against `DESI_ROOT/survey/catalogs/DA2/mocks/SecondGenMocks/AbacusSummit_v4_1/altmtl0`: the
 action list reproduces exactly, all 13610 actions; the fiber maps reproduce exactly;
 `pack_bitweights` is bit-identical to the `LSS` implementation; reprocessing reproduces
-`desitarget.mtl.reprocess_ledger` on every column carrying state. A complete replay agrees with
-the official assignments on 99.88% of fibers per tile, the residual being a fiberassign version
-difference.
+`desitarget.mtl.reprocess_ledger` on every column carrying state.
 
-`../altmtl_findings.md` has the evidence, the two upstream bugs this turned up, and the
+Assignments, against production's own replays:
+
+| | bright, `AbacusSummit_v4_1` | dark, `AbacusHF_DR2v2`, 12 mocks |
+| --- | --- | --- |
+| locations compared | | 338 675 655 |
+| agreement | 0.99907 | **0.9999929** |
+| differing per tile | median 4 of 5020 | median 0, worst 6 of 4230 |
+
+Both residuals are understood and neither is ours. The bright one is the fiberassign build,
+below. The dark one is `LSS`: `mockaltmtltools.py:1287` calls `update_ledger` with
+`#, targets = targets` commented out, so ledger rows are found by healpix from the zcat's
+`RA`/`DEC`, which `makeAlternateZCat` leaves as the real survey's. A mock target sitting across
+a pixel boundary from the real target it replaced is never found and its observation is dropped,
+after which it keeps `UNOBS` priority and wins fibers it should lose -- 0.0018% of observations,
+against the 0.0007% of locations that differ. `LedgerState` is indexed by `TARGETID` and never
+looks a target up by position, so the replay is the side that is right.
+
+Under the reference's own software -- fiberassign 5.7.2, desimodel 0.19.1, desimeter 0.7.1 -- a
+replay reproduces the official assignments exactly, every fiber of every tile. Under the
+fiberassign installed here, 5.9.0, a complete replay agrees on 99.88% of fibers per tile, and
+that residual is one line of fiberassign: the inner keepout radius in `Hardware::position_xy_bad`
+was an `::abs` whose overload depended on the compiler. 5.8.0 made the choice explicit as
+`--fba_use_fabs` and takes it from the rundate, which is what the real survey got; the DA2
+references have 2021 rundates but were built under desiconda 20240425-2.2.0, a gcc 13 build, so
+they carry the other behaviour. Passing `--fba_use_fabs 1` makes the replay bit-exact against
+them again, all 1526080 locations, which is how the table above is measured. It is not what
+`run_fiberassign` does: a mock should follow the data, not the reference. python, numpy,
+desimodel and desimeter change nothing either way.
+
+`../../../desi/altmtl_findings.md` has the evidence, the two upstream bugs this turned up, and the
 performance history.

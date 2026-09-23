@@ -16,7 +16,9 @@ import logging
 
 import numpy as np
 
-from .utils import append_fields, group_fraction, get_photsys
+from astropy.table import Table
+
+from .utils import as_table, group_fraction, get_photsys, set_column
 
 
 logger = logging.getLogger('lsscat.veto')
@@ -54,6 +56,7 @@ def apply_imaging_veto(array, bits=None):
     bits : list, str, default=None
         Mask bits to veto, or the name of a mask column to use instead.
     """
+    array = as_table(array)
     size = len(array)
     keep = (array['NOBS_G'] > 0) & (array['NOBS_R'] > 0) & (array['NOBS_Z'] > 0)
     if isinstance(bits, str):
@@ -87,7 +90,8 @@ def apply_map_veto(array, maps_north, maps_south, cuts=None, nside=256):
     import healpy as hp
     if cuts is None:
         cuts = MAP_CUTS
-    photsys = array['PHOTSYS'] if 'PHOTSYS' in array.dtype.names \
+    array = as_table(array)
+    photsys = array['PHOTSYS'] if 'PHOTSYS' in array.colnames \
         else get_photsys(array['RA'], array['DEC'])
     north = photsys == 'N'
     pixel = hp.ang2pix(nside, np.radians(90. - array['DEC']), np.radians(array['RA']), nest=True)
@@ -131,6 +135,7 @@ def apply_veto_data(data, max_priority, bits=None, maps_north=None, maps_south=N
     maps_north, maps_south : array, default=None
         Observing condition maps. The map veto is skipped when not given.
     """
+    data = as_table(data)
     size = len(data)
     keep = data['GOODHARDLOC'] & (data['PRIORITY_ASSIGNED'] <= max_priority)
     logger.info('priority and hardware keep {:d} of {:d} rows'.format(int(keep.sum()), size))
@@ -139,9 +144,9 @@ def apply_veto_data(data, max_priority, bits=None, maps_north=None, maps_south=N
     # Measured before the map veto, and deliberately so: the maps remove whole patches of sky
     # rather than individual targets, and a set of tiles straddling the edge of one would
     # otherwise be judged on whichever part of it happened to survive.
-    toret = append_fields(toret, [('FRAC_TLOBS_TILES', 'f8')])
-    toret['COMP_TILE'] = group_fraction(toret['TILES'], toret['LOCATION_ASSIGNED'])
-    toret['FRAC_TLOBS_TILES'] = group_fraction(toret['TILES'], toret['TILELOCID_ASSIGNED'])
+    set_column(toret, 'COMP_TILE', group_fraction(toret['TILES'], toret['LOCATION_ASSIGNED']))
+    set_column(toret, 'FRAC_TLOBS_TILES', group_fraction(toret['TILES'],
+                                                         toret['TILELOCID_ASSIGNED']), dtype='f8')
     logger.info('assignment completeness is {:.4f}'.format(toret['LOCATION_ASSIGNED'].mean()))
 
     if maps_north is not None:
@@ -159,6 +164,7 @@ def apply_veto_randoms(randoms, max_priority, bits=None, maps_north=None, maps_s
     that ruled at the location, which is what says whether the tracer could have been put
     there at all.
     """
+    randoms = as_table(randoms)
     size = len(randoms)
     keep = randoms['GOODHARDLOC'] & (randoms['PRIORITY'] <= max_priority)
     logger.info('priority and hardware keep {:d} of {:d} rows'.format(int(keep.sum()), size))
@@ -174,12 +180,11 @@ def get_frac_tlobs(data):
     the table the survey pipeline writes per tracer, and which the randoms are given so that
     they carry the same completeness as the data they will be divided by.
     """
-    tiles, index = np.unique(data['TILES'], return_index=True)
-    toret = np.empty(len(tiles), dtype=[('TILES', data['TILES'].dtype),
-                                        ('FRAC_TLOBS_TILES', 'f8')])
-    toret['TILES'] = tiles
-    toret['FRAC_TLOBS_TILES'] = data['FRAC_TLOBS_TILES'][index]
-    return toret
+    data = as_table(data)
+    tiles, index = np.unique(data['TILES'].value, return_index=True)
+    frac = data['FRAC_TLOBS_TILES'].value[index].astype('f8', copy=False)
+    return Table({'TILES': tiles.astype(data['TILES'].dtype, copy=False),
+                  'FRAC_TLOBS_TILES': frac}, copy=False)
 
 
 def add_frac_tlobs(randoms, frac_tlobs, missing=1., data=None):
@@ -211,6 +216,7 @@ def add_frac_tlobs(randoms, frac_tlobs, missing=1., data=None):
         Data catalog, for ``missing='ntile'``.
     """
     from .utils import join_left
+    randoms, frac_tlobs = as_table(randoms), as_table(frac_tlobs)
     # The two sides have to name a set of tiles the same way, and they are grouped in separate
     # calls: randoms built against a cached count from an older run carry the set written out
     # as text while the data carries the code for it. That join matches nothing, and nothing

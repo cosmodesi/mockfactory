@@ -22,7 +22,7 @@ from .combine import combine_data, count_tiles, read_random_imaging
 from .full import get_max_priority, make_full_data, make_full_randoms
 from .nz import (add_nz_weights, compute_completeness_per_ntile, compute_nz, get_fkp_p0,
                  write_nz)
-from .utils import get_galactic_cap
+from .utils import as_table, get_galactic_cap
 from .veto import (add_frac_tlobs, apply_veto_data, apply_veto_randoms, get_frac_tlobs,
                    get_mask_bits)
 
@@ -61,7 +61,7 @@ def _get_random(randoms, i):
         array = fitsio.read(array)
     elif callable(array):
         array = array(i)
-    return array
+    return as_table(array)
 
 
 def _make_clustering_randoms(i):
@@ -120,9 +120,9 @@ def _finish_random(i, array):
     if context['output_dir'] is not None:
         name = context['name']
         writes.append((os.path.join(context['output_dir'],
-                                    '{}_{:d}_clustering.ran.fits'.format(name, i)), array))
+                                    '{}_{:d}_clustering.ran.h5'.format(name, i)), array))
         writes += [(os.path.join(context['output_dir'],
-                                 '{}_{}_{:d}_clustering.ran.fits'.format(name, cap, i)),
+                                 '{}_{}_{:d}_clustering.ran.h5'.format(name, cap, i)),
                     split[cap]) for cap in split]
     return array, split, writes
 
@@ -130,8 +130,9 @@ def _finish_random(i, array):
 def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                random_imaging=None, random_tiles=None, good_tilelocid=None, hpmaps=None, survey='DA2',
                completeness='fracz', nbits=128, missing_frac_tlobs=1., seed=0, zrange=None,
-               subsample=None, absmag_max=None, name=None, output_dir=None, numproc=1,
-               keep=True):
+               subsample=None, data_selection=None, name=None, output_dir=None, numproc=1,
+               numproc_randoms=None,
+               keep=True, bits=None):
     """
     Run every stage for one tracer, and return its clustering catalogs.
 
@@ -181,8 +182,10 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
         Redshift range. Defaults to the tracer's own.
     subsample : float, list, default=None
         Density matching fraction. Defaults to the survey's value for the tracer.
-    absmag_max : float, default=None
-        Absolute magnitude cut, for the bright galaxy variants; see
+    data_selection : callable, default=None
+        Any further cut on the sample, handed the vetoed full catalog and returning a boolean
+        array. The bright galaxy variants are an absolute magnitude cut,
+        ``data_selection=absmag_selection(get_bgs_absmag_cut())``; see
         :func:`~mockfactory.desi.lsscat.clustering.make_clustering_data`.
     name : str, default=None
         Name the catalogs are written under. Defaults to the tracer, with ``notqso`` appended
@@ -194,9 +197,17 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
         Number of random catalogs to process at once. They are independent, and at eighteen
         randoms they are about nineteen twentieths of the work. Each worker holds one random
         catalog and what it builds from it, so this trades memory for time.
+    numproc_randoms : int, default=None
+        Workers for the random loop alone, where the memory goes. Defaults to ``numproc``.
+        Each worker holds one random catalog and everything built from it, so the peak scales
+        with this and not with ``numproc``: one at a time is the cheapest the stage gets, and
+        it leaves the writes parallel. With four randoms of a bright mock the peak is about
+        37 GB at four workers, so five mocks fit a 512 GB node; at one it is a quarter of that.
     keep : bool, default=True
         Whether to return the random catalogs as well as writing them. Setting it to False,
-        with ``output_dir``, keeps the parent from accumulating them.
+        with ``output_dir``, keeps the parent from accumulating them -- each worker writes its
+        own and hands back nothing, which is what makes ``numproc_randoms`` the whole of the
+        random stage's memory.
 
     Returns
     -------
@@ -204,9 +215,17 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
         The whole catalog under ``'ALL'`` and one entry per galactic cap.
     clustering_randoms : dict
         The same, each holding a list over the random catalogs.
+
+    bits : list, str, default=None
+        Imaging mask bits to veto, on the data and on the randoms alike. Defaults to the
+        tracer's own, from :func:`~mockfactory.desi.lsscat.veto.get_mask_bits`. A mock whose
+        targets were already cut on other bits upstream has to name them here: the randoms
+        never saw that cut, and a mask applied to one side only is an angular selection the
+        randoms cannot describe.
     """
     maxp = get_max_priority(tracer, notqso=notqso)
-    bits = get_mask_bits(tracer)
+    if bits is None:
+        bits = get_mask_bits(tracer)
     maps_north, maps_south = hpmaps if hpmaps is not None else (None, None)
     zmin, zmax = zrange if zrange is not None else get_redshift_range(tracer)
     p0, dz = get_fkp_p0(tracer)
@@ -236,7 +255,7 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
     clustering = make_clustering_data(full, tracer, zmin=zmin, zmax=zmax,
                                       completeness=completeness, nbits=nbits,
                                       subsample=subsample, zsplit=zsplit, seed=seed,
-                                      absmag_max=absmag_max)
+                                      data_selection=data_selection)
 
     _context.clear()
     _context.update(randoms=randoms, random_imaging=random_imaging, random_tiles=random_tiles,
@@ -274,21 +293,23 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                      area=len(sub_random) / 2500., effective_area=area)
     _context.update(caps=caps, keep=keep)
 
+    if numproc_randoms is None: numproc_randoms = numproc
     logger.info('--- {}: randoms 1 to {:d}, numproc={:d} ---'
-                .format(tracer, len(randoms) - 1, numproc))
+                .format(tracer, len(randoms) - 1, numproc_randoms))
     writes, results = [], {}
     array, split, todo = _finish_random(0, first)
     results[0], writes = (array, split), writes + todo
     del first
     rest = indices[1:]
-    if numproc > 1 and len(rest) > 1:
+    if numproc_randoms > 1 and len(rest) > 1:
         import multiprocessing
         from concurrent.futures import ProcessPoolExecutor, as_completed
         # Not multiprocessing.Pool. It quietly starts a replacement for a worker the kernel
         # kills, and then waits forever for the result that worker was carrying, which from
         # the outside is indistinguishable from slow progress. The executor raises instead.
         context = multiprocessing.get_context('fork')
-        with ProcessPoolExecutor(max_workers=min(numproc, len(rest)), mp_context=context) as pool:
+        with ProcessPoolExecutor(max_workers=min(numproc_randoms, len(rest)),
+                                 mp_context=context) as pool:
             futures = [pool.submit(_make_clustering_randoms, i) for i in rest]
             for future in as_completed(futures):
                 i, array, split = future.result()
@@ -304,9 +325,9 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                             for i in indices]
 
     if output_dir is not None:
-        writes.append((os.path.join(output_dir, '{}_clustering.dat.fits'.format(name)),
+        writes.append((os.path.join(output_dir, '{}_clustering.dat.h5'.format(name)),
                        out_data['ALL']))
-        writes += [(os.path.join(output_dir, '{}_{}_clustering.dat.fits'.format(name, cap)),
+        writes += [(os.path.join(output_dir, '{}_{}_clustering.dat.h5'.format(name, cap)),
                     out_data[cap]) for cap in caps]
         write_catalogs(writes, numproc=numproc)
     if not keep:
@@ -321,9 +342,26 @@ _writes = []
 
 
 def write_catalog(array, fn):
-    """Write one catalog, as the single ``LSS`` extension the survey catalogs come as."""
-    import fitsio
-    fitsio.write(fn, np.asarray(array), extname='LSS', clobber=True)
+    """
+    Write one catalog, under the single ``LSS`` group the survey catalogs come as an extension.
+
+    HDF5, not FITS: a FITS file holds its numbers the other way round from the machine, so
+    writing one is mostly byte order conversion, and measured on a clustering random of nine
+    million rows that is 7.8 s against 1.2 s. HDF5 keeps them native, and one dataset per
+    column is what a reader that wants three of twelve columns can take advantage of.
+    """
+    import h5py
+    array = as_table(array)
+    with h5py.File(fn, 'w') as file:
+        group = file.create_group('LSS')
+        for name in array.colnames:
+            column = array[name].value
+            # hdf5 has no unicode type, so a fixed width string goes in as bytes. That is what a
+            # fits file holds as well, PHOTSYS coming back from one as '1A', so a reader gets the
+            # same thing either way.
+            if column.dtype.kind == 'U':
+                column = column.astype('S{:d}'.format(column.dtype.itemsize // 4))
+            group.create_dataset(name, data=column)
     logger.info('wrote {} ({:d} rows)'.format(fn, len(array)))
 
 

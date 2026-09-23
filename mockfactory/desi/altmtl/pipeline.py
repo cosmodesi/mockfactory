@@ -25,7 +25,8 @@ logger = logging.getLogger('altmtl.pipeline')
 
 
 def run_mock(targets_fn, altmtl_dir, end_date, survey='main', obscon='dark', realization=0,
-             numproc=1, shuffle_subpriority=False, seed=None, state=None, **kwargs):
+             numproc=1, shuffle_subpriority=False, seed=None, state=None, write_ledgers=False,
+             **kwargs):
     """
     Replay the survey for one mock, from its target catalog to its assignments.
 
@@ -62,6 +63,11 @@ def run_mock(targets_fn, altmtl_dir, end_date, survey='main', obscon='dark', rea
     state : LedgerState, default=None
         State to replay against. Built from ``targets_fn`` when not given.
 
+    write_ledgers : bool, default=False
+        Whether to write the final state out as healpix ledgers, in the survey's format, under
+        ``altmtl_dir``. The replay itself never needs them, and it keeps the state in memory,
+        so without this the merged target list is gone once the replay returns.
+
     kwargs : dict
         Other arguments for :func:`mockfactory.desi.altmtl.loop.run_realization`.
 
@@ -97,9 +103,15 @@ def run_mock(targets_fn, altmtl_dir, end_date, survey='main', obscon='dark', rea
 
     logger.info('{}: {:d} actions in {:.0f} s (setup {:.0f} s, state {:.0f} s).'.format(
         altmtl_dir, nactions, t_replay, t_setup, t_state))
-    return {'altmtl_dir': altmtl_dir, 'targets_fn': targets_fn, 'nactions': nactions,
-            'seconds': t_replay, 'setup_seconds': t_setup, 'state_seconds': t_state,
-            'ntargets': len(state)}
+    result = {'altmtl_dir': altmtl_dir, 'targets_fn': targets_fn, 'nactions': nactions,
+              'seconds': t_replay, 'setup_seconds': t_setup, 'state_seconds': t_state,
+              'ntargets': len(state)}
+    if write_ledgers:
+        start = time.time()
+        result['ledger_dir'] = state.write_ledgers(altmtl_dir, survey=survey, obscon=obscon)
+        result['ledger_seconds'] = time.time() - start
+        logger.info('{}: ledgers written in {:.0f} s.'.format(altmtl_dir, result['ledger_seconds']))
+    return result
 
 
 _mock_options = {}
@@ -107,9 +119,10 @@ _mock_options = {}
 
 def _run_one(mock):
     """Replay one mock, in a worker."""
-    targets_fn, altmtl_dir, realization = mock
+    targets_fn, altmtl_dir, realization, options = mock
     try:
-        return run_mock(targets_fn, altmtl_dir, realization=realization, **_mock_options)
+        return run_mock(targets_fn, altmtl_dir, realization=realization,
+                        **dict(_mock_options, **options))
     except Exception as exc:
         # One mock failing should not take the others down with it.
         logger.exception('{} failed: {}'.format(altmtl_dir, exc))
@@ -153,8 +166,11 @@ def run_mocks(mocks, end_date, survey='main', obscon='dark', numproc=1, nummocks
     Parameters
     ----------
     mocks : list
-        The mocks to replay, each ``(targets_fn, altmtl_dir)`` or
-        ``(targets_fn, altmtl_dir, realization)``.
+        The mocks to replay, each ``(targets_fn, altmtl_dir)``,
+        ``(targets_fn, altmtl_dir, realization)`` or ``(targets_fn, altmtl_dir, realization,
+        options)``, where ``options`` is a dict of :func:`run_mock` arguments for that mock alone,
+        taking precedence over ``kwargs``: e.g. ``{'zfix': 'qso3.txt'}``, since each mock has
+        its own quasars.
 
     end_date : int, str
         Night the replays stop at.
@@ -180,7 +196,8 @@ def run_mocks(mocks, end_date, survey='main', obscon='dark', numproc=1, nummocks
     results : list
         One entry per mock, in the order they were given.
     """
-    mocks = [tuple(mock) if len(mock) == 3 else tuple(mock) + (0,) for mock in mocks]
+    defaults = (None, None, 0, {})
+    mocks = [tuple(mock) + defaults[len(mock):] for mock in mocks]
     ncores = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count()
     if numproc * nummocks > ncores:
         logger.warning('{:d} mocks x {:d} processes is {:d}, against {:d} cores; they will '

@@ -13,10 +13,11 @@ were emptier than it is.
 """
 
 import logging
+import math
 
 import numpy as np
 
-from .utils import append_fields
+from .utils import as_table, set_column
 
 
 logger = logging.getLogger('lsscat.nz')
@@ -85,7 +86,10 @@ def compute_nz(data, randoms, zmin, zmax, dz=0.01, completeness='fracz', cosmolo
     area = len(randoms) / RANDOM_DENSITY
     logger.info('area is {:.2f} square degrees'.format(area))
     if completeness != 'bitweights':
-        area = np.sum(randoms['FRAC_TLOBS_TILES']) / RANDOM_DENSITY
+        # Summed exactly: np.sum rounds differently depending on how the column is laid out in
+        # memory, and the area scales every density, so the last digit would otherwise depend on
+        # the container rather than the numbers.
+        area = math.fsum(randoms['FRAC_TLOBS_TILES']) / RANDOM_DENSITY
         logger.info('effective area is {:.2f} square degrees'.format(area))
 
     nbin = int((zmax - zmin) * (1. + dz / 10.) / dz)
@@ -184,10 +188,11 @@ def add_nz_weights(array, nz, zmin, dz, p0, weight_ntile, completeness_ntile,
     valid = (index >= 0) & (index < len(nz))
     density[valid] = np.asarray(nz)[index[valid]]
 
-    toret = append_fields(array, [('NX', 'f8'), ('WEIGHT_FKP', 'f8')])
+    # A copy, however shallow: columns are about to be set on it, and those are the caller's.
+    toret = as_table(array).copy(copy_data=False)
     ntile = np.clip(np.asarray(toret['NTILE']) - 1, 0, len(completeness_ntile) - 1)
-    toret['NX'] = density * completeness_ntile[ntile]
-    toret['WEIGHT_FKP'] = 1. / (1. + toret['NX'] * p0)
+    set_column(toret, 'NX', density * completeness_ntile[ntile], dtype='f8')
+    set_column(toret, 'WEIGHT_FKP', 1. / (1. + toret['NX'] * p0), dtype='f8')
 
     weight = toret['WEIGHT_COMP'] * toret['WEIGHT_SYS'] * toret['WEIGHT_ZFAIL']
     if randoms:
@@ -199,5 +204,5 @@ def add_nz_weights(array, nz, zmin, dz, p0, weight_ntile, completeness_ntile,
         positive = weight > 0
         factor[positive] = toret['WEIGHT'][positive] / weight[positive]
         weight = factor * weight
-    toret['WEIGHT'] = weight / weight_ntile[ntile]
+    set_column(toret, 'WEIGHT', weight / weight_ntile[ntile], dtype='f8')
     return toret

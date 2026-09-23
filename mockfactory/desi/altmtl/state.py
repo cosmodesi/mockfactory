@@ -20,6 +20,8 @@ import logging
 
 import numpy as np
 
+from .targets import read_targets
+
 from . import utils
 
 
@@ -132,7 +134,7 @@ class LedgerState(object):
         import fitsio
         from desitarget.mtl import make_mtl
 
-        targets = fitsio.read(targets_fn)
+        targets = read_targets(targets_fn)
         # make_mtl with no redshift catalog returns the unobserved state, which is what a
         # freshly built ledger holds.
         current = np.asarray(make_mtl(targets, obscon.upper(), trimcols=True))

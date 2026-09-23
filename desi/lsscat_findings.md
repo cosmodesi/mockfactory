@@ -262,9 +262,10 @@ That is worth a look before a production run.
 The parameters resolve: redshift range 0.1 to 0.5, maximum priority 2100, mask bit 11, and the
 Feldman-Kaiser-Peacock amplitude 7000 in bins of 0.01. Two things had to be added. A bright
 galaxy sample is defined by an absolute magnitude rather than by a targeting bit, so
-`make_clustering_data` takes `absmag_max`, cutting on `R_MAG_ABS`, and `run_tracer` takes a
-`name` so the catalogs can be written under the variant the cut defines, such as
-`BGS_BRIGHT-21.5`. The photometry the cut needs, `R_MAG_ABS` and the colours beside it, is now
+`make_clustering_data` takes a `data_selection`, handed the vetoed full catalog and returning a
+boolean array, and `run_tracer` takes a `name` so the catalogs can be written under the variant
+the cut defines, such as `BGS_BRIGHT-21.5`. `absmag_selection(get_bgs_absmag_cut())` is that
+sample's cut on `R_MAG_ABS`; any other column of the full catalog can be cut on the same way. The photometry the cut needs, `R_MAG_ABS` and the colours beside it, is now
 carried through to the clustering catalog.
 
 ## Not yet exercised

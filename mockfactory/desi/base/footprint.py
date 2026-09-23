@@ -41,7 +41,10 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
         Declination (degree).
 
     release : string, default='m3'
-        Name of the survey. Available: onepercent, m3, y1, y3, y5.
+        Name of the survey. Available: onepercent, m3, y1, y3, y5. ``None`` instead takes the
+        tiles from ``tiles_fn`` as they are, with no filtering on survey or program: use it
+        when the set is already known, such as the tiles a replay actually covers, which a
+        release name does not always reproduce.
 
     npasses : int, default=None
         Number of passes; ``None`` for all passes.
@@ -66,6 +69,15 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
     import desimodel.footprint
 
     lastnight = None
+    if release is None:
+        import fitsio
+        if str(tiles_fn).endswith(('.fits', '.fits.gz')):
+            tiles = fitsio.read(tiles_fn)
+        else:
+            import pandas as pd
+            tiles = pd.read_csv(tiles_fn)
+        return desimodel.footprint.is_point_in_desi(tiles, ra, dec,
+                                                    return_tile_index=return_tile_index)
     release = release.lower()
     if release in ['sv3', 'onepercent']:
         redux = 'fuji'

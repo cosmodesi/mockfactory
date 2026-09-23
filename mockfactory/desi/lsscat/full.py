@@ -12,7 +12,9 @@ import logging
 
 import numpy as np
 
-from .utils import NULL, append_fields, drop_fields, group_fraction, get_photsys, join_left, last_of_each
+from astropy.table import Table
+
+from .utils import NULL, as_table, group_fraction, get_photsys, join_left, last_of_each, set_column
 
 
 logger = logging.getLogger('lsscat.full')
@@ -63,7 +65,8 @@ def select_tracer(array, tracer, notqso=False, column=None):
 
 
 def make_full_data(data, assignments, tracer, tiles=None, targets=None, notqso=False,
-                   truez='RSDZ', good_tilelocid=None, completeness_tiles=True):
+                   truez='RSDZ', good_tilelocid=None, completeness_tiles=True,
+                   truth=('RSDZ', 'TRUEZ', 'ZWARN', 'ZWARN_MTL')):
     """
     Return the full data catalog of one tracer.
 
@@ -96,31 +99,36 @@ def make_full_data(data, assignments, tracer, tiles=None, targets=None, notqso=F
     completeness_tiles : bool, default=True
         Whether to compute ``COMP_TILE``, the fraction observed among the targets sharing a
         set of tiles.
+    truth : tuple
+        Columns that say what happened at the fiber rather than what the target is, and which
+        ``targets`` must therefore not overwrite. They come from
+        :func:`~mockfactory.desi.lsscat.combine.combine_data`, which leaves them
+        :data:`~mockfactory.desi.lsscat.utils.NULL` wherever the fiber went to another target.
     """
     maxp = get_max_priority(tracer, notqso=notqso)
+    data, assignments = as_table(data), as_table(assignments)
     toret = data[select_tracer(data, tracer, notqso=notqso)]
 
     # The priority the winning target had, at each location this tracer could have reached.
-    priorities = assignments[['TARGETID', 'LOCATION', 'TILEID', 'PRIORITY']].copy() \
-        if 'TILELOCID' not in assignments.dtype.names else assignments
-    tilelocid = 10000 * priorities['TILEID'] + priorities['LOCATION']
-    won = np.empty(len(priorities), dtype=[('TILELOCID', 'i8'), ('PRIORITY_ASSIGNED', 'i8')])
-    won['TILELOCID'], won['PRIORITY_ASSIGNED'] = tilelocid, priorities['PRIORITY']
+    won = Table({'TILELOCID': (10000 * assignments['TILEID'].value
+                               + assignments['LOCATION'].value).astype('i8', copy=False),
+                 'PRIORITY_ASSIGNED': assignments['PRIORITY'].value.astype('i8', copy=False)},
+                copy=False)
     won = won[last_of_each(won['TILELOCID'])]
     toret = join_left(toret, won, 'TILELOCID', fill={'PRIORITY_ASSIGNED': NULL})
 
-    toret = append_fields(toret, [('GOODPRI', '?'), ('GOODHARDLOC', '?'),
-                                  ('LOCATION_ASSIGNED', '?'), ('TILELOCID_ASSIGNED', '?')])
     # A location whose winner outranked this tracer was never available to it; one no target
     # reached at all still was.
-    toret['GOODPRI'] = (toret['PRIORITY_ASSIGNED'] <= maxp) | (toret['PRIORITY_ASSIGNED'] == NULL)
+    set_column(toret, 'GOODPRI', (toret['PRIORITY_ASSIGNED'] <= maxp)
+               | (toret['PRIORITY_ASSIGNED'] == NULL), dtype='?')
     # A mock inherits the real survey's broken fibers and bad petals, which is the only way a
     # location can be unusable to it: it has no spectroscopic failures of its own.
-    toret['GOODHARDLOC'] = True if good_tilelocid is None \
-        else np.isin(toret['TILELOCID'], good_tilelocid)
-    toret['LOCATION_ASSIGNED'] = (toret['ZWARN'] != NULL) & (toret['ZWARN'] * 0 == 0)
-    toret['TILELOCID_ASSIGNED'] = np.isin(toret['TILELOCID'],
-                                          np.unique(toret['TILELOCID'][toret['LOCATION_ASSIGNED']]))
+    set_column(toret, 'GOODHARDLOC', True if good_tilelocid is None
+               else np.isin(toret['TILELOCID'], good_tilelocid), dtype='?')
+    set_column(toret, 'LOCATION_ASSIGNED', (toret['ZWARN'] != NULL) & (toret['ZWARN'] * 0 == 0),
+               dtype='?')
+    set_column(toret, 'TILELOCID_ASSIGNED', np.isin(
+        toret['TILELOCID'], np.unique(toret['TILELOCID'][toret['LOCATION_ASSIGNED']])), dtype='?')
     logger.info('{:d} assigned, {:d} of them at a good priority'
                 .format(int(toret['LOCATION_ASSIGNED'].sum()),
                         int((toret['LOCATION_ASSIGNED'] & toret['GOODPRI']).sum())))
@@ -149,30 +157,40 @@ def make_full_data(data, assignments, tracer, tiles=None, targets=None, notqso=F
     toret = join_left(toret, tiles, 'TARGETID', fill={'NTILE': 0, 'TILES': 0, 'TILELOCIDS': 0})
 
     if targets is not None:
+        targets = as_table(targets)
         # Positions and targeting bits come back from the target file, which carries the
         # imaging columns the vetoes read.
-        columns = [name for name in targets.dtype.names if name != 'TARGETID']
-        toret = drop_fields(toret, [name for name in ('RA', 'DEC', 'DESI_TARGET', 'BGS_TARGET')
-                                    if name in columns])
+        #
+        # Never the truth columns, though. The target file holds each target's own redshift
+        # and ZWARN, and ``data`` holds what happened at the fiber -- NULL where the fiber
+        # went to someone else. Letting the join overwrite them puts ZWARN = 0 back on every
+        # row, so every target reads as observed however the assignment actually went, and
+        # since LOCATION_ASSIGNED is settled above it stays right while the redshift selection
+        # downstream goes wrong. FRACZ_TILELOCID then reaches 1 / 0 for the targets whose
+        # fiber location never gave anything.
+        columns = [name for name in targets.colnames
+                   if name != 'TARGETID' and name not in truth]
+        replaced = [name for name in ('RA', 'DEC', 'DESI_TARGET', 'BGS_TARGET') if name in columns]
+        toret.remove_columns(replaced)
         toret = join_left(toret, targets, 'TARGETID', columns=columns)
 
-    if truez in toret.dtype.names and 'Z' not in toret.dtype.names:
+    if truez in toret.colnames and 'Z' not in toret.colnames:
         # The observed redshift is the mock's own, carried over by the assignment; a target
         # that never got a fiber has none, and keeps the nan the join left.
-        toret = append_fields(toret, [('Z', toret[truez].dtype)])
-        toret['Z'] = toret[truez]
+        set_column(toret, 'Z', toret[truez].value.copy())
 
-    toret = append_fields(toret, [('COMP_TILE', 'f8'), ('FRACZ_TILELOCID', 'f8'), ('PHOTSYS', 'U1')])
     if completeness_tiles:
-        toret['COMP_TILE'] = group_fraction(toret['TILES'], toret['LOCATION_ASSIGNED'])
+        set_column(toret, 'COMP_TILE', group_fraction(toret['TILES'], toret['LOCATION_ASSIGNED']),
+                   dtype='f8')
         logger.info('{:d} targets sit where nothing was observed'
                     .format(int((toret['COMP_TILE'] == 0).sum())))
     else:
-        toret['COMP_TILE'] = 1.
+        set_column(toret, 'COMP_TILE', 1., dtype='f8')
     # Of the targets of this tracer sharing a fiber location, the fraction that got observed;
     # one over it upweights a target for the ones it kept from being reached.
-    toret['FRACZ_TILELOCID'] = group_fraction(toret['TILELOCID'], toret['LOCATION_ASSIGNED'])
-    toret['PHOTSYS'] = get_photsys(toret['RA'], toret['DEC'])
+    set_column(toret, 'FRACZ_TILELOCID', group_fraction(toret['TILELOCID'],
+                                                        toret['LOCATION_ASSIGNED']), dtype='f8')
+    set_column(toret, 'PHOTSYS', get_photsys(toret['RA'], toret['DEC']), dtype='U1')
     return toret
 
 
@@ -206,16 +224,13 @@ def make_full_randoms(randoms, tracer, notqso=False, good_tilelocid=None, imagin
         the first need pay for it.
     """
     maxp = get_max_priority(tracer, notqso=notqso)
-    toret = randoms
-    if 'TILELOCID' not in toret.dtype.names:
-        toret = append_fields(toret, [('TILELOCID', 'i8')])
-    toret['TILELOCID'] = 10000 * toret['TILEID'] + toret['LOCATION']
-
-    toret = append_fields(toret, [('ZPOSSLOC', '?'), ('GOODHARDLOC', '?'), ('GOODPRI', '?')])
-    toret['ZPOSSLOC'] = True
-    toret['GOODHARDLOC'] = True if good_tilelocid is None \
-        else np.isin(toret['TILELOCID'], good_tilelocid)
-    toret['GOODPRI'] = toret['PRIORITY'] <= maxp
+    # A copy, however shallow: columns are about to be set on it, and those are the caller's.
+    toret = as_table(randoms).copy(copy_data=False)
+    set_column(toret, 'TILELOCID', 10000 * toret['TILEID'] + toret['LOCATION'], dtype='i8')
+    set_column(toret, 'ZPOSSLOC', True, dtype='?')
+    set_column(toret, 'GOODHARDLOC', True if good_tilelocid is None
+               else np.isin(toret['TILELOCID'], good_tilelocid), dtype='?')
+    set_column(toret, 'GOODPRI', toret['PRIORITY'] <= maxp, dtype='?')
     logger.info('{:d} of {:d} random locations are usable by {}'
                 .format(int((toret['GOODHARDLOC'] & toret['GOODPRI']).sum()), len(toret), tracer))
 
@@ -230,15 +245,15 @@ def make_full_randoms(randoms, tracer, notqso=False, good_tilelocid=None, imagin
 
     # The fiber location has done its work by here: what the vetoes and the clustering stage
     # read is the position, the imaging, the priority and the tiles. Dropped before the joins
-    # rather than at the end, so that none of the copies they make carries these along; at the
+    # rather than at the end, so that the row cuts that follow do not carry them along; at the
     # thirty million rows of a random catalog each column is a quarter of a gigabyte.
-    toret = drop_fields(toret, ['LOCATION', 'FIBER', 'TILEID', 'TILELOCID', 'ZPOSSLOC',
-                                'GOODPRI'])
+    done = ['LOCATION', 'FIBER', 'TILEID', 'TILELOCID', 'ZPOSSLOC', 'GOODPRI']
+    toret.remove_columns([name for name in done if name in toret.colnames])
     toret = join_left(toret, tiles, 'TARGETID', fill={'NTILE': 0, 'TILES': 0, 'TILELOCIDS': 0})
     if imaging is not None:
-        columns = [name for name in imaging.dtype.names if name not in toret.dtype.names]
+        imaging = as_table(imaging)
+        columns = [name for name in imaging.colnames if name not in toret.colnames]
         toret = join_left(toret, imaging, 'TARGETID', columns=columns)
-    if 'PHOTSYS' not in toret.dtype.names:
-        toret = append_fields(toret, [('PHOTSYS', 'U1')])
-        toret['PHOTSYS'] = get_photsys(toret['RA'], toret['DEC'])
+    if 'PHOTSYS' not in toret.colnames:
+        set_column(toret, 'PHOTSYS', get_photsys(toret['RA'], toret['DEC']), dtype='U1')
     return toret

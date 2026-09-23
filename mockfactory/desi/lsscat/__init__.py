@@ -30,8 +30,8 @@ survey's own inputs and the per tile assignments, and the only writes are the ca
 for.
 """
 
-from .utils import (get_photsys, get_galactic_cap, join_left, last_of_each,
-                    group_fraction, select_fields)
+from .utils import (as_table, get_photsys, get_galactic_cap, join_left, last_of_each,
+                    group_fraction)
 from .combine import (read_assignments, combine_data, count_tiles, combine_randoms, read_good_tilelocid,
                       read_random_imaging)
 from .full import make_full_data, make_full_randoms, select_tracer, get_max_priority

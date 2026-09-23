@@ -21,13 +21,13 @@ from . import utils
 logger = logging.getLogger('altmtl.targets')
 
 
+#: Group a target catalog is written under, and the name its FITS predecessor used.
+TARGETS_GROUP = 'TARGETS'
+
 #: Columns a target catalog must carry for the ledgers to be built from it.
 TARGET_COLUMNS = ('RA', 'DEC', 'TARGETID', 'DESI_TARGET', 'BGS_TARGET', 'MWS_TARGET', 'SCND_TARGET',
                   'SUBPRIORITY', 'OBSCONDITIONS', 'PRIORITY_INIT', 'PRIORITY', 'NUMOBS_INIT',
                   'NUMOBS_MORE', 'ZWARN')
-
-#: Tracers whose bits live in ``BGS_TARGET`` rather than ``DESI_TARGET``.
-BGS_TRACERS = ('BGS_BRIGHT', 'BGS_FAINT')
 
 
 def get_target_bits(tracer):
@@ -54,7 +54,10 @@ def get_target_bits(tracer):
     desi_target = bgs_target = mws_target = 0
     for name in tracer:
         name = name.upper()
-        if name in BGS_TRACERS:
+        # Which mask a name belongs to is asked of desitarget rather than listed here, so
+        # that a name like BGS_FAINT_HIP is not looked up in the main mask and raised on.
+        # The two masks share no name, so the test is unambiguous.
+        if name in bgs_mask.names():
             bgs_target |= bgs_mask[name]
             desi_target |= desi_mask['BGS_ANY']
         else:
@@ -157,6 +160,33 @@ def make_targets(catalogs, obscon='dark', seed=None, z=None, mpicomm=None):
     return targets
 
 
+def read_targets(targets_fn, columns=None):
+    """
+    Read a target catalog written by :func:`write_targets`, as an :class:`astropy.table.Table`.
+
+    Both formats are read, so a catalog produced before the move to HDF5 still works; only
+    writing is fixed to one.
+    """
+    from ..tables import as_table
+    if os.path.splitext(targets_fn)[-1] not in ('.h5', '.hdf5'):
+        import fitsio
+        return as_table(fitsio.read(targets_fn, columns=columns))
+    import h5py
+    from astropy.table import Table
+    with h5py.File(targets_fn, 'r') as file:
+        group = file[TARGETS_GROUP]
+        names = list(group) if columns is None else list(columns)
+        # Viewed as dtype.str, not dtype: h5py hangs metadata such as
+        # {'h5py_encoding': 'ascii'} off a string dtype, it rides along through every array
+        # built from it, and fitsio cannot hash it when the catalog is eventually written back
+        # out.
+        arrays = {}
+        for name in names:
+            array = group[name][:]
+            arrays[name] = array.view(np.dtype(array.dtype.str))
+    return Table(arrays, copy=False)
+
+
 def write_targets(targets, output_fn, obscon='dark', mpicomm=None):
     """
     Write a target catalog to ``output_fn``, as the single file the ledgers are built from.
@@ -194,11 +224,15 @@ def write_targets(targets, output_fn, obscon='dark', mpicomm=None):
     if mpicomm.rank == 0:
         utils.mkdir(os.path.dirname(output_fn))
     mpicomm.Barrier()
-    targets.write(output_fn, filetype='fits')
+    # HDF5, not FITS: mpytools writes it with every rank putting its own slice into the file,
+    # where the FITS writer gathers the whole catalog onto one rank and writes it serially --
+    # 24 MB/s for a four gigabyte catalog, whatever the number of ranks.
+    targets.write(output_fn, filetype='hdf5', group=TARGETS_GROUP,
+                  header={'OBSCON': obscon.upper()})
+    # csize is a collective, so every rank takes it and only rank 0 logs it; asking for it
+    # inside the branch deadlocks rank 0 against the others' barrier below
+    csize = targets.csize
     if mpicomm.rank == 0:
-        with fitsio.FITS(output_fn, 'rw') as fits:
-            fits[1].write_key('EXTNAME', 'TARGETS')
-            fits[1].write_key('OBSCON', obscon.upper())
-        logger.info('Wrote {:d} targets to {}.'.format(targets.csize, output_fn))
+        logger.info('Wrote {:d} targets to {}.'.format(csize, output_fn))
     mpicomm.Barrier()
     return output_fn

@@ -18,7 +18,7 @@ import logging
 
 import numpy as np
 
-from .utils import NULL, append_fields, get_photsys, select_fields
+from .utils import NULL, as_table, get_photsys, set_column
 
 
 logger = logging.getLogger('lsscat.clustering')
@@ -56,6 +56,7 @@ def select_good_redshift(data, tracer, ismock=True):
         Whether this is a mock. The redshift quality cuts of the real survey, which need
         quantities a mock does not have, are skipped.
     """
+    data = as_table(data)
     zwarn = data['ZWARN']
     select = (zwarn != NULL) & (zwarn * 0 == 0)
     if tracer[:3] in ('LRG', 'LGE', 'BGS'):
@@ -106,7 +107,7 @@ def get_bgs_absmag_cut(coeff_dir=None, zsplit=0.3, offset=0.078):
     That sample is not a fixed cut: the threshold follows a cubic in redshift below ``zsplit``
     and is constant above it, with an offset. The coefficients are fitted externally and read
     from file. The result takes redshifts and returns the threshold for each, so it can be
-    handed to :func:`make_clustering_data` as ``absmag_max``.
+    turned into a selection with :func:`absmag_selection`.
 
     The survey pipeline evaluates this with ``numpy.empty`` and two masks that between them
     miss the targets with no redshift, so those rows of its full catalogs are selected on
@@ -129,9 +130,24 @@ def get_bgs_absmag_cut(coeff_dir=None, zsplit=0.3, offset=0.078):
     return absmag_max
 
 
+def absmag_selection(absmag_max):
+    """
+    Return the selection keeping the targets brighter than ``absmag_max``, from ``R_MAG_ABS``.
+
+    ``absmag_max`` is a number, or a callable taking the redshifts and returning the threshold
+    for each, which is how the second generation bright galaxy samples are defined; see
+    :func:`get_bgs_absmag_cut`. Pass the result to :func:`make_clustering_data` as ``data_selection``.
+    """
+    def selection(catalog):
+        limit = absmag_max(catalog['Z']) if callable(absmag_max) else absmag_max
+        return np.asarray(catalog['R_MAG_ABS']) < limit
+
+    return selection
+
+
 def make_clustering_data(data, tracer, zmin=None, zmax=None, completeness='fracz',
                          nbits=128, ismock=True, columns=(), subsample=None, zsplit=None,
-                         seed=None, absmag_max=None):
+                         seed=None, data_selection=None):
     """
     Return the clustering data catalog of one tracer.
 
@@ -162,19 +178,27 @@ def make_clustering_data(data, tracer, zmin=None, zmax=None, completeness='fracz
         Redshift the two subsampling fractions apply on either side of.
     seed : int, default=None
         Seed of the subsampling draw.
-    absmag_max : float, callable, default=None
-        Keep only the targets brighter than this absolute magnitude, read from ``R_MAG_ABS``.
-        A callable is given the redshifts and returns the threshold for each, which is how the
-        second generation bright galaxy samples are defined; see
-        :func:`~mockfactory.desi.lsscat.clustering.get_bgs_absmag_cut`.
-        The bright galaxy sample is defined this way rather than by a targeting bit, so its
-        catalogs come in variants named after the cut, such as ``BGS_BRIGHT-21.5``.
+    data_selection : callable, default=None
+        Any further cut on the sample, as a function of the catalog: it is handed the vetoed
+        full catalog and returns a boolean array of that length, ``True`` for the targets to
+        keep. Every column of the full catalog is available, so a cut can use the mock truth,
+        the target bits or the imaging, not only ``R_MAG_ABS``::
+
+            data_selection=lambda catalog: catalog['R_MAG_ABS'] < -21.5
+            data_selection=absmag_selection(get_bgs_absmag_cut())
+
+        It applies to the data alone. The randoms take their redshift and weight from the
+        selected data, so the cut reaches them through the redshift distribution rather than
+        directly, and a cut on a quantity the randoms have of their own does not narrow them.
+        The bright galaxy samples are defined by a cut rather than by a targeting bit, so
+        name their catalogs after it, as in ``BGS_BRIGHT-21.5``.
     """
     if zmin is None or zmax is None:
         default = get_redshift_range(tracer)
         zmin = default[0] if zmin is None else zmin
         zmax = default[1] if zmax is None else zmax
 
+    data = as_table(data)
     select = select_good_redshift(data, tracer, ismock=ismock)
     if subsample is not None:
         rng = np.random.default_rng(seed=seed)
@@ -187,36 +211,32 @@ def make_clustering_data(data, tracer, zmin=None, zmax=None, completeness='fracz
         select &= rng.random(len(data)) < fraction
         logger.info('subsampling to {} keeps {:d} targets'.format(subsample, int(select.sum())))
 
-    if absmag_max is not None:
-        # A threshold may depend on redshift; the bright galaxy samples of the second
-        # generation mocks are defined that way, by a polynomial in z rather than a number.
-        limit = absmag_max(data['Z']) if callable(absmag_max) else absmag_max
-        select &= data['R_MAG_ABS'] < limit
-        logger.info('absolute magnitude cut keeps {:d} targets'.format(int(select.sum())))
+    if data_selection is not None:
+        select &= np.asarray(data_selection(data), dtype='?')
+        logger.info('selection keeps {:d} targets'.format(int(select.sum())))
 
     toret = data[select]
     select = (toret['Z'] > zmin) & (toret['Z'] < zmax)
     toret = toret[select]
     logger.info('{:d} targets in {:.3f} < z < {:.3f}'.format(len(toret), zmin, zmax))
 
-    add = [(name, 'f8') for name in ('WEIGHT', 'WEIGHT_COMP', 'WEIGHT_ZFAIL', 'WEIGHT_SYS')
-           if name not in toret.dtype.names]
-    toret = append_fields(toret, add)
     for name in ('WEIGHT_ZFAIL', 'WEIGHT_SYS'):
-        if (name, 'f8') in add:
-            toret[name] = 1.
+        if name not in toret.colnames:
+            set_column(toret, name, 1., dtype='f8')
     bad = toret['WEIGHT_SYS'] * 0 != 0
     if bad.any():
         logger.info('{:d} targets with no imaging weight, set to one'.format(int(bad.sum())))
         toret['WEIGHT_SYS'][bad] = 1.
 
     if completeness == 'bitweights':
-        toret['WEIGHT_COMP'] = compute_iip_weight(toret['PROB_OBS'], nbits=nbits)
+        set_column(toret, 'WEIGHT_COMP', compute_iip_weight(toret['PROB_OBS'], nbits=nbits),
+                   dtype='f8')
     else:
-        toret['WEIGHT_COMP'] = 1. / toret['FRACZ_TILELOCID']
+        set_column(toret, 'WEIGHT_COMP', 1. / toret['FRACZ_TILELOCID'], dtype='f8')
         if completeness == 'fracz_tiles':
             toret['WEIGHT_COMP'] /= toret['FRAC_TLOBS_TILES']
-    toret['WEIGHT'] = toret['WEIGHT_COMP'] * toret['WEIGHT_ZFAIL'] * toret['WEIGHT_SYS']
+    set_column(toret, 'WEIGHT', toret['WEIGHT_COMP'] * toret['WEIGHT_ZFAIL'] * toret['WEIGHT_SYS'],
+               dtype='f8')
     logger.info('completeness weight between {:.3f} and {:.3f}, mean {:.4f}'
                 .format(toret['WEIGHT_COMP'].min(), toret['WEIGHT_COMP'].max(),
                         toret['WEIGHT_COMP'].mean()))
@@ -225,8 +245,9 @@ def make_clustering_data(data, tracer, zmin=None, zmax=None, completeness='fracz
             'WEIGHT', 'WEIGHT_ZFAIL', 'WEIGHT_COMP', 'WEIGHT_SYS']
     keep += [name for name in ('BITWEIGHTS', 'PROB_OBS', 'WEIGHT_FKP', 'TILEID', 'R_MAG_ABS',
                                'R_MAG_APP', 'G_R_REST', 'G_R_OBS') + tuple(columns)
-             if name in toret.dtype.names]
-    return select_fields(toret, keep)
+             if name in toret.colnames]
+    toret.keep_columns(keep)
+    return toret
 
 
 def get_regions(ra, dec, photsys, des=False):
@@ -279,10 +300,20 @@ def make_clustering_randoms(randoms, data, seed=0, tracer='', completeness='frac
         Columns drawn from the data.
     """
     rng = np.random.default_rng(seed=seed)
-    columns = [name for name in columns if name in data.dtype.names]
+    randoms, data = as_table(randoms), as_table(data)
+    columns = [name for name in columns if name in data.colnames]
 
-    toret = append_fields(randoms, [(name, data[name].dtype, data[name].shape[1:])
-                                    for name in columns] + [('TARGETID_DATA', data['TARGETID'].dtype)])
+    # The drawn columns are filled in below region by region, in place, so each is a new array:
+    # one the randoms already carry is copied rather than written into, since it is the
+    # caller's. A row in a region with no data is left as allocated, as it always was.
+    toret = randoms.copy(copy_data=False)
+    for name, dtype in [(name, data[name].dtype) for name in columns] \
+            + [('TARGETID_DATA', data['TARGETID'].dtype)]:
+        if name in toret.colnames:
+            set_column(toret, name, toret[name].value.copy())
+        else:
+            shape = (len(toret),) + (data[name].shape[1:] if name in data.colnames else ())
+            set_column(toret, name, np.empty(shape, dtype=dtype))
     des = tracer.startswith('QSO')
     randoms_regions = get_regions(toret['RA'], toret['DEC'], toret['PHOTSYS'], des=des)
     data_regions = get_regions(data['RA'], data['DEC'], data['PHOTSYS'], des=des)
@@ -309,4 +340,5 @@ def make_clustering_randoms(randoms, data, seed=0, tracer='', completeness='frac
 
     keep = ['TARGETID', 'RA', 'DEC', 'NTILE', 'PHOTSYS', 'FRAC_TLOBS_TILES'] + columns \
         + ['TARGETID_DATA']
-    return select_fields(toret, keep)
+    toret.keep_columns(keep)
+    return toret

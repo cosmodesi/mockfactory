@@ -428,6 +428,14 @@ def run_fiber_assignment(tileid, targets_fn, output_dir, header, footprint_fn, s
         # Reuse the real survey's own stuck-sky determination rather than redoing it.
         optlist += ['--fafns_for_stucksky',
                     utils.get_fiberassign_fn(tileid, fiberassign_dir=fiberassign_dir)]
+    # Nothing is passed for --fba_use_fabs, deliberately. The inner keepout radius of
+    # Hardware::position_xy_bad is |theta_arm - phi_arm|, and fiberassign wrote ::abs of it;
+    # which overload that picked depended on the compiler, gcc 11.2 taking the integer one and
+    # gcc 13 the double. fiberassign 5.8.0 made the choice explicit and selects it from the
+    # rundate, which is what the real survey got, so leaving it alone is what a mock wants.
+    # It does mean the replay no longer matches the DA2 mock references bit for bit: those were
+    # assigned under desiconda 20240425-2.2.0, a gcc 13 build, so they carry the double
+    # behaviour their 2021 rundates did not. That gap is theirs, not ours.
     if overwrite: optlist.append('--overwrite')
 
     logger.debug('Running fiberassign for tile {:d} at rundate {}.'.format(tileid, rundate))

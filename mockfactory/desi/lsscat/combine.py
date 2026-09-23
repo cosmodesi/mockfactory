@@ -18,7 +18,9 @@ import numpy as np
 
 from ..altmtl.assignment import get_alt_fiberassign_fn, get_fa_dir
 from ..altmtl.tiletracker import read_tile_tracker
-from .utils import NULL, append_fields, drop_fields, encode_keys, join_left
+from astropy.table import Table, vstack
+
+from .utils import NULL, as_table, encode_keys, join_left, set_column
 
 
 logger = logging.getLogger('lsscat.combine')
@@ -59,7 +61,8 @@ def read_assignments(altmtl_dir, tileids, fadates=None, survey='main', obscon='d
         args = [(get_alt_fiberassign_fn(get_fa_dir(altmtl_dir, fadate, survey=survey), tileid),)
                 for tileid, fadate in zip(tileids, fadates)]
     arrays = _map(_read_assignment_one_tile, args, numproc=numproc)
-    toret = np.concatenate([array for array in arrays if len(array)])
+    toret = vstack([array for array in arrays if len(array)], join_type='exact',
+                   metadata_conflicts='silent')
     logger.info('combined {:d} assignments over {:d} tiles'.format(len(toret), len(tileids)))
     return toret
 
@@ -88,9 +91,8 @@ def _read_assignment_one_tile(fn):
         targets = fits['FTARGETS'].read(columns=['TARGETID', 'PRIORITY', 'SUBPRIORITY'])
     # A location with no target carries a negative identifier; sky and standard targets are
     # dropped by the join, since they are not in the target file.
-    assigned = assigned[assigned['TARGETID'] >= 0]
-    toret = append_fields(assigned, [('TILEID', 'i8')])
-    toret['TILEID'] = tileid
+    toret = as_table(assigned[assigned['TARGETID'] >= 0])
+    set_column(toret, 'TILEID', tileid, dtype='i8')
     return join_left(toret, targets, 'TARGETID')
 
 
@@ -283,8 +285,9 @@ def read_random_imaging(rann, tracer=None, randoms_dir=None, mask_dir=None):
     import fitsio
     randoms_dir = RANDOMS_DIR if randoms_dir is None else randoms_dir
     mask_dir = RANDOM_MASK_DIR if mask_dir is None else mask_dir
-    toret = fitsio.read(os.path.join(randoms_dir, 'randoms-1-{:d}.fits'.format(rann)),
-                        columns=['TARGETID', 'MASKBITS', 'PHOTSYS', 'NOBS_G', 'NOBS_R', 'NOBS_Z'])
+    toret = as_table(fitsio.read(os.path.join(randoms_dir, 'randoms-1-{:d}.fits'.format(rann)),
+                                   columns=['TARGETID', 'MASKBITS', 'PHOTSYS', 'NOBS_G', 'NOBS_R',
+                                            'NOBS_Z']))
     if tracer is not None and tracer[:3] == 'LRG':
         mask = fitsio.read(os.path.join(mask_dir, 'randoms-1-{:d}lrgimask.fits'.format(rann)))
         toret = join_left(toret, mask, 'TARGETID', columns=['lrg_mask'])
@@ -314,14 +317,10 @@ def join_on_assigned_location(potential, assignments, columns):
     """
     from .utils import last_of_each, match
 
-    won = np.empty(len(assignments), dtype=[('TILELOCID', 'i8'),
-                                            ('TARGETID', assignments['TARGETID'].dtype)]
-                   + [(name, assignments[name].dtype, assignments[name].shape[1:])
-                      for name in columns])
-    won['TILELOCID'] = 10000 * assignments['TILEID'].astype('i8') + assignments['LOCATION']
-    won['TARGETID'] = assignments['TARGETID']
-    for name in columns:
-        won[name] = assignments[name]
+    potential, assignments = as_table(potential), as_table(assignments)
+    won = Table({name: assignments[name] for name in ['TARGETID'] + list(columns)}, copy=False)
+    set_column(won, 'TILELOCID', 10000 * assignments['TILEID'].astype('i8')
+               + assignments['LOCATION'], dtype='i8')
     # One row per location, in case the assignment table repeats one.
     won = won[last_of_each(won['TILELOCID'])]
 
@@ -331,15 +330,15 @@ def join_on_assigned_location(potential, assignments, columns):
     # The location was this target's only if the target it holds is this one.
     taken = found & (won['TARGETID'][at] == potential['TARGETID'])
 
-    toret = append_fields(potential, [(name, won[name].dtype, won[name].shape[1:])
-                                      for name in columns])
+    toret = potential.copy(copy_data=False)
     for name in columns:
-        column = won[name][at]
+        column = won[name].value[at]
         if not taken.all():
             fill = np.nan if column.dtype.kind == 'f' \
                 else NULL if column.dtype.kind in 'iu' else column.dtype.type()
-            column = np.where(taken.reshape((-1,) + (1,) * (column.ndim - 1)), column, fill)
-        toret[name] = column
+            column = np.where(taken.reshape((-1,) + (1,) * (column.ndim - 1)), column,
+                              fill).astype(won[name].dtype, copy=False)
+        set_column(toret, name, column)
     logger.info('{:d} of {:d} potential assignments were taken'.format(int(taken.sum()), len(toret)))
     return toret
 
@@ -375,11 +374,16 @@ def combine_data(potential, assignments, targets=None, columns=('RSDZ', 'TRUEZ',
         :func:`read_good_tilelocid`. Locations outside it are dropped, since no mock target
         could have been observed there either. Nothing is dropped when not given.
     """
+    # Kept before the filter below rebinds it: these name what happened at the fiber, and the
+    # potential assignments carry the target's own copy of every one of them.
+    truth = tuple(columns)
+    potential, assignments = as_table(potential), as_table(assignments)
     size = len(potential)
     if collisions is True:
-        if 'COLLISION' in potential.dtype.names:
+        if 'COLLISION' in potential.colnames:
             potential = potential[potential['COLLISION'] == 0]
     elif collisions is not False and collisions is not None:
+        collisions = as_table(collisions)
         keys = ['TARGETID', 'LOCATION', 'TILEID']
         code = encode_keys(*[np.concatenate([potential[key], collisions[key]]) for key in keys])
         potential = potential[~np.isin(code[:size], code[size:])]
@@ -387,27 +391,42 @@ def combine_data(potential, assignments, targets=None, columns=('RSDZ', 'TRUEZ',
         logger.info('{:d} potential assignments left after removing collisions'
                     .format(len(potential)))
 
-    columns = [column for column in columns if column not in assignments.dtype.names]
+    columns = [column for column in columns if column not in assignments.colnames]
     if columns:
         if targets is None:
-            raise ValueError('truth columns {} need the target catalog'.format(columns))
+            missing = [column for column in columns if column not in potential.colnames]
+            if missing:
+                raise ValueError('truth columns {} need the target catalog'.format(missing))
+            # The potential assignments repeat each target's truth unchanged on every row it
+            # appears in, so one row per target is a target catalog. This is what the
+            # docstring means by taking them from ``potential``; it has to happen here,
+            # against the assignment table, and not by leaving the copies in place below.
+            index = np.unique(potential['TARGETID'], return_index=True)[1]
+            targets = potential[index]
         assignments = join_left(assignments, targets, 'TARGETID', columns=columns)
 
-    toret = append_fields(potential, [('TILELOCID', 'i8')])
-    toret['TILELOCID'] = 10000 * toret['TILEID'] + toret['LOCATION']
+    # The potential assignments repeat the target's truth on every fiber that could have
+    # reached it, under the same names the assignment table uses. Left in place they survive
+    # the join below, which only adds names the table does not already have, and then every
+    # potential assignment carries a redshift and a ZWARN as though its fiber had been given
+    # to it -- so ZWARN != NULL everywhere, every target looks assigned, FRACZ_TILELOCID comes
+    # out 1 and the completeness weight with it. Drop them, and let the join put them back
+    # from the assignment side, NULL where the fiber went to another target.
+    toret = potential.copy(copy_data=False)
+    toret.remove_columns([name for name in truth if name in toret.colnames])
+    set_column(toret, 'TILELOCID', 10000 * toret['TILEID'] + toret['LOCATION'], dtype='i8')
     if good_tilelocid is not None:
         keep = np.isin(toret['TILELOCID'], good_tilelocid)
         logger.info('{:d} of {:d} potential assignments are at a usable location'
                     .format(int(keep.sum()), len(keep)))
         toret = toret[keep]
-    add = [name for name in assignments.dtype.names
-           if name not in ('TARGETID', 'LOCATION', 'TILEID') and name not in toret.dtype.names]
+    add = [name for name in assignments.colnames
+           if name not in ('TARGETID', 'LOCATION', 'TILEID') and name not in toret.colnames]
     toret = join_on_assigned_location(toret, assignments, add)
     # The merged target list saw the same warning bits as the truth, since a mock has no
     # spectroscopic failures of its own; later stages read one or the other.
-    if 'ZWARN' in toret.dtype.names and 'ZWARN_MTL' not in toret.dtype.names:
-        toret = append_fields(toret, [('ZWARN_MTL', toret['ZWARN'].dtype)])
-        toret['ZWARN_MTL'] = toret['ZWARN']
+    if 'ZWARN' in toret.colnames and 'ZWARN_MTL' not in toret.colnames:
+        set_column(toret, 'ZWARN_MTL', toret['ZWARN'].value.copy())
     logger.info('{:d} potential assignments, {:d} of them observed'
                 .format(len(toret), int(np.sum(toret['ZWARN'] != NULL))))
     return toret
@@ -431,20 +450,19 @@ def combine_randoms(randoms, assignments, columns=('PRIORITY',)):
     columns : tuple
         Columns to take from the assignment, replacing any the randoms already carry.
     """
-    won = np.empty(len(assignments), dtype=[('TILELOCID', 'i8')]
-                   + [(name, assignments[name].dtype) for name in columns])
-    won['TILELOCID'] = 10000 * assignments['TILEID'].astype('i8') + assignments['LOCATION']
-    for name in columns:
-        won[name] = assignments[name]
     from .utils import last_of_each
+    assignments = as_table(assignments)
+    won = Table({name: assignments[name] for name in columns}, copy=False)
+    set_column(won, 'TILELOCID', 10000 * assignments['TILEID'].astype('i8')
+               + assignments['LOCATION'], dtype='i8')
     won = won[last_of_each(won['TILELOCID'])]
 
-    toret = randoms
-    if 'TILELOCID' not in toret.dtype.names:
-        toret = append_fields(toret, [('TILELOCID', 'i8')])
-    toret['TILELOCID'] = 10000 * toret['TILEID'].astype('i8') + toret['LOCATION']
+    # A copy, however shallow: columns are about to be set on it, and those are the caller's.
+    toret = as_table(randoms).copy(copy_data=False)
+    set_column(toret, 'TILELOCID', 10000 * toret['TILEID'].astype('i8') + toret['LOCATION'],
+               dtype='i8')
     # A location the mock never reached keeps no priority, so nothing can be assigned there.
-    toret = drop_fields(toret, [name for name in columns if name in toret.dtype.names])
+    toret.remove_columns([name for name in columns if name in toret.colnames])
     toret = join_left(toret, won, 'TILELOCID', columns=list(columns))
     logger.info('{:d} randoms re-priced from the mock assignment'.format(len(toret)))
     return toret
@@ -468,15 +486,12 @@ def count_tiles(array, tilelocids=False):
     tilelocids : bool, default=True
         Whether to also code the fiber locations, as ``TILELOCIDS``.
     """
+    array = as_table(array)
     targetid, ntile, tiles = _group_code(array['TARGETID'], array['TILEID'])
-    dtype = [('TARGETID', array['TARGETID'].dtype), ('NTILE', 'i8'), ('TILES', tiles.dtype)]
+    toret = Table({'TARGETID': targetid.astype(array['TARGETID'].dtype, copy=False),
+                   'NTILE': ntile.astype('i8', copy=False), 'TILES': tiles}, copy=False)
     if tilelocids:
-        _, _, tilelocids_ = _group_code(array['TARGETID'], array['TILELOCID'])
-        dtype += [('TILELOCIDS', tilelocids_.dtype)]
-    toret = np.empty(len(targetid), dtype=dtype)
-    toret['TARGETID'], toret['NTILE'], toret['TILES'] = targetid, ntile, tiles
-    if tilelocids:
-        toret['TILELOCIDS'] = tilelocids_
+        set_column(toret, 'TILELOCIDS', _group_code(array['TARGETID'], array['TILELOCID'])[2])
     logger.info('counted tiles for {:d} targets, up to {:d} tiles each'
                 .format(len(toret), int(ntile.max()) if len(ntile) else 0))
     return toret
