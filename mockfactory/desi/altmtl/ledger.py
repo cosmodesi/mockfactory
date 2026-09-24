@@ -8,7 +8,7 @@ from the mock target catalog, then copied into each realization with a fresh dra
 compete for it, which is exactly the source of randomness the bitweights average over.
 """
 
-import os
+from pathlib import Path
 import shutil
 import logging
 
@@ -37,8 +37,8 @@ def get_ledger_dir(base_dir, survey='main', obscon='dark'):
 def get_healpixels(ledger_dir, obscon='dark'):
     """Return the sorted healpixels for which a ledger exists in ``ledger_dir``."""
     import glob
-    fns = glob.glob(os.path.join(ledger_dir, 'mtl-{}-hp-*.ecsv'.format(obscon.lower())))
-    return np.sort([int(os.path.basename(fn).split('hp-')[-1].split('.ecsv')[0]) for fn in fns])
+    fns = sorted(Path(ledger_dir).glob('mtl-{}-hp-*.ecsv'.format(obscon.lower())))
+    return np.sort([int(Path(fn).name.split('hp-')[-1].split('.ecsv')[0]) for fn in fns])
 
 
 def make_initial_ledgers(targets_fn, output_dir, survey='main', obscon='dark', numproc=1, overwrite=False):
@@ -77,7 +77,7 @@ def make_initial_ledgers(targets_fn, output_dir, survey='main', obscon='dark', n
     from desitarget import mtl
 
     ledger_dir = get_ledger_dir(output_dir, survey=survey, obscon=obscon)
-    if os.path.isdir(ledger_dir) and len(get_healpixels(ledger_dir, obscon=obscon)):
+    if Path(ledger_dir).is_dir() and len(get_healpixels(ledger_dir, obscon=obscon)):
         if not overwrite:
             healpixels = get_healpixels(ledger_dir, obscon=obscon)
             logger.info('Initial ledgers already in {}, keeping {:d} healpixels.'.format(ledger_dir, healpixels.size))
@@ -94,7 +94,7 @@ def make_initial_ledgers(targets_fn, output_dir, survey='main', obscon='dark', n
         raise ValueError('no ledger written to {}; is {} a valid target catalog?'.format(ledger_dir, targets_fn))
     logger.info('Wrote {:d} healpix ledgers to {}.'.format(healpixels.size, ledger_dir))
 
-    fn = os.path.join(output_dir, 'hpxlist_{}.txt'.format(obscon.lower()))
+    fn = Path(output_dir) / 'hpxlist_{}.txt'.format(obscon.lower())
     with open(fn, 'w') as file:
         file.write(','.join(map(str, healpixels)))
     logger.info('Wrote healpix list {}.'.format(fn))
@@ -176,7 +176,8 @@ def initialize_realization(initial_dir, altmtl_dir, realization=0, survey='main'
 
     if seed is None: seed = 314159
     if tiles_specstatus_fn is None: tiles_specstatus_fn = utils.TILES_SPECSTATUS_FN
-    if 'trunk' in altmtl_dir.lower() or 'ops' in altmtl_dir.lower():
+    # str(), since altmtl_dir may be a Path: this guard must never fail open.
+    if 'trunk' in str(altmtl_dir).lower() or 'ops' in str(altmtl_dir).lower():
         raise ValueError('refusing to write alternative ledgers to {}: the path looks like the real '
                          'surveyops ledgers'.format(altmtl_dir))
 
@@ -191,15 +192,15 @@ def initialize_realization(initial_dir, altmtl_dir, realization=0, survey='main'
             raise ValueError('no initial ledger found in {}'.format(initial_ledger_dir))
 
         ledger_dir = get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon)
-        if os.path.isdir(ledger_dir) and len(get_healpixels(ledger_dir, obscon=obscon)) and not overwrite:
+        if Path(ledger_dir).is_dir() and len(get_healpixels(ledger_dir, obscon=obscon)) and not overwrite:
             logger.info('Ledgers already in {}, not rebuilding.'.format(ledger_dir))
         else:
             utils.mkdir(ledger_dir)
             nrows = 0
             for healpix in healpixels:
                 basename = 'mtl-{}-hp-{:d}.ecsv'.format(obscon.lower(), healpix)
-                fn = os.path.join(ledger_dir, basename)
-                shutil.copyfile(os.path.join(initial_ledger_dir, basename), fn)
+                fn = Path(ledger_dir) / basename
+                shutil.copyfile(Path(initial_ledger_dir) / basename, fn)
                 if shuffle_subpriority:
                     nrows += _shuffle_subpriority(fn, seed + int(healpix) + realization)
             logger.info('Realization {:d}: copied {:d} ledgers to {}{}.'.format(
@@ -208,8 +209,8 @@ def initialize_realization(initial_dir, altmtl_dir, realization=0, survey='main'
 
     # The loop does not read this copy, but downstream tools expect to find the observing
     # history next to the ledgers it produced.
-    ztile_fn = os.path.join(altmtl_dir, os.path.basename(tiles_specstatus_fn))
-    if not os.path.isfile(ztile_fn) or overwrite:
+    ztile_fn = Path(altmtl_dir) / Path(tiles_specstatus_fn).name
+    if not Path(ztile_fn).is_file() or overwrite:
         specstatus = Table.read(tiles_specstatus_fn)
         lastnight = specstatus['LASTNIGHT'].astype(int)
         mask = np.ones(len(specstatus), dtype='?')

@@ -21,6 +21,7 @@ another set; ``--forfa`` and ``--zfix`` are formats taking the mock number.
 import argparse
 import logging
 import os
+from pathlib import Path
 
 logger = logging.getLogger('run_altmtl')
 
@@ -68,9 +69,9 @@ def main(args=None):
     for imock in imocks:
         kwargs = {}
         if args.zfix:
-            kwargs['zfix'] = os.path.join(args.forfa_dir, args.zfix.format(imock))
-        mocks.append((os.path.join(args.forfa_dir, args.forfa.format(imock)),
-                      os.path.join(args.altmtl_dir, 'altmtl{:d}'.format(imock), 'Univ000'),
+            kwargs['zfix'] = Path(args.forfa_dir) / args.zfix.format(imock)
+        mocks.append((Path(args.forfa_dir) / args.forfa.format(imock),
+                      Path(args.altmtl_dir) / 'altmtl{:d}'.format(imock) / 'Univ000',
                       0, kwargs))
     logger.info('Replaying mock(s) {} to {:d}, {:d} at a time, {:d} worker(s) each.'
                 .format(args.imocks, args.end_date, args.nummocks, args.numproc))

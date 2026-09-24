@@ -1,6 +1,7 @@
 """Paths and small helpers shared by the alternative MTL modules."""
 
 import os
+from pathlib import Path
 import logging
 
 
@@ -13,17 +14,17 @@ DESI_ROOT = os.environ.get('DESI_ROOT_READONLY', '/dvs_ro/cfs/cdirs/desi')
 
 # Per-tile fiberassign products of the real survey: rundate, field rotation, hour angle and
 # the real fiber -> target assignment that the alternative assignment is matched against.
-FIBERASSIGN_DIR = os.path.join(DESI_ROOT, 'target', 'fiberassign', 'tiles', 'trunk')
+FIBERASSIGN_DIR = Path(DESI_ROOT) / 'target' / 'fiberassign' / 'tiles' / 'trunk'
 # Per-tile support files of the real survey: footprint, sky, secondary, gfa and too.
-FIBERASSIGN_INPUT_DIR = os.path.join(DESI_ROOT, 'survey', 'fiberassign')
+FIBERASSIGN_INPUT_DIR = Path(DESI_ROOT) / 'survey' / 'fiberassign'
 # Survey operations: which tiles were observed, when they were fiber-assigned and when the
 # real ledgers were updated. Together these define the action list.
-SURVEYOPS_DIR = os.path.join(DESI_ROOT, 'survey', 'ops', 'surveyops', 'trunk')
-TILES_SPECSTATUS_FN = os.path.join(SURVEYOPS_DIR, 'ops', 'tiles-specstatus.ecsv')
-MTL_DONE_TILES_FN = os.path.join(SURVEYOPS_DIR, 'mtl', 'mtl-done-tiles.ecsv')
-MTL_DONE_VETOES_FN = os.path.join(SURVEYOPS_DIR, 'mtl', 'mtl-done-vetoes.ecsv')
+SURVEYOPS_DIR = Path(DESI_ROOT) / 'survey' / 'ops' / 'surveyops' / 'trunk'
+TILES_SPECSTATUS_FN = Path(SURVEYOPS_DIR) / 'ops' / 'tiles-specstatus.ecsv'
+MTL_DONE_TILES_FN = Path(SURVEYOPS_DIR) / 'mtl' / 'mtl-done-tiles.ecsv'
+MTL_DONE_VETOES_FN = Path(SURVEYOPS_DIR) / 'mtl' / 'mtl-done-vetoes.ecsv'
 # Redshift catalogs the real observations are taken from.
-ZCAT_DIR = os.path.join(DESI_ROOT, 'spectro', 'redux', 'daily')
+ZCAT_DIR = Path(DESI_ROOT) / 'spectro' / 'redux' / 'daily'
 
 
 def mkdir(dirname):
@@ -45,7 +46,7 @@ def get_tmp_dir(tmp_dir=None):
     # /dev/shm only, or nothing: it is memory, whereas the other usual candidates are either a
     # parallel file system, which is what this avoids, or /tmp, which is node-local disk.
     for candidate in [os.environ.get('ALTMTL_TMPDIR'), '/dev/shm']:
-        if candidate and os.path.isdir(candidate) and os.access(candidate, os.W_OK):
+        if candidate and Path(candidate).is_dir() and os.access(candidate, os.W_OK):
             return candidate
     return None
 
@@ -60,7 +61,7 @@ def get_fiberassign_fn(tileid, fiberassign_dir=None):
     if fiberassign_dir is None:
         fiberassign_dir = FIBERASSIGN_DIR
     ts = tile_string(tileid)
-    return os.path.join(fiberassign_dir, ts[:3], 'fiberassign-{}.fits.gz'.format(ts))
+    return Path(fiberassign_dir) / ts[:3] / 'fiberassign-{}.fits.gz'.format(ts)
 
 
 def get_fiberassign_input_dir(tileid, survey='main', fiberassign_input_dir=None):
@@ -72,12 +73,12 @@ def get_fiberassign_input_dir(tileid, survey='main', fiberassign_input_dir=None)
     if fiberassign_input_dir is None:
         fiberassign_input_dir = FIBERASSIGN_INPUT_DIR
     ts = tile_string(tileid)
-    return os.path.join(fiberassign_input_dir, survey.lower(), ts[:3])
+    return Path(fiberassign_input_dir) / survey.lower() / ts[:3]
 
 
 def get_universe_dir(altmtl_dir, realization=0):
     """Return the directory holding one alternative realization of the ledgers."""
-    return os.path.join(altmtl_dir, 'Univ{:03d}'.format(realization))
+    return Path(altmtl_dir) / 'Univ{:03d}'.format(realization)
 
 
 def iso_to_night(isodate):

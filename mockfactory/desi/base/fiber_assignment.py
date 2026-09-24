@@ -10,6 +10,7 @@ For an example, see desi/apply_fiber_assignment_example.py script.
 """
 
 import os
+from pathlib import Path
 import logging
 
 import fitsio
@@ -356,7 +357,7 @@ def _apply_mtl_one_tile(targets, tg_assign, tg_available, tileid):
     zmtl_fn = [f'/dvs_ro/cfs/cdirs/desi/spectro/redux/daily/tiles/cumulative/{tileid}/{lastnight}/zmtl-{petal}-{tileid}-thru{lastnight}.fits' for petal in range(10)]
     zwarn = []
     for i in range(10):
-        if os.path.isfile(zmtl_fn[i]):
+        if Path(zmtl_fn[i]).is_file():
             zwarn.append(Catalog.read(zmtl_fn[i], filetype='fits', mpicomm=MPI.COMM_SELF)['ZWARN']) # read files only on this local process.
         else:
             zwarn.append(zwarn_mask.mask("BAD_PETALQA")*np.ones(500, dtype='int'))

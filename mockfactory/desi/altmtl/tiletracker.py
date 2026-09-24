@@ -21,7 +21,7 @@ are still listed, so that an action list which needs them fails loudly rather th
 diverging from the real survey.
 """
 
-import os
+from pathlib import Path
 import logging
 from datetime import datetime, timedelta
 
@@ -60,7 +60,7 @@ def _read_mtl_times(tileids, fiberassign_dir=None, numproc=1):
 
 def get_tile_tracker_fn(altmtl_dir, survey='main', obscon='dark'):
     """Return the path of the tile tracker of one alternative realization."""
-    return os.path.join(altmtl_dir, '{}survey-{}obscon-TileTracker.ecsv'.format(survey, obscon.upper()))
+    return Path(altmtl_dir) / '{}survey-{}obscon-TileTracker.ecsv'.format(survey, obscon.upper())
 
 
 def read_tile_tracker(altmtl_dir, survey='main', obscon='dark'):
@@ -190,7 +190,7 @@ def make_tile_tracker(altmtl_dir, survey='main', obscon='dark', start_date=None,
         raise ValueError('end_date is required: it is what ties the mock to a data release')
 
     fn = get_tile_tracker_fn(altmtl_dir, survey=survey, obscon=obscon)
-    if os.path.isfile(fn) and not overwrite:
+    if Path(fn).is_file() and not overwrite:
         # Building the action list reads one header per observed tile, so it is worth skipping.
         logger.info('Tile tracker {} already exists, not rebuilding.'.format(fn))
         return fn
@@ -277,7 +277,7 @@ def make_tile_tracker(altmtl_dir, survey='main', obscon='dark', start_date=None,
 
     if ledgers_yaml_dir is not None:
         import yaml
-        with open(os.path.join(ledgers_yaml_dir, '{}-ledgers.yaml'.format(obscon.upper()))) as file:
+        with open(Path(ledgers_yaml_dir) / '{}-ledgers.yaml'.format(obscon.upper())) as file:
             # The first entry is the initial set of ledgers; later ones are dated additions.
             for date in list(yaml.safe_load(file).keys())[1:]:
                 if start_str < date <= end_str:
@@ -288,8 +288,10 @@ def make_tile_tracker(altmtl_dir, survey='main', obscon='dark', start_date=None,
                     archivedate.append(int(str(date).replace('-', '')))
 
     if meta is None: meta = {}
+    # str(), not the Path: the tracker is an ecsv, whose header goes through yaml, and yaml
+    # has no representer for a PosixPath.
     meta = dict({'Name': 'AltMTLTileTracker', 'StartDate': start_night, 'EndDate': end_night,
-                 'amtldir': altmtl_dir}, **meta)
+                 'amtldir': str(altmtl_dir)}, **meta)
     tile_tracker = Table([tileid, actiontype, actiontime, doneflag, archivedate],
                          names=('TILEID', 'ACTIONTYPE', 'ACTIONTIME', 'DONEFLAG', 'ARCHIVEDATE'),
                          dtype=('<i8', '<U6', '<U25', 'bool', '<i8'), meta=meta)

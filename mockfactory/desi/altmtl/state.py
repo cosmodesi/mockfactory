@@ -15,7 +15,7 @@ The full history is kept, not just the latest state of each target, because repr
 replays every observation of a target from its unobserved state.
 """
 
-import os
+from pathlib import Path
 import logging
 
 import numpy as np
@@ -325,8 +325,8 @@ class LedgerState(object):
 
         nwritten = 0
         for healpix in healpixels:
-            fn = os.path.join(ledger_dir, 'mtl-{}-hp-{:d}.ecsv'.format(obscon.lower(), int(healpix)))
-            if os.path.isfile(fn) and not overwrite:
+            fn = Path(ledger_dir) / 'mtl-{}-hp-{:d}.ecsv'.format(obscon.lower(), int(healpix))
+            if Path(fn).is_file() and not overwrite:
                 continue
             block = rows[pixel == healpix]
             # An append-only ledger is ordered by the time each row was written.

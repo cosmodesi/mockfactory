@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 import tempfile
 
 import numpy as np
@@ -115,7 +115,9 @@ def test_misc():
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_dir = '_tests'
-        fn = os.path.join(tmp_dir, 'tmp.bigfile')
+        # str, not Path: bigfile takes the name straight to its C layer and rejects anything
+        # that is not one, where fitsio, h5py and astropy all accept a Path.
+        fn = str(Path(tmp_dir) / 'tmp.bigfile')
         catalog.write(fn)
         catalog = BoxCatalog.read(fn, boxsize=1.)
         assert np.allclose(catalog.boxsize, 1.)

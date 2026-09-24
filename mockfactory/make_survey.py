@@ -873,8 +873,11 @@ class BoxCatalog(ParticleCatalog):
         shifts = [np.arange(-np.ceil(factor) + 1, np.ceil(factor)) for factor in factors]
         data = {column: [] for column in new}
         pad_columns = [column for column in new if column in self._vectors and column not in self._translational_invariants]
-        for shift in itertools.product(shifts):
-            tmp = {column: self.get(column, return_type='ndarray') + self.boxsize * shift for column in pad_columns}
+        # product(*shifts), not product(shifts): the latter iterates the list of per-axis
+        # shifts itself, giving three copies shifted by one axis' offsets on all three axes
+        # rather than the 27 the factor asks for.
+        for shift in itertools.product(*shifts):
+            tmp = {column: self.get(column, return_type='nparray') + self.boxsize * shift for column in pad_columns}
             mask = (tmp[position] >= new.boxcenter - new.boxsize / 2.) & (tmp[position] <= new.boxcenter + new.boxsize / 2.)
             mask = np.all(mask, axis=-1)
             for column in new:

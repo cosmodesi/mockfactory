@@ -10,7 +10,7 @@ The realizations must share their targets and differ only in their subpriorities
 what :func:`mockfactory.desi.altmtl.ledger.initialize_realization` arranges.
 """
 
-import os
+from pathlib import Path
 import logging
 
 import numpy as np
@@ -108,8 +108,8 @@ def _get_tilelocid(altmtl_dir, ledger, survey='main'):
     tilelocid = np.full(len(ledger), -1, dtype='i8')
     ztileid = ledger['ZTILEID']
     for tileid in np.unique(ztileid[ztileid != -1]):
-        fns = glob.glob(os.path.join(get_fa_dir(altmtl_dir, '*', survey=survey),
-                                     'fba-{}.fits'.format(utils.tile_string(tileid))))
+        fns = sorted(Path(get_fa_dir(altmtl_dir, '*', survey=survey)).parent.glob(
+            '*/fba-{}.fits'.format(utils.tile_string(tileid))))
         if not fns:
             raise ValueError('no alternative assignment found for tile {:d} under {}'.format(
                 tileid, altmtl_dir))
@@ -210,13 +210,13 @@ def write_bitweights(base_dir, realizations, healpixels, output_dir, survey='mai
     from astropy.table import Table
 
     if np.ndim(healpixels) == 0: healpixels = [healpixels]
-    output_dir = os.path.join(output_dir, survey.lower(), obscon.lower())
+    output_dir = Path(output_dir) / survey.lower() / obscon.lower()
     utils.mkdir(output_dir)
 
     fns = []
     for healpix in healpixels:
-        fn = os.path.join(output_dir, '{}bw-{}-hp-{:d}.fits'.format(survey.lower(), obscon.lower(), healpix))
-        if os.path.isfile(fn) and not overwrite:
+        fn = Path(output_dir) / '{}bw-{}-hp-{:d}.fits'.format(survey.lower(), obscon.lower(), healpix)
+        if Path(fn).is_file() and not overwrite:
             logger.info('{} already exists, not recomputing it.'.format(fn))
             fns.append(fn)
             continue

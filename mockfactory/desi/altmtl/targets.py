@@ -10,7 +10,7 @@ mask through :func:`desitarget.targets.initial_priority_numobs`, so a mock stays
 with whatever the survey currently declares.
 """
 
-import os
+from pathlib import Path
 import logging
 
 import numpy as np
@@ -82,7 +82,7 @@ def get_priority_numobs(desi_target, bgs_target=0, mws_target=0, obscon='DARK'):
     return int(priority[0]), int(numobs[0])
 
 
-def make_targets(catalogs, obscon='dark', seed=None, z=None, mpicomm=None):
+def make_targets(catalogs, obscon='dark', seed=None, z=None, columns=(), mpicomm=None):
     """
     Turn mockfactory catalogs into one target catalog the ledgers can be built from.
 
@@ -91,6 +91,11 @@ def make_targets(catalogs, obscon='dark', seed=None, z=None, mpicomm=None):
     catalogs : dict
         Catalogs to merge, as ``{tracer: catalog}``. Each catalog must carry 'RA' and 'DEC',
         and a redshift column. A tracer key may name several cuts, as ``'ELG|ELG_LOP'``.
+
+    columns : tuple, default=()
+        Extra columns to carry over from the input catalogs, beyond the survey's own. The
+        imaging quantities the clustering vetoes read -- 'MASKBITS', 'NOBS_G', 'NOBS_R',
+        'NOBS_Z' -- have to come through here, since nothing downstream can recover them.
 
     obscon : str, default='dark'
         Observing conditions, 'dark' or 'bright'. It selects which priorities apply.
@@ -143,20 +148,27 @@ def make_targets(catalogs, obscon='dark', seed=None, z=None, mpicomm=None):
                                    ('NUMOBS_INIT', numobs_init, 'i8'), ('NUMOBS_MORE', numobs_init, 'i8'),
                                    ('OBSCONDITIONS', obscondition, 'i8'), ('ZWARN', 0, 'i8')]:
             target[name] = np.full(size, value, dtype=dtype)
+        for name in columns:
+            target[name] = catalog[name]
         # Identifiers have to be unique over the whole catalog, so each tracer is offset by the
         # total size of those before it.
         target['TARGETID'] = offset + target.cindex()
-        offset += target.csize
+        # csize is an allreduce on every access, not a cached number, so every rank takes it
+        # and only rank 0 logs it; asking for it inside the branch hangs rank 0 against ranks
+        # that have moved on. Same reason as in write_targets below.
+        csize = target.csize
+        offset += csize
         merged.append(target)
         if mpicomm.rank == 0:
             logger.info('Tracer {}: {:d} targets, desi_target {:d}, priority {:d}, numobs {:d}.'.format(
-                tracer, target.csize, desi_target, priority_init, numobs_init))
+                tracer, csize, desi_target, priority_init, numobs_init))
 
     targets = mpy.Catalog.concatenate(merged) if len(merged) > 1 else merged[0]
     rng = mpy.random.MPIRandomState(size=targets.size, seed=seed, mpicomm=mpicomm)
     targets['SUBPRIORITY'] = rng.uniform()
+    csize = targets.csize
     if mpicomm.rank == 0:
-        logger.info('Merged {:d} targets over {:d} tracer(s).'.format(targets.csize, len(catalogs)))
+        logger.info('Merged {:d} targets over {:d} tracer(s).'.format(csize, len(catalogs)))
     return targets
 
 
@@ -168,7 +180,7 @@ def read_targets(targets_fn, columns=None):
     writing is fixed to one.
     """
     from ..tables import as_table
-    if os.path.splitext(targets_fn)[-1] not in ('.h5', '.hdf5'):
+    if Path(targets_fn).suffix not in ('.h5', '.hdf5'):
         import fitsio
         return as_table(fitsio.read(targets_fn, columns=columns))
     import h5py
@@ -222,7 +234,7 @@ def write_targets(targets, output_fn, obscon='dark', mpicomm=None):
     if missing:
         raise ValueError('target catalog is missing {}'.format(missing))
     if mpicomm.rank == 0:
-        utils.mkdir(os.path.dirname(output_fn))
+        utils.mkdir(Path(output_fn).parent)
     mpicomm.Barrier()
     # HDF5, not FITS: mpytools writes it with every rank putting its own slice into the file,
     # where the FITS writer gathers the whole catalog onto one rank and writes it serially --

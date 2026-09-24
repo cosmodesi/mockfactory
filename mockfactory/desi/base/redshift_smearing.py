@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 import logging
 
 import numpy as np
@@ -21,7 +21,7 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None, uncertainty_type='statistic
 
     if fn is None:
         # The tables live beside the desi package, one level up from here.
-        dirname = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
+        dirname = Path(__file__).resolve().parent.parent / 'data'
         if tracer == 'QSO':
             if uncertainty_type == 'statistical':
                 fn = ['{}_redshift_smearing_{}.ecsv'.format(tracer, sv) for sv in ['sv1', 'sv3']]
@@ -31,7 +31,7 @@ def TracerRedshiftSmearingRVS(tracer='QSO', fn=None, uncertainty_type='statistic
             if uncertainty_type == 'clustering':
                 raise ValueError(f'The {tracer} redshift uncertainty estimated from clustering effect is consistent with that from statistical method (repeat observation). For more information, you can refer to arxiv:2306.06313')
             fn = ['{}_redshift_smearing_sv1.ecsv'.format(tracer)]
-        fn = [os.path.join(dirname, ff) for ff in fn]
+        fn = [Path(dirname) / ff for ff in fn]
 
     if not utils.is_sequence(fn): fn = [fn]
 

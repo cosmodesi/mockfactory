@@ -14,6 +14,7 @@ first random catalog is what the survey pipeline does too.
 
 import logging
 import os
+from pathlib import Path
 
 import numpy as np
 
@@ -48,8 +49,7 @@ def read_hpmaps(hpmap_dir, tracer, nside=256):
     """Return the northern and southern observing condition maps used for ``tracer``."""
     import fitsio
     name = 'ELG_LOPnotqso' if 'ELG' in tracer else ('BGS_BRIGHT' if 'BGS' in tracer else tracer)
-    return tuple(fitsio.read(os.path.join(
-        hpmap_dir, '{}_mapprops_healpix_nested_nside{:d}_{}.fits'.format(name, nside, region)))
+    return tuple(fitsio.read(Path(hpmap_dir) / '{}_mapprops_healpix_nested_nside{:d}_{}.fits'.format(name, nside, region))
         for region in ('N', 'S'))
 
 
@@ -119,10 +119,8 @@ def _finish_random(i, array):
     writes = []
     if context['output_dir'] is not None:
         name = context['name']
-        writes.append((os.path.join(context['output_dir'],
-                                    '{}_{:d}_clustering.ran.h5'.format(name, i)), array))
-        writes += [(os.path.join(context['output_dir'],
-                                 '{}_{}_{:d}_clustering.ran.h5'.format(name, cap, i)),
+        writes.append((Path(context['output_dir']) / '{}_{:d}_clustering.ran.h5'.format(name, i), array))
+        writes += [(Path(context['output_dir']) / '{}_{}_{:d}_clustering.ran.h5'.format(name, cap, i),
                     split[cap]) for cap in split]
     return array, split, writes
 
@@ -289,7 +287,7 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
         out_data[cap] = add_nz_weights(sub_data, nz[3], zmin, dz, p0, weight_ntile,
                                        completeness_ntile, completeness=completeness)
         if output_dir is not None:
-            write_nz(os.path.join(output_dir, '{}_{}_nz.txt'.format(name, cap)), nz,
+            write_nz(Path(output_dir) / '{}_{}_nz.txt'.format(name, cap), nz,
                      area=len(sub_random) / 2500., effective_area=area)
     _context.update(caps=caps, keep=keep)
 
@@ -325,9 +323,9 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                             for i in indices]
 
     if output_dir is not None:
-        writes.append((os.path.join(output_dir, '{}_clustering.dat.h5'.format(name)),
+        writes.append((Path(output_dir) / '{}_clustering.dat.h5'.format(name),
                        out_data['ALL']))
-        writes += [(os.path.join(output_dir, '{}_{}_clustering.dat.h5'.format(name, cap)),
+        writes += [(Path(output_dir) / '{}_{}_clustering.dat.h5'.format(name, cap),
                     out_data[cap]) for cap in caps]
         write_catalogs(writes, numproc=numproc)
     if not keep:

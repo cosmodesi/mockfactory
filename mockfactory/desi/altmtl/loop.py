@@ -494,7 +494,8 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
     nactions : int
         Number of actions carried out.
     """
-    if 'trunk' in altmtl_dir.lower() or 'ops' in altmtl_dir.lower():
+    # str(), since altmtl_dir may be a Path: this guard must never fail open.
+    if 'trunk' in str(altmtl_dir).lower() or 'ops' in str(altmtl_dir).lower():
         raise ValueError('refusing to update ledgers in {}: the path looks like the real '
                          'surveyops ledgers'.format(altmtl_dir))
 

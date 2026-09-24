@@ -43,6 +43,7 @@ finished, which is what makes a long pass restartable.
 import argparse
 import logging
 import os
+from pathlib import Path
 import time
 
 import numpy as np
@@ -51,10 +52,9 @@ logger = logging.getLogger('convert_bricks')
 
 DR9 = '/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9'
 #: Source brick file, by region, brick name and quantity.
-BRICK_FN = os.path.join(DR9, '{region}', 'coadd', '{prefix}', '{brickname}',
-                        'legacysurvey-{brickname}-{quantity}.fits.fz')
+BRICK_FN = DR9 + '/{region}/coadd/{prefix}/{brickname}/legacysurvey-{brickname}-{quantity}.fits.fz'
 #: List of the bricks that carry data, per region.
-BRICKS_FN = os.path.join(DR9, '{region}', 'survey-bricks-dr9-{region}.fits.gz')
+BRICKS_FN = DR9 + '/{region}/survey-bricks-dr9-{region}.fits.gz'
 QUANTITIES = ('maskbits', 'nexp-g', 'nexp-r', 'nexp-z')
 #: Cards a reader needs to turn sky coordinates into pixels.
 WCS_KEYS = ('NAXIS1', 'NAXIS2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2',
@@ -85,7 +85,7 @@ def convert_prefix(region, prefix, bricknames, output_fn, quantities, chunk, cle
 
     compression = hdf5plugin.Zstd(clevel=clevel)
     nwritten, nmissing = 0, 0
-    tmp_fn = output_fn + '.tmp'
+    tmp_fn = output_fn.parent / (output_fn.name + '.tmp')
     with h5py.File(tmp_fn, 'w') as h5:
         h5.attrs.update(PROJECTION)
         for brickname in bricknames:
@@ -93,7 +93,7 @@ def convert_prefix(region, prefix, bricknames, output_fn, quantities, chunk, cle
             for quantity in quantities:
                 fn = BRICK_FN.format(region=region, prefix=prefix, brickname=brickname,
                                      quantity=quantity)
-                if not os.path.isfile(fn):
+                if not Path(fn).is_file():
                     # An absent band is absent coverage, and must stay distinguishable from zero
                     nmissing += 1
                     continue
@@ -121,7 +121,7 @@ def read_brick_quantity(output_dir, region, brickname, quantity):
     import h5py
     import hdf5plugin  # noqa: F401  registers the codec
 
-    fn = os.path.join(output_dir, region, brickname[:3] + '.h5')
+    fn = Path(output_dir) / region / (brickname[:3] + '.h5')
     with h5py.File(fn, 'r') as h5:
         group = h5[brickname]
         wcs = dict(h5.attrs)
@@ -159,20 +159,20 @@ def main():
         if mpicomm.rank == 0:
             logger.info('{}: {:d} bricks over {:d} shards.'
                         .format(region, sum(len(groups[p]) for p in prefixes), len(prefixes)))
-            os.makedirs(os.path.join(args.output_dir, region), exist_ok=True)
+            os.makedirs(Path(args.output_dir) / region, exist_ok=True)
         mpicomm.Barrier()
 
         start = time.time()
         for index in range(mpicomm.rank, len(prefixes), mpicomm.size):
             prefix = prefixes[index]
-            output_fn = os.path.join(args.output_dir, region, prefix + '.h5')
-            if os.path.isfile(output_fn) and not args.overwrite:
+            output_fn = Path(args.output_dir) / region / (prefix + '.h5')
+            if Path(output_fn).is_file() and not args.overwrite:
                 continue
             nwritten, nmissing = convert_prefix(region, prefix, groups[prefix], output_fn,
                                                 args.quantities, args.chunk, args.clevel)
             logger.info('{} {}: {:d} bricks, {:d} maps, {:d} absent, {:.1f} MB, {:.0f} s elapsed.'
                         .format(region, prefix, len(groups[prefix]), nwritten, nmissing,
-                                os.path.getsize(output_fn) / 1e6, time.time() - start))
+                                Path(output_fn).stat().st_size / 1e6, time.time() - start))
         mpicomm.Barrier()
         if mpicomm.rank == 0:
             logger.info('{} done in {:.0f} s.'.format(region, time.time() - start))

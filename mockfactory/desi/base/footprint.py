@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import logging
 
 import numpy as np
@@ -23,7 +24,7 @@ except KeyError:
         os.environ['DESI_SURVEYOPS'] = '/global/cfs/cdirs/desi/survey/ops/surveyops/trunk'
 
 def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', survey='main',
-                         tiles_fn=os.path.join(redux_path, '{redux}/tiles-{redux}.csv'),
+                         tiles_fn=redux_path + '/{redux}/tiles-{redux}.csv',
                          return_tile_index=False):
     """
     Return mask for the requested DESI footprint.

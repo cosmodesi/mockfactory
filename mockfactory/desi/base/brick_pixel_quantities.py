@@ -11,7 +11,7 @@ from mockfactory.desi.base import get_brick_pixel_quantities
 For an example, see desi/from_box_to_desi_cutsky script.
 """
 
-import os
+from pathlib import Path
 import logging
 
 import fitsio
@@ -80,14 +80,14 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD, cache_d
         import hdf5plugin  # noqa: F401  registers the codec
         from astropy.io import fits
 
-        quantity = os.path.basename(fn).split(brickname + '-')[-1].split('.fits')[0]
+        quantity = Path(fn).name.split(brickname + '-')[-1].split('.fits')[0]
         prefix = brickname[:3]
         if (region, prefix) not in handles:
             # Bricks come sorted, so consecutive ones share a shard; hold just the current one
             for handle in handles.values(): handle.close()
             handles.clear()
-            shard_fn = os.path.join(cache_dir, region, prefix + '.h5')
-            if not os.path.isfile(shard_fn):
+            shard_fn = Path(cache_dir) / region / (prefix + '.h5')
+            if not Path(shard_fn).is_file():
                 return np.full(ra.size, default, dtype=dtype)
             handles[region, prefix] = h5py.File(shard_fn, 'r')
         h5 = handles[region, prefix]
@@ -103,7 +103,7 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD, cache_d
 
     def _one_brick(fn, ra, dec, dtype=None, default=None):
         """Extract quantity associated to a (RA, Dec) position from a legacy imaging brick."""
-        if os.path.isfile(fn):
+        if Path(fn).is_file():
             # Read data and header
             img, header = fitsio.read(fn, header=True)
 

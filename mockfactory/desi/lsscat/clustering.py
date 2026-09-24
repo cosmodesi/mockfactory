@@ -14,6 +14,8 @@ target lists, which is what :mod:`mockfactory.desi.altmtl` produces bitweights f
 unbiased where the first is not.
 """
 
+from pathlib import Path
+
 import logging
 
 import numpy as np
@@ -116,8 +118,8 @@ def get_bgs_absmag_cut(coeff_dir=None, zsplit=0.3, offset=0.078):
     """
     import os
     coeff_dir = BGS_ABSMAG_CUT_DIR if coeff_dir is None else coeff_dir
-    low = np.poly1d(np.loadtxt(os.path.join(coeff_dir, 'BGS_ANY_zmagcut_a.dat')))
-    high = float(np.loadtxt(os.path.join(coeff_dir, 'BGS_ANY_zmagcut_b.dat')))
+    low = np.poly1d(np.loadtxt(Path(coeff_dir) / 'BGS_ANY_zmagcut_a.dat'))
+    high = float(np.loadtxt(Path(coeff_dir) / 'BGS_ANY_zmagcut_b.dat'))
 
     def absmag_max(z):
         z = np.asarray(z, dtype='f8')

@@ -12,7 +12,7 @@ returned, and :mod:`mockfactory.desi.lsscat.pipeline` hands them straight to the
 """
 
 import logging
-import os
+from pathlib import Path
 
 import numpy as np
 
@@ -72,9 +72,8 @@ def _find_assignments(altmtl_dir, survey='main'):
     import glob
     import re
     toret = {}
-    pattern = os.path.join(altmtl_dir, 'fa', survey.upper(), '*', 'fba-*.fits')
-    for fn in glob.glob(pattern):
-        match = re.search(r'fba-(\d+)\.fits$', os.path.basename(fn))
+    for fn in (Path(altmtl_dir) / 'fa' / survey.upper()).glob('*/fba-*.fits'):
+        match = re.search(r'fba-(\d+)\.fits$', Path(fn).name)
         if match:
             toret[int(match.group(1))] = fn
     logger.info('found {:d} assignments under {}'.format(len(toret), altmtl_dir))
@@ -85,7 +84,7 @@ def _read_assignment_one_tile(fn):
     """Return the assignment of one tile, with its priorities joined on."""
     import fitsio
     import re
-    tileid = int(re.search(r'fba-(\d+)\.fits$', os.path.basename(fn)).group(1))
+    tileid = int(re.search(r'fba-(\d+)\.fits$', Path(fn).name).group(1))
     with fitsio.FITS(fn) as fits:
         assigned = fits['FASSIGN'].read(columns=['TARGETID', 'LOCATION'])
         targets = fits['FTARGETS'].read(columns=['TARGETID', 'PRIORITY', 'SUBPRIORITY'])
@@ -285,11 +284,11 @@ def read_random_imaging(rann, tracer=None, randoms_dir=None, mask_dir=None):
     import fitsio
     randoms_dir = RANDOMS_DIR if randoms_dir is None else randoms_dir
     mask_dir = RANDOM_MASK_DIR if mask_dir is None else mask_dir
-    toret = as_table(fitsio.read(os.path.join(randoms_dir, 'randoms-1-{:d}.fits'.format(rann)),
+    toret = as_table(fitsio.read(Path(randoms_dir) / 'randoms-1-{:d}.fits'.format(rann),
                                    columns=['TARGETID', 'MASKBITS', 'PHOTSYS', 'NOBS_G', 'NOBS_R',
                                             'NOBS_Z']))
     if tracer is not None and tracer[:3] == 'LRG':
-        mask = fitsio.read(os.path.join(mask_dir, 'randoms-1-{:d}lrgimask.fits'.format(rann)))
+        mask = fitsio.read(Path(mask_dir) / 'randoms-1-{:d}lrgimask.fits'.format(rann))
         toret = join_left(toret, mask, 'TARGETID', columns=['lrg_mask'])
     logger.info('read imaging for random {:d}: {:d} rows'.format(rann, len(toret)))
     return toret

@@ -13,6 +13,7 @@ redshifts be folded into the alternative ledgers.
 """
 
 import os
+from pathlib import Path
 import contextlib
 import hashlib
 import logging
@@ -103,7 +104,7 @@ class FiberMap(object):
 
     def write(self, fn):
         """Save to ``fn``, as a structured array."""
-        utils.mkdir(os.path.dirname(fn))
+        utils.mkdir(Path(fn).parent)
         array = np.empty(len(self), dtype=[('REAL_TARGETID', 'i8'), ('ALT_TARGETID', 'i8')])
         array['REAL_TARGETID'], array['ALT_TARGETID'] = self.real_targetid, self.alt_targetid
         np.save(fn, array)
@@ -118,17 +119,17 @@ class FiberMap(object):
 
 def get_fiber_map_fn(fa_dir, tileid):
     """Return the path of the fiber map of ``tileid``."""
-    return os.path.join(fa_dir, 'famap-{}.npy'.format(utils.tile_string(tileid)))
+    return Path(fa_dir) / 'famap-{}.npy'.format(utils.tile_string(tileid))
 
 
 def get_alt_fiberassign_fn(fa_dir, tileid):
     """Return the path of the alternative fiberassign file of ``tileid``."""
-    return os.path.join(fa_dir, 'fba-{}.fits'.format(utils.tile_string(tileid)))
+    return Path(fa_dir) / 'fba-{}.fits'.format(utils.tile_string(tileid))
 
 
 def get_fa_dir(altmtl_dir, fadate, survey='main'):
     """Return the directory holding the alternative assignment of a given assignment date."""
-    return os.path.join(altmtl_dir, 'fa', survey.upper(), fadate)
+    return Path(altmtl_dir) / 'fa' / survey.upper() / fadate
 
 
 def _read_assignment(fn, extnames):
@@ -333,7 +334,7 @@ def write_alt_targets(tileid, ledger_dir, output_fn, footprint_fn, isodate=None,
     from astropy.table import Table
 
     targets = read_alt_targets(tileid, ledger_dir, footprint_fn, isodate=isodate, state=state)
-    utils.mkdir(os.path.dirname(output_fn))
+    utils.mkdir(Path(output_fn).parent)
     Table(targets).write(output_fn, format='fits', overwrite=True)
     return len(targets)
 
@@ -394,13 +395,14 @@ def run_fiber_assignment(tileid, targets_fn, output_dir, header, footprint_fn, s
     from fiberassign.scripts.assign import parse_assign, run_assign_full
 
     fn = get_alt_fiberassign_fn(output_dir, tileid)
-    if os.path.isfile(fn) and not overwrite:
+    if Path(fn).is_file() and not overwrite:
         logger.info('Assignment {} already exists, not redoing it.'.format(fn))
         return fn
     # Fiberassign leaves a temporary file behind when a run is interrupted, and then refuses
     # to start again.
-    if os.path.exists(fn + '.tmp'):
-        os.remove(fn + '.tmp')
+    tmp_fn = fn.parent / (fn.name + '.tmp')
+    if tmp_fn.exists():
+        tmp_fn.unlink()
 
     version = float(str(header['FA_VER'])[:3])
     if version < MIN_FIBERASSIGN_VERSION:
@@ -439,13 +441,15 @@ def run_fiber_assignment(tileid, targets_fn, output_dir, header, footprint_fn, s
     if overwrite: optlist.append('--overwrite')
 
     logger.debug('Running fiberassign for tile {:d} at rundate {}.'.format(tileid, rundate))
+    # argparse indexes every entry as a string, so a Path has to be spelt out.
+    optlist = [str(option) for option in optlist]
     args = parse_assign(optlist=optlist)
     if targets is None:
         run_assign_full(args)
     else:
         with targets_in_memory(targets, targets_fn, survey=survey):
             run_assign_full(args)
-    if not os.path.isfile(fn):
+    if not Path(fn).is_file():
         raise ValueError('fiberassign did not write {}'.format(fn))
     return fn
 
@@ -509,22 +513,22 @@ def do_fiber_assignment(altmtl_dir, tileid, survey='main', obscon='dark', overwr
     fa_dir = get_fa_dir(altmtl_dir, fadate, survey=survey)
 
     fiber_map_fn = get_fiber_map_fn(fa_dir, tileid)
-    if os.path.isfile(fiber_map_fn) and not overwrite:
+    if Path(fiber_map_fn).is_file() and not overwrite:
         logger.info('Fiber map {} already exists, reusing it.'.format(fiber_map_fn))
         return FiberMap.read(fiber_map_fn)
 
     input_dir = utils.get_fiberassign_input_dir(tileid, survey=survey,
                                                 fiberassign_input_dir=fiberassign_input_dir)
-    footprint_fn = os.path.join(input_dir, '{}-tiles.fits'.format(ts))
-    sky_fn = os.path.join(input_dir, '{}-sky.fits'.format(ts))
+    footprint_fn = Path(input_dir) / '{}-tiles.fits'.format(ts)
+    sky_fn = Path(input_dir) / '{}-sky.fits'.format(ts)
     for name, fn in [('footprint', footprint_fn), ('sky', sky_fn)]:
-        if not os.path.isfile(fn):
+        if not Path(fn).is_file():
             raise ValueError('{} file {} of tile {:d} not found'.format(name, fn, tileid))
     # Secondary targets and targets of opportunity exist only for some tiles.
-    scnd_fn = os.path.join(input_dir, '{}-scnd.fits'.format(ts))
-    if not os.path.isfile(scnd_fn): scnd_fn = None
-    too_fn = os.path.join(input_dir, '{}-too.fits'.format(ts))
-    if not os.path.isfile(too_fn): too_fn = None
+    scnd_fn = Path(input_dir) / '{}-scnd.fits'.format(ts)
+    if not Path(scnd_fn).is_file(): scnd_fn = None
+    too_fn = Path(input_dir) / '{}-too.fits'.format(ts)
+    if not Path(too_fn).is_file(): too_fn = None
 
     # The target file is handed to fiberassign and never read again, so it goes to memory
     # rather than to the file system the assignments are written to.
@@ -535,10 +539,10 @@ def do_fiber_assignment(altmtl_dir, tileid, survey='main', obscon='dark', overwr
         # A directory of its own per realization. The file is named after the tile, and the
         # memory it goes to is shared by everything on the node, so two mocks replayed at once
         # reach the same tile and one overwrites or half-reads the other's targets.
-        token = hashlib.md5(os.path.abspath(altmtl_dir).encode()).hexdigest()[:10]
-        targets_dir = os.path.join(targets_dir, 'altmtl-{}'.format(token))
+        token = hashlib.md5(str(Path(altmtl_dir).resolve()).encode()).hexdigest()[:10]
+        targets_dir = Path(targets_dir) / 'altmtl-{}'.format(token)
         utils.mkdir(targets_dir)
-    targets_fn = os.path.join(targets_dir, '{}-targ.fits'.format(ts))
+    targets_fn = Path(targets_dir) / '{}-targ.fits'.format(ts)
     ledger_dir = None if state is not None else get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon)
     in_memory = load_targets == 'memory'
     try:
@@ -554,7 +558,7 @@ def do_fiber_assignment(altmtl_dir, tileid, survey='main', obscon='dark', overwr
                              scnd_fn=scnd_fn, too_fn=too_fn, overwrite=overwrite,
                              fiberassign_dir=fiberassign_dir, targets=array, survey=survey)
     finally:
-        if not in_memory and targets_dir is not fa_dir and os.path.isfile(targets_fn):
+        if not in_memory and targets_dir is not fa_dir and Path(targets_fn).is_file():
             os.remove(targets_fn)
 
     fiber_map = make_fiber_map(real_assignment, read_alt_assignment(fa_dir, tileid))

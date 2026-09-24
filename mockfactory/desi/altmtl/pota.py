@@ -10,6 +10,7 @@ neighbouring positioner, is not really available.
 """
 
 import os
+from pathlib import Path
 import bisect
 import logging
 import time
@@ -202,8 +203,8 @@ def compute_potential_assignments_one_tile(tile, targets, columns, hardware_cach
 
     tile_targets = _add_assignment_columns(get_targets_in_tile(targets, tile, tree=tree))
 
-    footprint_fn = os.path.join(tile_temp_dir, '{:d}-tiles.fits'.format(tileid))
-    if not os.path.isfile(footprint_fn):
+    footprint_fn = Path(tile_temp_dir) / '{:d}-tiles.fits'.format(tileid)
+    if not Path(footprint_fn).is_file():
         footprint = Table(tile)
         footprint['OBSCONDITIONS'] = 516
         footprint['IN_DESI'] = 1
@@ -215,12 +216,13 @@ def compute_potential_assignments_one_tile(tile, targets, columns, hardware_cach
         # another one is halfway through writing, and load_tiles rejects it as corrupt.
         # The format is named rather than inferred: the temporary name does not end in .fits,
         # and astropy infers from the extension.
-        tmp_footprint_fn = '{}.{:d}.tmp'.format(footprint_fn, os.getpid())
+        tmp_footprint_fn = Path('{}.{:d}.tmp'.format(footprint_fn, os.getpid()))
         footprint.write(tmp_footprint_fn, format='fits', overwrite=True)
         os.replace(tmp_footprint_fn, footprint_fn)
 
     hardware = hardware_cache.get(header['RUNDATE'])
-    tiles = load_tiles(tiles_file=footprint_fn, obsha=header['FA_HA'], obstheta=header['FIELDROT'],
+    # str(): desimodel.io.load_tiles formats the name, so it cannot take a Path.
+    tiles = load_tiles(tiles_file=str(footprint_fn), obsha=header['FA_HA'], obstheta=header['FIELDROT'],
                        select=[tileid])
 
     tgs = Targets()
@@ -314,7 +316,7 @@ def compute_potential_assignments(targets_fn, output_fn, tiles_fn, program='DARK
     import fitsio
     from astropy.table import Table
 
-    if output_dir is None: output_dir = os.path.join(os.path.dirname(output_fn), 'tartiles')
+    if output_dir is None: output_dir = Path(Path(output_fn).parent) / 'tartiles'
     if tile_temp_dir is None: tile_temp_dir = output_dir
 
     targets = read_targets(targets_fn)
@@ -335,8 +337,8 @@ def compute_potential_assignments(targets_fn, output_fn, tiles_fn, program='DARK
         hardware_cache.get(rundate)
     logger.info('Loaded {:d} distinct focal plane state(s).'.format(len(hardware_cache.ranges)))
 
-    utils.mkdir(os.path.dirname(output_fn))
-    tmp_fn = output_fn + '.tmp'
+    utils.mkdir(Path(output_fn).parent)
+    tmp_fn = output_fn.parent / (output_fn.name + '.tmp')
     fits = fitsio.FITS(tmp_fn, 'rw', clobber=True)
     ntotal = ncollision = 0
 
