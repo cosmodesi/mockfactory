@@ -133,22 +133,34 @@ shell out to the midpoint between it and its neighbours.
          --brick-cache-dir $SCRATCH/brick_cache
     srun -n 1  python run_mock.py --stages altmtl,pota,lsscat --imocks 0 --output-dir $SCRATCH/mock
 
-Measured on one bright mock, one node:
+Measured on one mock of each program, one node, `--brick-cache-dir` throughout:
 
-| stage | ranks | wall clock | what comes out |
+| stage | ranks | `BGS_BRIGHT` | `LRG` |
 | --- | --- | --- | --- |
-| `cutsky` | 64 | 33 s | 2 225 733 galaxies in the DA2 bright footprint, from 12 478 936 in the box |
-| `targets` | 64 | 6 min | 2 099 956 targets, after the mask bits and coverage in all three bands |
-| `altmtl` | 1, `numproc=32` | 32 min | 10 442 actions over 5171 tiles |
-| `pota` | 1, `numproc=32` | 2.5 min | 0.78 GB of potential assignments |
-| `lsscat` | 1, `numproc=4` | 8 min | 1 832 983 galaxies and four randoms of about 31.8 million |
+| `cutsky` | 64 | 33 s | 66 s, three shells |
+| `targets` | 64 | 6 min | 7 min |
+| `altmtl` | 1, `numproc=32` | 32 min | 44 min |
+| `pota` | 1, `numproc=32` | 2.5 min | 3 min |
+| `lsscat` | 1, `numproc=4` | 8 min | 13 min |
+| **total** | | **49 min** | **69 min** |
 
-The `targets` figure is with `--brick-cache-dir`; without it the stage takes 34 minutes, since
-the imaging comes from four compressed files a brick rather than one shard a prefix.
+and what comes out:
+
+| | `BGS_BRIGHT` | `LRG` |
+| --- | --- | --- |
+| in the footprint | 2 225 733 of 12 478 936 in the box | 9 788 003 of 30 545 393 over three shells |
+| targets, after the imaging veto | 2 099 956 | 9 609 349 |
+| actions, tiles | 10 442 over 5171 | 13 610 over 6671 |
+| clustering data | 1 832 983 | 7 727 300 |
+| each of four randoms | about 31.8 million | about 30.3 million |
+
+Dark costs about 40% more than bright, from 4.6x the targets and 1.3x the tiles. The `targets`
+figures are with the brick cache; without it the bright stage takes 34 minutes, since the
+imaging comes from four compressed files a brick rather than one shard a prefix.
 
 The catalogs carry `TRUEZ` beside `Z`, the same galaxy without the redshift space displacement,
 which is the truth a closure test compares against: the two differ by an rms of 0.0015 in
-redshift, about 470 km/s.
+redshift for the bright galaxies, about 470 km/s, and 0.0020 for the luminous red ones.
 
 The randoms follow the survey rather than the mock, as `LSS` does for its own mocks: which tile
 and fiber a random falls on is decided by the randoms and the tiles, so the survey's
