@@ -128,7 +128,8 @@ def _finish_random(i, array):
 def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                random_imaging=None, random_tiles=None, good_tilelocid=None, hpmaps=None, survey='DA2',
                completeness='fracz', nbits=128, missing_frac_tlobs=1., seed=0, zrange=None,
-               subsample=None, data_selection=None, name=None, output_dir=None, numproc=1,
+               subsample=None, data_selection=None, columns=(), name=None, output_dir=None,
+               numproc=1,
                numproc_randoms=None,
                keep=True, bits=None):
     """
@@ -180,6 +181,9 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
         Redshift range. Defaults to the tracer's own.
     subsample : float, list, default=None
         Density matching fraction. Defaults to the survey's value for the tracer.
+    columns : tuple, default=()
+        Extra columns to carry into the clustering catalogs, beyond the ones a measurement
+        needs. A mock's own truth, such as ``TRUEZ``, comes through here.
     data_selection : callable, default=None
         Any further cut on the sample, handed the vetoed full catalog and returning a boolean
         array. The bright galaxy variants are an absolute magnitude cut,
@@ -253,7 +257,7 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
     clustering = make_clustering_data(full, tracer, zmin=zmin, zmax=zmax,
                                       completeness=completeness, nbits=nbits,
                                       subsample=subsample, zsplit=zsplit, seed=seed,
-                                      data_selection=data_selection)
+                                      columns=columns, data_selection=data_selection)
 
     _context.clear()
     _context.update(randoms=randoms, random_imaging=random_imaging, random_tiles=random_tiles,

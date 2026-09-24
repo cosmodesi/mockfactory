@@ -96,8 +96,13 @@ divided by 25, so the four stages compare directly.
 `altmtl` and `pota` each cover 129 275 tiles, `lsscat` uses four randoms. Two of the figures
 were measured on a smaller run and scaled: `pota` at 8 min for 3 mocks on one stream, `lsscat`
 at 27 min 51 for five on one node. One-off and shared by every run afterwards, converting the
-DR9 bricks with `scripts/convert_bricks_to_h5.py` costs 24 min on 2 nodes for 347 206 bricks
-and 138 GB.
+DR9 bricks with `scripts/convert_bricks_to_h5.py` costs 57 min on one node for 347 206 bricks
+and about 260 GB, in 641 shards -- 13 min for the 93 548 north bricks and 44 for the 253 658
+south. It groups the four quantities a veto reads into one file per three character prefix,
+against four compressed files a brick where the legacy survey keeps them, and that is worth
+**10.7x** on a read: the same 29 984 positions take 534.9 s from the bricks and 49.8 s from the
+cache, bit for bit identical on `MASKBITS` and `NOBS_G`, `NOBS_R`, `NOBS_Z`. Point a run at it
+with `--brick-cache-dir`.
 
 Inside `lsscat`, over one mock of the five:
 
@@ -115,6 +120,40 @@ a step handling several mocks pays it once where separate steps each pay it in f
 
 To scale from: `altmtl` runs at about 22 tiles a second on two nodes, `pota` at about 32 a
 second a stream.
+
+## One mock, end to end
+
+`scripts/run_mock.py` runs the whole chain, one stage at a time, each writing what the next
+reads. `--tracer` picks the program: `BGS_BRIGHT` is bright, `LRG`, `ELG_LOP` and `QSO` are
+dark, and the light cone is stitched from as many snapshots as the tracer has, each covering the
+shell out to the midpoint between it and its neighbours.
+
+    salloc -N 1 -C cpu -q interactive -t 04:00:00 -A desi
+    srun -n 64 python run_mock.py --stages cutsky,targets --imocks 0 --output-dir $SCRATCH/mock \
+         --brick-cache-dir $SCRATCH/brick_cache
+    srun -n 1  python run_mock.py --stages altmtl,pota,lsscat --imocks 0 --output-dir $SCRATCH/mock
+
+Measured on one bright mock, one node:
+
+| stage | ranks | wall clock | what comes out |
+| --- | --- | --- | --- |
+| `cutsky` | 64 | 33 s | 2 225 733 galaxies in the DA2 bright footprint, from 12 478 936 in the box |
+| `targets` | 64 | 6 min | 2 099 956 targets, after the mask bits and coverage in all three bands |
+| `altmtl` | 1, `numproc=32` | 32 min | 10 442 actions over 5171 tiles |
+| `pota` | 1, `numproc=32` | 2.5 min | 0.78 GB of potential assignments |
+| `lsscat` | 1, `numproc=4` | 8 min | 1 832 983 galaxies and four randoms of about 31.8 million |
+
+The `targets` figure is with `--brick-cache-dir`; without it the stage takes 34 minutes, since
+the imaging comes from four compressed files a brick rather than one shard a prefix.
+
+The catalogs carry `TRUEZ` beside `Z`, the same galaxy without the redshift space displacement,
+which is the truth a closure test compares against: the two differ by an rms of 0.0015 in
+redshift, about 470 km/s.
+
+The randoms follow the survey rather than the mock, as `LSS` does for its own mocks: which tile
+and fiber a random falls on is decided by the randoms and the tiles, so the survey's
+`rancomb` files serve every mock and only `PRIORITY` comes from the replay. The imaging randoms
+enter through `read_random_imaging`, which supplies the `MASKBITS` and `NOBS` the veto reads.
 
 ## What `altmtl` costs, for the dark program
 

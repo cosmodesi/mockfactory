@@ -182,7 +182,8 @@ def run_cutsky(args, mpicomm):
             box = box.pad(factor=factor)
 
             position = box['Position']
-            los = position / utils.distance(position)[:, None]
+            truedistance = utils.distance(position)
+            los = position / truedistance[:, None]
             # Radial RSD, and the redshift error the spectrograph would have made, also radial.
             position = position + (np.sum(box['Velocity'] * los, axis=-1)
                                    + box['VSmear'])[:, None] * los
@@ -190,8 +191,11 @@ def run_cutsky(args, mpicomm):
             del box, position, los
 
             select = (distance >= drange[0]) & (distance <= drange[1])
-            z = d2z(distance[select])
-            piece = {'RA': ra[select], 'DEC': dec[select], 'Z': z}
+            # Both redshifts: Z is what a survey measures, TRUEZ is the same galaxy without the
+            # displacement, which is the truth a closure test needs. The displacement is radial,
+            # so the two share RA and DEC.
+            piece = {'RA': ra[select], 'DEC': dec[select], 'Z': d2z(distance[select]),
+                     'TRUEZ': d2z(truedistance[select])}
 
             # The n(z) is measured per galactic cap, so the draw is too.
             isngc = get_galactic_cap(piece['RA'], piece['DEC'])
@@ -240,8 +244,11 @@ def run_targets(args, mpicomm):
         for band in 'GRZ':
             columns['NOBS_' + band] = {'fn': NEXP_FN.format(band=band.lower()), 'dtype': 'i2',
                                        'default': 0}
+        # With a cache the four quantities share one shard per brick prefix, against four
+        # compressed files a brick from the legacy survey: 2070 s becomes minutes. Build it once
+        # with scripts/convert_bricks_to_h5.py; without it the bricks are read where they live.
         quantities = get_brick_pixel_quantities(catalog['RA'], catalog['DEC'], columns,
-                                                mpicomm=mpicomm)
+                                                cache_dir=args.brick_cache_dir, mpicomm=mpicomm)
         for name, value in quantities.items():
             catalog[name] = value
         # The same cut the production target files were made with: the mask bits, and coverage
@@ -258,7 +265,7 @@ def run_targets(args, mpicomm):
 
         targets = make_targets({args.tracer: catalog}, obscon=args.obscon,
                                seed=args.seed + imock, z='Z', mpicomm=mpicomm,
-                               columns=('MASKBITS', 'NOBS_G', 'NOBS_R', 'NOBS_Z'))
+                               columns=('TRUEZ', 'MASKBITS', 'NOBS_G', 'NOBS_R', 'NOBS_Z'))
         fn = targets_fn(args.output_dir, imock)
         write_targets(targets, fn, obscon=args.obscon, mpicomm=mpicomm)
         logger.info('mock {:d}: targets -> {}'.format(imock, fn))
@@ -338,12 +345,8 @@ def run_lsscat(args):
         # Callables, not arrays: run_tracer builds each in its own frame and lets it go, where
         # holding them here would keep them alive for every forked worker.
         def _data(imock=imock, assignments=assignments, targets=targets):
-            # RSDZ and ZWARN, not the default which also asks for TRUEZ: make_targets writes
-            # one redshift column, so these catalogs carry no RSD-free truth. Production's
-            # forFA files do, from a cutsky that keeps both.
             return combine_data(fitsio.read(pota_fn(args.output_dir, imock)), assignments,
-                                targets=targets, columns=('RSDZ', 'ZWARN'),
-                                good_tilelocid=good_tilelocid)
+                                targets=targets, good_tilelocid=good_tilelocid)
 
         def _random(i, assignments=assignments):
             # combine_randoms replaces the survey's PRIORITY with the one this mock implies.
@@ -354,7 +357,7 @@ def run_lsscat(args):
         run_tracer(_data, randoms, assignments, args.tracer, targets=targets,
                    random_imaging=imaging, random_tiles=random_tiles,
                    good_tilelocid=good_tilelocid, hpmaps=None,
-                   bits=list(args.bits), name=args.name or args.tracer,
+                   bits=list(args.bits), columns=('TRUEZ',), name=args.name or args.tracer,
                    numproc=args.numproc, numproc_randoms=args.numproc_randoms,
                    output_dir=Path(args.output_dir) / 'mock{:d}'.format(imock), keep=False)
         logger.info('mock {:d}: clustering catalogs written.'.format(imock))
@@ -377,6 +380,10 @@ def main(args=None):
                         help="imaging bits to veto; defaults to the program's own")
     parser.add_argument('--tiles-fn', default=None,
                         help="tiles the mock is cut and assigned to; defaults to the program's")
+    parser.add_argument('--brick-cache-dir', default=None,
+                        help='converted DR9 bricks, from scripts/convert_bricks_to_h5.py; '
+                             'without it the legacy survey files are read directly, which costs '
+                             'four compressed reads a brick instead of one shard a prefix')
     parser.add_argument('--nrandom', type=int, default=4,
                         help='random catalogs the clustering catalogs are paired with')
     parser.add_argument('--seed', type=int, default=42)
