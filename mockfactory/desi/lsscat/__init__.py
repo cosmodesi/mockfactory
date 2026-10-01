@@ -42,3 +42,5 @@ from .clustering import (make_clustering_data, make_clustering_randoms, select_g
                          get_bgs_absmag_cut)
 from .nz import compute_nz, write_nz, add_nz_weights, get_fkp_p0
 from .pipeline import run_tracer, read_hpmaps, write_catalog, write_catalogs
+from .imaging import (compute_imaging_weights, LinearRegression, get_template_maps, get_template_values,
+                      read_ebv_diff, select_photometric_region, FIT_MAPS)

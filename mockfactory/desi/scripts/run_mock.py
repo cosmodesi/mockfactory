@@ -1,7 +1,7 @@
 """
 One mock from a cubic box to clustering catalogs, every stage in one place.
 
-    cubic box -> cutsky -> targets -> altmtl -> pota -> lsscat
+    cubic box -> cutsky -> targets -> altmtl -> pota -> lsscat -> imsys
 
 The stages are separate because they fail separately and because the middle ones cost hours, so
 a run is normally restarted somewhere in the middle. Each writes its output and the next reads
@@ -9,10 +9,11 @@ it, so ``--stages`` picks up wherever the last one stopped.
 
     salloc -N 1 -C cpu -q interactive -t 04:00:00 -A desi
     srun -n 64 python run_mock.py --stages cutsky,targets --imocks 0 --output-dir $SCRATCH/mock
-    srun -n 1  python run_mock.py --stages altmtl,pota,lsscat --imocks 0 --output-dir $SCRATCH/mock
+    srun -n 1  python run_mock.py --stages altmtl,pota,lsscat,imsys --imocks 0 --output-dir $SCRATCH/mock
 
 The first two run over MPI, since their cost is reading bricks and positions; `altmtl` and
-`lsscat` run in one process with forked pools and will refuse more than one rank.
+`lsscat` run in one process with forked pools and will refuse more than one rank, as do `pota`
+and `imsys`, the imaging weights fitted on the clustering catalogs and written back into them.
 
 `--tracer` is the only thing a run needs to change between programs: it picks the boxes, the
 snapshots, the redshift range, the measured n(z), the tile file, the observing conditions and
@@ -45,17 +46,28 @@ TILES_FN = DESI_DIR + '/survey/catalogs/DA2/LSS/tiles-{program}.fits'
 #: ``snapshots`` the redshift of each, which the light cone is stitched from: a snapshot covers
 #: the shell out to the midpoint between it and its neighbours, cut to ``zrange``. Bright has
 #: one snapshot and so one shell; the dark tracers have three or more. ``nz`` is the tracer the
-#: measured n(z) is read for, which is not always the one being built.
+#: measured n(z) is read for, which is not always the one being built. ``imsys_zranges`` are the
+#: redshift bins the imaging weights are fitted in, each on its own, and ``imsys_regions`` the
+#: photometric regions: the survey pipeline's for its mocks (``mkCat_amtl.py``, as its DA2 mock
+#: drivers call it), 'split' bins for the quasars, 'fine' (0.1 wide) for the luminous red
+#: galaxies, the bright galaxies over their clustering range. The emission line galaxies are
+#: not linearly regressed there, their imaging weights coming from SYSNet: the linear fit over
+#: the 'split' bins here is an approximation of those, flagged by ``imsys_approximate``.
 PROGRAMS = {
     'BGS_BRIGHT': dict(box='BGS-21.35', snapshots=(0.300,), zrange=(0.1, 0.4), obscon='bright',
-                       nz='BGS_BRIGHT-21.35'),
+                       nz='BGS_BRIGHT-21.35', imsys_zranges=((0.1, 0.4),), imsys_regions=('S', 'N')),
     'LRG': dict(box='LRG', snapshots=(0.500, 0.725, 0.950), zrange=(0.4, 1.1), obscon='dark',
-                nz='LRG'),
+                nz='LRG', imsys_zranges=((0.4, 0.5), (0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.0), (1.0, 1.1)),
+                imsys_regions=('S', 'N')),
     'ELG_LOP': dict(box='ELG', snapshots=(0.950, 1.175, 1.475), zrange=(0.8, 1.6), obscon='dark',
-                    nz='ELG_LOPnotqso'),
+                    nz='ELG_LOPnotqso', imsys_zranges=((0.8, 1.1), (1.1, 1.6)), imsys_regions=('S', 'N'),
+                    imsys_approximate=True),
     'QSO': dict(box='QSO', snapshots=(0.950, 1.250, 1.400, 1.550, 1.850), zrange=(0.8, 2.1),
-                obscon='dark', nz='QSO'),
+                obscon='dark', nz='QSO', imsys_zranges=((0.8, 1.3), (1.3, 2.1), (2.1, 3.5)),
+                imsys_regions=('DES', 'SnotDES', 'N')),
 }
+#: Observing condition maps the imaging weights are fitted against, the survey's own.
+HPMAP_DIR = DESI_DIR + '/survey/catalogs/DA2/LSS/loa-v1/LSScats/v2/hpmaps'
 #: DR9 brick pixel maskbits, filled in per region and brick by get_brick_pixel_quantities.
 MASKBITS_FN = ('/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/'
                '{brickname}/legacysurvey-{brickname}-maskbits.fits.fz')
@@ -71,7 +83,7 @@ RANCOMB_FN = DESI_DIR + '/survey/catalogs/DA2/LSS/loa-v1/rancomb_{{:d}}{program}
 SPEC_FN = DESI_DIR + '/survey/catalogs/DA2/LSS/loa-v1/datcomb_{program}_spec_zdone.fits'
 #: Only the columns the catalog stage reads: at 89 million rows a full read is 7.2 GB a catalog.
 RANDOM_COLUMNS = ('TARGETID', 'LOCATION', 'FIBER', 'TILEID', 'RA', 'DEC', 'PRIORITY')
-STAGES = ('cutsky', 'targets', 'altmtl', 'pota', 'lsscat')
+STAGES = ('cutsky', 'targets', 'altmtl', 'pota', 'lsscat', 'imsys')
 
 
 def parse_imocks(text):
@@ -363,6 +375,82 @@ def run_lsscat(args):
         logger.info('mock {:d}: clustering catalogs written.'.format(imock))
 
 
+def run_imsys(args):
+    """
+    Imaging weights, fitted on the clustering catalogs and written back into them.
+
+    The survey pipeline does it so for its mocks (`mkCat_amtl.py --doimlin y --replace_syscol`),
+    once the catalogs are split by galactic cap and given their n(z): the fit takes the data and
+    every random catalog of both caps, weighted ``WEIGHT * WEIGHT_FKP / WEIGHT_SYS``, so that it
+    can be re-run on catalogs that already carry imaging weights. The weights then go in as
+    ``WEIGHT_IMLIN`` and replace ``WEIGHT_SYS``, ``WEIGHT`` being rescaled to match, in the data
+    and in the randoms, each random taking the weight of the data its redshift was drawn from
+    (``TARGETID_DATA``). It is the survey pipeline's last step on the catalogs, and as there the
+    n(z) is not recomputed. Every file of the mock is rewritten, the uncut ones too.
+
+    For the emission line galaxies the survey pipeline fits SYSNet, a neural network, rather than
+    a linear regression; the linear weights written here are an approximation of those.
+    """
+    import h5py
+    from astropy.table import Table, vstack
+    from mockfactory.desi.lsscat import compute_imaging_weights, read_hpmaps, write_catalogs, FIT_MAPS
+
+    if args.program.get('imsys_approximate', False):
+        logger.warning('{}: the survey pipeline weights these with SYSNet; the linear weights fitted '
+                       'here are an approximation of those.'.format(args.tracer))
+    maps_north, maps_south = read_hpmaps(args.hpmap_dir, args.tracer)
+    fit_maps = FIT_MAPS[args.tracer[:3]]
+    name, caps = args.name or args.tracer, ('NGC', 'SGC')
+    columns = ['RA', 'DEC', 'Z', 'PHOTSYS', 'WEIGHT', 'WEIGHT_FKP', 'WEIGHT_SYS']
+
+    def read(fn, columns=None):
+        with h5py.File(fn, 'r') as file:
+            group = file['LSS']
+            return Table({column: group[column][...] for column in (columns or list(group))}, copy=False)
+
+    for imock in args.imocks:
+        mock_dir = Path(args.output_dir) / 'mock{:d}'.format(imock)
+
+        def fn(kind, cap=None, i=None):
+            parts = [name] + ([cap] if cap else []) + (['{:d}'.format(i)] if i is not None else [])
+            return mock_dir / '{}_clustering.{}.h5'.format('_'.join(parts), kind)
+
+        start = time.time()
+        data = vstack([read(fn('dat', cap), ['TARGETID'] + columns) for cap in caps])
+        randoms = vstack([read(fn('ran', cap, i), columns) for cap in caps for i in range(args.nrandom)])
+        weights, coefficients = compute_imaging_weights(data, randoms, maps_north, maps_south, fit_maps,
+                                                        args.program['imsys_zranges'],
+                                                        regions=args.program['imsys_regions'])
+        del randoms
+        for key, value in coefficients.items():
+            logger.info('mock {:d}, region {}, {} < z < {}: {}'.format(imock, key[0], *key[1], value))
+        logger.info('mock {:d}: imaging weights fitted in {:.0f} s, between {:.3f} and {:.3f}.'
+                    .format(imock, time.time() - start, weights.min(), weights.max()))
+
+        order = np.argsort(data['TARGETID'])
+        targetid, weights = np.asarray(data['TARGETID'])[order], weights[order]
+        del data
+        files = [(fn('dat', cap), 'TARGETID') for cap in (None,) + caps]
+        files += [(fn('ran', cap, i), 'TARGETID_DATA') for i in range(args.nrandom) for cap in (None,) + caps]
+        # Updated one by one and written at once: writing is most of the cost, and it parallelises
+        # over processes (see write_catalogs); a mock's catalogs at four randoms are about 25 GB.
+        writes = []
+        for path, key in files:
+            catalog = read(path)
+            index = np.clip(np.searchsorted(targetid, catalog[key]), 0, len(targetid) - 1)
+            found = targetid[index] == catalog[key]
+            # A random whose region had no data to draw from has no donor: its weights stay as they were.
+            new = np.array(catalog['WEIGHT_SYS'], dtype='f8')
+            new[found] = weights[index[found]]
+            catalog['WEIGHT'] = catalog['WEIGHT'] / catalog['WEIGHT_SYS'] * new
+            catalog['WEIGHT_SYS'] = new
+            catalog['WEIGHT_IMLIN'] = new
+            writes.append((path, catalog))
+        write_catalogs(writes, numproc=args.numproc)
+        del writes
+        logger.info('mock {:d}: imaging weights written into {:d} catalogs.'.format(imock, len(files)))
+
+
 def main(args=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -386,6 +474,8 @@ def main(args=None):
                              'four compressed reads a brick instead of one shard a prefix')
     parser.add_argument('--nrandom', type=int, default=4,
                         help='random catalogs the clustering catalogs are paired with')
+    parser.add_argument('--hpmap-dir', default=HPMAP_DIR,
+                        help='observing condition maps the imaging weights are fitted against')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--numproc', type=int, default=32)
     parser.add_argument('--numproc-randoms', type=int, default=None)
@@ -424,7 +514,7 @@ def main(args=None):
             if mpicomm.size > 1:
                 raise ValueError('stage {} runs in one process with forked pools; '
                                  'give it one rank'.format(stage))
-            {'altmtl': run_altmtl, 'pota': run_pota, 'lsscat': run_lsscat}[stage](args)
+            {'altmtl': run_altmtl, 'pota': run_pota, 'lsscat': run_lsscat, 'imsys': run_imsys}[stage](args)
         logger.info('--- {} done ---'.format(stage))
 
 
