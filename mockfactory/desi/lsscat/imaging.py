@@ -21,9 +21,10 @@ to 1e-10, the fit 3x faster than the jit-compiled jax version on 1.8M data and 4
 The fit is done separately in each photometric region and redshift bin, with the coefficients of that fit, and the
 weights are then given to every data object of that region and redshift bin, including the ones set aside as outliers.
 
-The survey pipeline runs it on the clustering catalogs with the data and random weights ``WEIGHT * WEIGHT_FKP /
-WEIGHT_SYS``, so that it can be re-run on catalogs that already carry imaging weights; :func:`compute_imaging_weights`
-does the same by default.
+The survey pipeline runs it on the clustering catalogs with the weights ``WEIGHT * WEIGHT_FKP / WEIGHT_SYS``, so that it
+can be re-run on catalogs that already carry imaging weights, the randoms also divided by ``WEIGHT_ZFAIL`` (which they
+take from their data donor; ``LSS.imaging.systematics_linear_regression.produce_imweights``):
+:func:`compute_imaging_weights` does the same by default.
 """
 
 import logging
@@ -194,9 +195,13 @@ class LinearRegression(object):
         self._data_normalized = self.normalize(data_values)
         self._data_weights = data_weights
         data_binned = self._binned_data(1.)
+        # a bin with no randoms has no density contrast: it is given the error of an empty bin and a random count of one, so
+        # that it weighs nothing instead of making the chi2 0 / 0
+        empty = (data_binned == 0) | (self._randoms_binned == 0)
+        self._randoms_binned = np.where(self._randoms_binned == 0, 1., self._randoms_binned)
         # the error of each bin is fixed by the unweighted counts
         error = self.normalization * np.sqrt(data_binned / self._randoms_binned**2 + data_binned**2 / self._randoms_binned**3)
-        self._error = np.where(data_binned == 0, 1e10, error)
+        self._error = np.where(empty, 1e10, error)
         self._last = None
         self.coefficients = None
 
@@ -292,8 +297,8 @@ def compute_imaging_weights(data, randoms, maps_north, maps_south, fit_maps, zra
         Photometric regions, see :func:`select_photometric_region`; the quasars take ('DES', 'SnotDES', 'N').
     nbins, tail : see :class:`LinearRegression`.
     data_weights, randoms_weights : arrays, default=None
-        Weights for the fit; by default ``WEIGHT * WEIGHT_FKP / WEIGHT_SYS``, as the survey pipeline does with the
-        clustering catalogs.
+        Weights for the fit; by default ``WEIGHT * WEIGHT_FKP / WEIGHT_SYS``, the randoms also divided by ``WEIGHT_ZFAIL``
+        if they carry it, as the survey pipeline does with the clustering catalogs.
     ebv_diff : dict, default=None
         'EBV_DIFF_GR' and 'EBV_DIFF_RZ' maps, see :func:`read_ebv_diff`; read if needed and not given.
 
@@ -305,12 +310,14 @@ def compute_imaging_weights(data, randoms, maps_north, maps_south, fit_maps, zra
         Fitted coefficients, ``{(region, zrange): {name: value}}``.
     """
     weights = []
-    for catalog, catalog_weights in [(data, data_weights), (randoms, randoms_weights)]:
+    for kind, catalog, catalog_weights in [('data', data, data_weights), ('randoms', randoms, randoms_weights)]:
         if catalog_weights is None:
-            # WEIGHT * WEIGHT_FKP / WEIGHT_SYS, the weights the survey pipeline regresses the clustering catalogs with
+            # WEIGHT * WEIGHT_FKP / WEIGHT_SYS, the weights the survey pipeline regresses the clustering catalogs with; it
+            # divides the data by WEIGHT_ZFAIL and multiplies it back, and the randoms only divides
             catalog_weights = np.asarray(catalog['WEIGHT'], dtype='f8')
             if 'WEIGHT_FKP' in catalog.dtype.names: catalog_weights = catalog_weights * catalog['WEIGHT_FKP']
             if 'WEIGHT_SYS' in catalog.dtype.names: catalog_weights = catalog_weights / catalog['WEIGHT_SYS']
+            if kind == 'randoms' and 'WEIGHT_ZFAIL' in catalog.dtype.names: catalog_weights = catalog_weights / catalog['WEIGHT_ZFAIL']
         weights.append(np.asarray(catalog_weights, dtype='f8'))
     data_weights, randoms_weights = weights
     if any(name.startswith('EBV_DIFF_') for name in fit_maps) and ebv_diff is None: ebv_diff = read_ebv_diff()

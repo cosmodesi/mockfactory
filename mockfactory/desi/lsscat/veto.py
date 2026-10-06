@@ -14,6 +14,8 @@ their own to be judged by.
 
 import logging
 
+from pathlib import Path
+
 import numpy as np
 
 from astropy.table import Table
@@ -34,7 +36,61 @@ MAP_CUTS = {'EBV': 0.15, 'STARDENS': 4.4, 'PSFSIZE_G': 2.4, 'PSFSIZE_R': 2.3, 'P
 
 #: Legacy survey mask bits vetoed per tracer. The string stands for the separate mask the
 #: luminous red galaxy selection uses, which comes as a column rather than as bits.
-MASK_BITS = {'LRG': 'lrg_mask', 'ELG': None, 'QSO': [8, 9, 11], 'BGS': [11]}
+#: The bright galaxies get the bits their targets are cut on (1, 5, 6, 7, 10, 13) as well as
+#: their own, 11: `LSS` vetoes on 11 alone because its randoms arrive already cut on the
+#: others, and these randoms do not, so 11 alone leaves ~1% of them where no target can be.
+MASK_BITS = {'LRG': 'lrg_mask', 'ELG': None, 'QSO': [8, 9, 11], 'BGS': [1, 5, 6, 7, 10, 11, 13]}
+
+
+#: Custom masks of circles and rectangles per tracer (``LSS.globals``, ``reccircmasks``), applied to data and randoms
+#: before the imaging bits, as ``LSS.common_tools.apply_veto`` does.
+CUSTOM_MASK_DIR = '/dvs_ro/cfs/cdirs/desi/users/rongpu/desi_mask'
+CUSTOM_MASKS = {'QSO': ['desi_custom_mask_v1.txt'], 'ELG': ['desi_custom_mask_v1.txt', 'elg_custom_mask_v1.1_draft.txt']}
+
+
+def get_custom_masks(tracer, mask_dir=CUSTOM_MASK_DIR):
+    """Return the custom mask files of ``tracer``, see :data:`CUSTOM_MASKS`."""
+    return [Path(mask_dir) / fn for fn in CUSTOM_MASKS.get(tracer[:3], [])]
+
+
+def read_custom_mask(fn):
+    """
+    Return the circles, (ra, dec, radius [arcsec]), and rectangles, (ramin, ramax, decmin, decmax), of a custom mask file:
+    one per line, comma separated, '#' starting a comment (``LSS.common_tools.parse_circandrec_mask``).
+    """
+    circles, rectangles = [], []
+    with open(fn, 'r') as file:
+        for line in file:
+            line = line.split('#')[0].strip()
+            if not line: continue
+            values = [float(value) for value in line.split(',')]
+            if len(values) == 3: circles.append(values)
+            elif len(values) == 4: rectangles.append(values)
+            else: raise ValueError('cannot parse {} in {}'.format(line, fn))
+    return np.array(circles, dtype='f8').reshape(-1, 3), np.array(rectangles, dtype='f8').reshape(-1, 4)
+
+
+def in_custom_mask(ra, dec, fns, chunk=1000000):
+    """
+    Return whether each position falls in one of the circles or rectangles of the custom mask files ``fns``, the bounds
+    excluded as in ``LSS.common_tools.maskcircandrec``.
+    """
+    ra, dec = np.asarray(ra, dtype='f8'), np.asarray(dec, dtype='f8')
+    toret = np.zeros(ra.size, dtype='?')
+    for fn in fns:
+        circles, rectangles = read_custom_mask(fn)
+        for ramin, ramax, decmin, decmax in rectangles:
+            toret |= (ra > ramin) & (ra < ramax) & (dec > decmin) & (dec < decmax)
+        if not len(circles): continue
+        def unit(ra, dec):
+            ra, dec = np.radians(ra), np.radians(dec)
+            return np.column_stack([np.cos(ra) * np.cos(dec), np.sin(ra) * np.cos(dec), np.sin(dec)])
+        centers, cosradius = unit(circles[:, 0], circles[:, 1]), np.cos(np.radians(circles[:, 2] / 3600.))
+        # in chunks: the survey pipeline forms the whole (objects x circles) matrix at once
+        for start in range(0, ra.size, chunk):
+            sl = slice(start, start + chunk)
+            toret[sl] |= np.any(unit(ra[sl], dec[sl]) @ centers.T > cosradius, axis=1)
+    return toret
 
 
 def get_mask_bits(tracer):
@@ -114,7 +170,7 @@ def apply_map_veto(array, maps_north, maps_south, cuts=None, nside=256):
 
 
 def apply_veto_data(data, max_priority, bits=None, maps_north=None, maps_south=None,
-                    cuts=None, nside=256):
+                    cuts=None, nside=256, custom_masks=None):
     """
     Return the vetoed full data catalog, with its completeness recomputed over what is left.
 
@@ -134,11 +190,17 @@ def apply_veto_data(data, max_priority, bits=None, maps_north=None, maps_south=N
         Imaging mask bits, from :func:`get_mask_bits`.
     maps_north, maps_south : array, default=None
         Observing condition maps. The map veto is skipped when not given.
+    custom_masks : list, default=None
+        Custom mask files, from :func:`get_custom_masks`, applied before the imaging bits.
     """
     data = as_table(data)
     size = len(data)
     keep = data['GOODHARDLOC'] & (data['PRIORITY_ASSIGNED'] <= max_priority)
     logger.info('priority and hardware keep {:d} of {:d} rows'.format(int(keep.sum()), size))
+    if custom_masks:
+        masked = in_custom_mask(data['RA'], data['DEC'], custom_masks)
+        logger.info('custom masks remove {:d} of {:d} rows'.format(int((keep & masked).sum()), int(keep.sum())))
+        keep &= ~masked
     toret = apply_imaging_veto(data[keep], bits=bits)
 
     # Measured before the map veto, and deliberately so: the maps remove whole patches of sky
@@ -155,7 +217,7 @@ def apply_veto_data(data, max_priority, bits=None, maps_north=None, maps_south=N
 
 
 def apply_veto_randoms(randoms, max_priority, bits=None, maps_north=None, maps_south=None,
-                       cuts=None, nside=256):
+                       cuts=None, nside=256, custom_masks=None):
     """
     Return the vetoed full random catalog.
 
@@ -168,6 +230,8 @@ def apply_veto_randoms(randoms, max_priority, bits=None, maps_north=None, maps_s
     size = len(randoms)
     keep = randoms['GOODHARDLOC'] & (randoms['PRIORITY'] <= max_priority)
     logger.info('priority and hardware keep {:d} of {:d} rows'.format(int(keep.sum()), size))
+    if custom_masks:
+        keep &= ~in_custom_mask(randoms['RA'], randoms['DEC'], custom_masks)
     toret = apply_imaging_veto(randoms[keep], bits=bits)
     if maps_north is not None:
         toret = apply_map_veto(toret, maps_north, maps_south, cuts=cuts, nside=nside)

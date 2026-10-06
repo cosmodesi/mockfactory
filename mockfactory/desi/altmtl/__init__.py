@@ -43,5 +43,7 @@ from .state import LedgerState
 from .reprocess import reprocess_state
 from .pipeline import run_mock, run_mocks
 from .pota import compute_potential_assignments
+from .contaminants import (CONTAMINANT_TARGETID_OFFSET, select_failed_redshifts, duplicate_positions, thin_isotropic, get_frac_tlobs_tiles,
+                           make_contaminants, add_contaminants, get_zfix)
 from .bitweights import compute_bitweights, write_bitweights, pack_bitweights, unpack_bitweights
 from .targets import make_targets, write_targets, get_target_bits, get_priority_numobs

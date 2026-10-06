@@ -37,6 +37,7 @@ logger = logging.getLogger('run_mock')
 DESI_DIR = '/dvs_ro/cfs/cdirs/desi'
 #: AbacusSummit high fidelity v2.0 cubic boxes.
 BOX_DIR = Path(DESI_DIR) / 'mocks/cai/abacus_HF/DR2_v2.0'
+#: The HOD of the boxes, unless the tracer names its own in PROGRAMS: the quasar boxes come in 'base' only.
 BOX_COSMO, BOX_HOD = '000', 'base_B'
 #: The measured redshift distribution the cutsky is downsampled to.
 NZ_FN = DESI_DIR + '/survey/catalogs/DA2/LSS/loa-v1/LSScats/v2/nonKP/{tracer}_{region}_nz.txt'
@@ -51,8 +52,8 @@ TILES_FN = DESI_DIR + '/survey/catalogs/DA2/LSS/tiles-{program}.fits'
 #: photometric regions: the survey pipeline's for its mocks (``mkCat_amtl.py``, as its DA2 mock
 #: drivers call it), 'split' bins for the quasars, 'fine' (0.1 wide) for the luminous red
 #: galaxies, the bright galaxies over their clustering range. The emission line galaxies are
-#: not linearly regressed there, their imaging weights coming from SYSNet: the linear fit over
-#: the 'split' bins here is an approximation of those, flagged by ``imsys_approximate``.
+#: weighted with SYSNet instead (``imsys_method``), against the quasar maps (``imsys_maps``), as
+#: the survey pipeline does for its dark-time mocks.
 PROGRAMS = {
     'BGS_BRIGHT': dict(box='BGS-21.35', snapshots=(0.300,), zrange=(0.1, 0.4), obscon='bright',
                        nz='BGS_BRIGHT-21.35', imsys_zranges=((0.1, 0.4),), imsys_regions=('S', 'N')),
@@ -60,11 +61,11 @@ PROGRAMS = {
                 nz='LRG', imsys_zranges=((0.4, 0.5), (0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.0), (1.0, 1.1)),
                 imsys_regions=('S', 'N')),
     'ELG_LOP': dict(box='ELG', snapshots=(0.950, 1.175, 1.475), zrange=(0.8, 1.6), obscon='dark',
-                    nz='ELG_LOPnotqso', imsys_zranges=((0.8, 1.1), (1.1, 1.6)), imsys_regions=('S', 'N'),
-                    imsys_approximate=True),
+                    nz='ELG_LOPnotqso', imsys_zranges=((0.8, 1.1), (1.1, 1.6)), imsys_regions=('N', 'S'),
+                    imsys_method='sysnet', imsys_maps='QSO'),
     'QSO': dict(box='QSO', snapshots=(0.950, 1.250, 1.400, 1.550, 1.850), zrange=(0.8, 2.1),
                 obscon='dark', nz='QSO', imsys_zranges=((0.8, 1.3), (1.3, 2.1), (2.1, 3.5)),
-                imsys_regions=('DES', 'SnotDES', 'N')),
+                imsys_regions=('DES', 'SnotDES', 'N'), hod='base'),
 }
 #: Observing condition maps the imaging weights are fitted against, the survey's own.
 HPMAP_DIR = DESI_DIR + '/survey/catalogs/DA2/LSS/loa-v1/LSScats/v2/hpmaps'
@@ -98,10 +99,10 @@ def parse_imocks(text):
     return out
 
 
-def box_fn(imock, box, zsnap):
+def box_fn(imock, box, zsnap, hod=BOX_HOD):
     name = 'abacus_HF_{t}_{z}_DR2_v2.0_AbacusSummit_base_c{c}_ph{i:03d}_{h}_clustering.dat.h5'
     return Path(BOX_DIR) / 'AbacusSummit_base_c{c}_ph{i:03d}'.format(c=BOX_COSMO, i=imock) / 'Boxes' / box / name.format(t=box, z='{:.3f}'.format(zsnap).replace('.', 'p'),
-                                    c=BOX_COSMO, i=imock, h=BOX_HOD)
+                                    c=BOX_COSMO, i=imock, h=hod)
 
 
 def get_shells(snapshots, zrange):
@@ -135,10 +136,10 @@ def pota_fn(output_dir, imock):
     return Path(output_dir) / 'altmtl{:d}'.format(imock) / 'pota.fits'
 
 
-def read_box(imock, box, zsnap, mpicomm):
+def read_box(imock, box, zsnap, mpicomm, hod=BOX_HOD):
     """Read one cubic box as a :class:`BoxCatalog`, velocities already in position units."""
     from mockfactory import BoxCatalog, Catalog
-    fn = box_fn(imock, box, zsnap)
+    fn = box_fn(imock, box, zsnap, hod=hod)
     logger.info('Reading {}.'.format(fn))
     catalog = Catalog.read(fn, filetype='hdf5', group='/', mpicomm=mpicomm)
     attrs = dict(catalog.header)
@@ -162,10 +163,17 @@ def get_radial_mask(tracer, region, nbar_box, zrange):
     from mockfactory import TabulatedRadialMask
     z, nbar = np.loadtxt(NZ_FN.format(tracer=tracer, region=region), usecols=(0, 3), unpack=True)
     keep = (z > zrange[0]) & (z < zrange[1])
+    if nbar[keep].max() > nbar_box:
+        raise ValueError('the box (nbar {:.3e}) is too sparse for the {} {} n(z) (max {:.3e})'
+                         .format(nbar_box, tracer, region, nbar[keep].max()))
     # The table is binned, so its centres stop short of the requested range on both sides. Let
     # it define its own limits rather than claiming coverage it does not have; the redshift cut
     # has already been applied, and the draw is zero where the table does not reach.
-    return TabulatedRadialMask(z=z[keep], nbar=nbar[keep] / nbar_box, interp_order=1)
+    # norm = 1 / nbar_box, not the default: that one rescales the selection to a maximum of one,
+    # which keeps the shape of n(z) but puts its peak at the box density (the quasar boxes are
+    # a hundred times denser than the sample). With it, prob = n(z) / nbar_box and prob / norm,
+    # the NZ column, is n(z).
+    return TabulatedRadialMask(z=z[keep], nbar=nbar[keep], norm=1. / nbar_box, interp_order=1)
 
 
 def run_cutsky(args, mpicomm):
@@ -184,7 +192,7 @@ def run_cutsky(args, mpicomm):
     for imock in args.imocks:
         pieces = []
         for zsnap, zrange in shells:
-            box = read_box(imock, args.program['box'], zsnap, mpicomm)
+            box = read_box(imock, args.program['box'], zsnap, mpicomm, hod=args.program.get('hod', BOX_HOD))
             nbar_box = box.csize / box.boxsize.prod()
             drange = cosmo.comoving_radial_distance(np.array(zrange))
             # Enough copies to reach the far edge of this shell: (n + 1/2) L >= dmax.
@@ -381,27 +389,32 @@ def run_imsys(args):
 
     The survey pipeline does it so for its mocks (`mkCat_amtl.py --doimlin y --replace_syscol`),
     once the catalogs are split by galactic cap and given their n(z): the fit takes the data and
-    every random catalog of both caps, weighted ``WEIGHT * WEIGHT_FKP / WEIGHT_SYS``, so that it
-    can be re-run on catalogs that already carry imaging weights. The weights then go in as
+    every random catalog of both caps, weighted ``WEIGHT * WEIGHT_FKP / WEIGHT_SYS`` (the randoms
+    also divided by ``WEIGHT_ZFAIL``), so that it can be re-run on catalogs that already carry
+    imaging weights. The weights then go in as
     ``WEIGHT_IMLIN`` and replace ``WEIGHT_SYS``, ``WEIGHT`` being rescaled to match, in the data
     and in the randoms, each random taking the weight of the data its redshift was drawn from
     (``TARGETID_DATA``). It is the survey pipeline's last step on the catalogs, and as there the
     n(z) is not recomputed. Every file of the mock is rewritten, the uncut ones too.
 
-    For the emission line galaxies the survey pipeline fits SYSNet, a neural network, rather than
-    a linear regression; the linear weights written here are an approximation of those.
+    The emission line galaxies are weighted with SYSNet, a neural network, as the survey pipeline
+    does (`mkCat_amtl.py --prep4sysnet y --addsysnet y --replace_syscol`), see
+    :mod:`mockfactory.desi.lsscat.sysnet`: the data are counted with their completeness weights
+    only, against the quasar maps, and the weights go in as ``WEIGHT_SN``. Its inputs, models
+    and predictions are kept in ``mock{i}/sysnet``.
     """
     import h5py
     from astropy.table import Table, vstack
-    from mockfactory.desi.lsscat import compute_imaging_weights, read_hpmaps, write_catalogs, FIT_MAPS
+    from mockfactory.desi.lsscat import compute_imaging_weights, compute_sysnet_weights, read_hpmaps, write_catalogs, FIT_MAPS, SYSNET_FIT_MAPS
 
-    if args.program.get('imsys_approximate', False):
-        logger.warning('{}: the survey pipeline weights these with SYSNet; the linear weights fitted '
-                       'here are an approximation of those.'.format(args.tracer))
-    maps_north, maps_south = read_hpmaps(args.hpmap_dir, args.tracer)
-    fit_maps = FIT_MAPS[args.tracer[:3]]
+    sysnet = args.program.get('imsys_method', 'linear') == 'sysnet'
+    maps_north, maps_south = read_hpmaps(args.hpmap_dir, args.program.get('imsys_maps', args.tracer))
+    fit_maps = (SYSNET_FIT_MAPS if sysnet else FIT_MAPS)[args.tracer[:3]]
     name, caps = args.name or args.tracer, ('NGC', 'SGC')
-    columns = ['RA', 'DEC', 'Z', 'PHOTSYS', 'WEIGHT', 'WEIGHT_FKP', 'WEIGHT_SYS']
+    syscol = 'WEIGHT_SN' if sysnet else 'WEIGHT_IMLIN'
+    columns = ['RA', 'DEC', 'Z', 'PHOTSYS', 'WEIGHT', 'WEIGHT_FKP', 'WEIGHT_SYS', 'WEIGHT_ZFAIL']  # the randoms are also divided by WEIGHT_ZFAIL, as in LSS
+    data_columns = ['TARGETID'] + columns + (['WEIGHT_COMP', 'FRAC_TLOBS_TILES'] if sysnet else [])
+    randoms_columns = ['RA', 'DEC', 'PHOTSYS'] if sysnet else columns
 
     def read(fn, columns=None):
         with h5py.File(fn, 'r') as file:
@@ -416,14 +429,19 @@ def run_imsys(args):
             return mock_dir / '{}_clustering.{}.h5'.format('_'.join(parts), kind)
 
         start = time.time()
-        data = vstack([read(fn('dat', cap), ['TARGETID'] + columns) for cap in caps])
-        randoms = vstack([read(fn('ran', cap, i), columns) for cap in caps for i in range(args.nrandom)])
-        weights, coefficients = compute_imaging_weights(data, randoms, maps_north, maps_south, fit_maps,
-                                                        args.program['imsys_zranges'],
-                                                        regions=args.program['imsys_regions'])
+        data = vstack([read(fn('dat', cap), data_columns) for cap in caps])
+        randoms = vstack([read(fn('ran', cap, i), randoms_columns) for cap in caps for i in range(args.nrandom)])
+        if sysnet:
+            weights, _ = compute_sysnet_weights(data, randoms, maps_north, maps_south, fit_maps,
+                                                args.program['imsys_zranges'], mock_dir / 'sysnet',
+                                                regions=args.program['imsys_regions'])
+        else:
+            weights, coefficients = compute_imaging_weights(data, randoms, maps_north, maps_south, fit_maps,
+                                                            args.program['imsys_zranges'],
+                                                            regions=args.program['imsys_regions'])
+            for key, value in coefficients.items():
+                logger.info('mock {:d}, region {}, {} < z < {}: {}'.format(imock, key[0], *key[1], value))
         del randoms
-        for key, value in coefficients.items():
-            logger.info('mock {:d}, region {}, {} < z < {}: {}'.format(imock, key[0], *key[1], value))
         logger.info('mock {:d}: imaging weights fitted in {:.0f} s, between {:.3f} and {:.3f}.'
                     .format(imock, time.time() - start, weights.min(), weights.max()))
 
@@ -432,10 +450,15 @@ def run_imsys(args):
         del data
         files = [(fn('dat', cap), 'TARGETID') for cap in (None,) + caps]
         files += [(fn('ran', cap, i), 'TARGETID_DATA') for i in range(args.nrandom) for cap in (None,) + caps]
-        # Updated one by one and written at once: writing is most of the cost, and it parallelises
-        # over processes (see write_catalogs); a mock's catalogs at four randoms are about 25 GB.
+        # Updated one by one and written numproc at a time: writing is most of the cost and it
+        # parallelises over processes (see write_catalogs), but holding every catalog until the end
+        # costs a mock's whole size, about 110 GB at eighteen randoms, which five mocks on a node
+        # cannot afford.
         writes = []
         for path, key in files:
+            if len(writes) >= args.numproc:
+                write_catalogs(writes, numproc=args.numproc)
+                writes = []
             catalog = read(path)
             index = np.clip(np.searchsorted(targetid, catalog[key]), 0, len(targetid) - 1)
             found = targetid[index] == catalog[key]
@@ -444,7 +467,7 @@ def run_imsys(args):
             new[found] = weights[index[found]]
             catalog['WEIGHT'] = catalog['WEIGHT'] / catalog['WEIGHT_SYS'] * new
             catalog['WEIGHT_SYS'] = new
-            catalog['WEIGHT_IMLIN'] = new
+            catalog[syscol] = new
             writes.append((path, catalog))
         write_catalogs(writes, numproc=args.numproc)
         del writes

@@ -78,6 +78,11 @@ Strict requirements are:
   - mpi4py
   - mpytools
 
+Deprecated, kept for existing users and to be removed: the pmesh-based mocks `EulerianLinearMock`
+and `LagrangianLinearMock` need pmesh (`pip install mockfactory[deprecated]`); use the jaxpower
+routines in `jaxpower.mock` instead. `mockfactory.blinding` is deprecated as well, in favour of
+desiblind. Both raise a `FutureWarning` when imported.
+
 ## Installation
 
 ### pip

@@ -18,14 +18,15 @@ from pathlib import Path
 
 import numpy as np
 
-from .clustering import get_redshift_range, make_clustering_data, make_clustering_randoms
+from .clustering import (get_redshift_range, make_clustering_data, make_clustering_randoms,
+                         compute_nn_completeness)
 from .combine import combine_data, count_tiles, read_random_imaging
 from .full import get_max_priority, make_full_data, make_full_randoms
 from .nz import (add_nz_weights, compute_completeness_per_ntile, compute_nz, get_fkp_p0,
                  write_nz)
 from .utils import as_table, get_galactic_cap
 from .veto import (add_frac_tlobs, apply_veto_data, apply_veto_randoms, get_frac_tlobs,
-                   get_mask_bits)
+                   get_mask_bits, get_custom_masks)
 
 
 logger = logging.getLogger('lsscat.pipeline')
@@ -81,7 +82,8 @@ def _make_clustering_randoms(i):
                               tiles=tiles)
     array = apply_veto_randoms(array, context['maxp'], bits=context['bits'],
                                maps_north=context['maps_north'],
-                               maps_south=context['maps_south'])
+                               maps_south=context['maps_south'],
+                               custom_masks=context['custom_masks'])
     array = add_frac_tlobs(array, context['frac_tlobs'], missing=context['missing_frac_tlobs'],
                            data=context['full'])
     array = make_clustering_randoms(array, context['clustering'], seed=i,
@@ -125,13 +127,55 @@ def _finish_random(i, array):
     return array, split, writes
 
 
+def make_vetoed_full_data(data, assignments, tracer, notqso=False, targets=None, good_tilelocid=None,
+                          hpmaps=None, bits=None, custom_masks=None):
+    """
+    Return the full data catalog with every veto applied, what the survey pipeline writes as
+    ``{tracer}_full_HPmapcut.dat``; the arguments are those of :func:`run_tracer`. It depends on
+    nothing drawn at random, so it is the same catalog the clustering catalogs of a mock were cut from.
+    """
+    maxp = get_max_priority(tracer, notqso=notqso)
+    if bits is None:
+        bits = get_mask_bits(tracer)
+    if custom_masks is None:
+        custom_masks = get_custom_masks(tracer)
+    maps_north, maps_south = hpmaps if hpmaps is not None else (None, None)
+    logger.info('--- {}: full data ---'.format(tracer))
+    if callable(data):
+        data = data()
+    full = make_full_data(data, assignments, tracer, targets=targets, notqso=notqso,
+                          good_tilelocid=good_tilelocid)
+    # The combined potential assignments have done their work, and they are the largest thing
+    # here: seven gigabytes against the four the full catalog keeps. Dropped before the random
+    # workers fork, so that they do not inherit it either.
+    del data
+    logger.info('--- {}: vetoes ---'.format(tracer))
+    return apply_veto_data(full, maxp, bits=bits, maps_north=maps_north, maps_south=maps_south,
+                           custom_masks=custom_masks)
+
+
+def write_full_data(full, output_dir, tracer, notqso=False, completeness='fracz'):
+    """
+    Write the vetoed full data catalog as ``{tracer}[notqso]_full_HPmapcut.dat.h5``, named after the
+    targeting class as the survey names it, not after the clustering sample cut from it. With the
+    nearest neighbour completeness, its weight goes in ``NEW_WEIGHTFRACZ``, the survey's name for it.
+    """
+    full = as_table(full)
+    if completeness == 'nn':
+        full = full.copy(copy_data=False)
+        full['NEW_WEIGHTFRACZ'] = compute_nn_completeness(full)
+    fn = Path(output_dir) / '{}{}_full_HPmapcut.dat.h5'.format(tracer, 'notqso' if notqso else '')
+    write_catalog(full, fn)
+    return fn
+
+
 def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                random_imaging=None, random_tiles=None, good_tilelocid=None, hpmaps=None, survey='DA2',
                completeness='fracz', nbits=128, missing_frac_tlobs=1., seed=0, zrange=None,
-               subsample=None, data_selection=None, columns=(), name=None, output_dir=None,
+               subsample=None, zsplit=None, data_selection=None, columns=(), name=None, output_dir=None,
                numproc=1,
                numproc_randoms=None,
-               keep=True, bits=None):
+               keep=True, bits=None, custom_masks=None, write_full=False):
     """
     Run every stage for one tracer, and return its clustering catalogs.
 
@@ -181,6 +225,8 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
         Redshift range. Defaults to the tracer's own.
     subsample : float, list, default=None
         Density matching fraction. Defaults to the survey's value for the tracer.
+    zsplit : float, default=None
+        Redshift dividing the two fractions when ``subsample`` is a list of two.
     columns : tuple, default=()
         Extra columns to carry into the clustering catalogs, beyond the ones a measurement
         needs. A mock's own truth, such as ``TRUEZ``, comes through here.
@@ -224,33 +270,36 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
         targets were already cut on other bits upstream has to name them here: the randoms
         never saw that cut, and a mask applied to one side only is an angular selection the
         randoms cannot describe.
+    custom_masks : list, default=None
+        Custom mask files of circles and rectangles, on the data and on the randoms alike. Defaults to
+        the tracer's own, from :func:`~mockfactory.desi.lsscat.veto.get_custom_masks`; ``[]`` for none.
+    write_full : bool, default=False
+        Whether to write the vetoed full data catalog too, with ``output_dir``; see
+        :func:`write_full_data`. The angular upweights of a measurement read it.
     """
     maxp = get_max_priority(tracer, notqso=notqso)
     if bits is None:
         bits = get_mask_bits(tracer)
+    if custom_masks is None:
+        custom_masks = get_custom_masks(tracer)
     maps_north, maps_south = hpmaps if hpmaps is not None else (None, None)
     zmin, zmax = zrange if zrange is not None else get_redshift_range(tracer)
     p0, dz = get_fkp_p0(tracer)
     if name is None:
         name = tracer + ('notqso' if notqso else '')
-    zsplit = None
     if subsample is None:
         subsample, zsplit = SUBSAMPLE.get((tracer[:3], survey), (None, None))
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
 
-    logger.info('--- {}: full data ---'.format(tracer))
-    if callable(data):
-        data = data()
-    full = make_full_data(data, assignments, tracer, targets=targets, notqso=notqso,
-                          good_tilelocid=good_tilelocid)
-    # The combined potential assignments have done their work, and they are the largest thing
-    # here: seven gigabytes against the four the full catalog keeps. Dropped before the random
-    # workers fork, so that they do not inherit it either. Passing `data` as a callable is what
-    # lets it go: an array passed in stays alive in the caller's frame for the whole run.
+    # Passing `data` as a callable is what lets the combined potential assignments go once the
+    # full catalog is built: an array passed in stays alive in the caller's frame for the whole run.
+    full = make_vetoed_full_data(data, assignments, tracer, notqso=notqso, targets=targets,
+                                 good_tilelocid=good_tilelocid, hpmaps=hpmaps, bits=bits,
+                                 custom_masks=custom_masks)
     del data
-    logger.info('--- {}: vetoes ---'.format(tracer))
-    full = apply_veto_data(full, maxp, bits=bits, maps_north=maps_north, maps_south=maps_south)
+    if write_full and output_dir is not None:
+        write_full_data(full, output_dir, tracer, notqso=notqso, completeness=completeness)
     frac_tlobs = get_frac_tlobs(full)
 
     logger.info('--- {}: clustering data ---'.format(tracer))
@@ -262,7 +311,7 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
     _context.clear()
     _context.update(randoms=randoms, random_imaging=random_imaging, random_tiles=random_tiles,
                     tracer=tracer,
-                    notqso=notqso, good_tilelocid=good_tilelocid, maxp=maxp, bits=bits,
+                    notqso=notqso, good_tilelocid=good_tilelocid, maxp=maxp, bits=bits, custom_masks=custom_masks,
                     maps_north=maps_north, maps_south=maps_south, frac_tlobs=frac_tlobs,
                     missing_frac_tlobs=missing_frac_tlobs, full=full, clustering=clustering,
                     completeness=completeness, zmin=zmin, dz=dz, p0=p0, name=name,
@@ -351,10 +400,14 @@ def write_catalog(array, fn):
     writing one is mostly byte order conversion, and measured on a clustering random of nine
     million rows that is 7.8 s against 1.2 s. HDF5 keeps them native, and one dataset per
     column is what a reader that wants three of twelve columns can take advantage of.
+
+    The file is written next to its destination then renamed, so that a job killed while writing
+    (the imaging weights rewrite every catalog of a mock in place) leaves the previous file whole.
     """
     import h5py
     array = as_table(array)
-    with h5py.File(fn, 'w') as file:
+    tmp_fn = str(fn) + '.tmp'
+    with h5py.File(tmp_fn, 'w') as file:
         group = file.create_group('LSS')
         for name in array.colnames:
             column = array[name].value
@@ -364,6 +417,7 @@ def write_catalog(array, fn):
             if column.dtype.kind == 'U':
                 column = column.astype('S{:d}'.format(column.dtype.itemsize // 4))
             group.create_dataset(name, data=column)
+    os.replace(tmp_fn, fn)
     logger.info('wrote {} ({:d} rows)'.format(fn, len(array)))
 
 

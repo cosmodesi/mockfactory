@@ -17,6 +17,7 @@ import math
 
 import numpy as np
 
+from .clustering import tiles_on_randoms
 from .utils import as_table, set_column
 
 
@@ -85,7 +86,7 @@ def compute_nz(data, randoms, zmin, zmax, dz=0.01, completeness='fracz', cosmolo
         cosmology = get_cosmology()
     area = len(randoms) / RANDOM_DENSITY
     logger.info('area is {:.2f} square degrees'.format(area))
-    if completeness != 'bitweights':
+    if tiles_on_randoms(completeness):
         # Summed exactly: np.sum rounds differently depending on how the column is laid out in
         # memory, and the area scales every density, so the last digit would otherwise depend on
         # the container rather than the numbers.
@@ -143,7 +144,7 @@ def compute_completeness_per_ntile(data, randoms=None, completeness='fracz'):
 
     weight = _mean(ntile, np.asarray(data['WEIGHT_COMP'], dtype='f8'))
     toret = 1. / weight
-    if completeness != 'bitweights':
+    if tiles_on_randoms(completeness):
         # The data carries only the fiber location completeness, the tile completeness having
         # been put on the randoms; the density has to be corrected by both.
         toret = toret * _mean(np.asarray(randoms['NTILE']) - 1,
@@ -196,7 +197,7 @@ def add_nz_weights(array, nz, zmin, dz, p0, weight_ntile, completeness_ntile,
 
     weight = toret['WEIGHT_COMP'] * toret['WEIGHT_SYS'] * toret['WEIGHT_ZFAIL']
     if randoms:
-        if completeness != 'bitweights':
+        if tiles_on_randoms(completeness):
             weight = weight * toret['FRAC_TLOBS_TILES']
         # The randoms were rescaled region by region when they were drawn; keep that
         # normalization rather than overwriting it.

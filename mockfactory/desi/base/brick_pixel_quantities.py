@@ -21,6 +21,24 @@ from mpi4py import MPI
 
 logger = logging.getLogger('Bricks')
 
+#: The DR9 bricks and the imaging survey each is read from, 'N' or 'S' (``PHOTSYS``), as ``LSS`` reads them
+#: (``scripts/getLRGmask.py``). The region is not a function of declination alone: 1591 bricks above Dec 32.375, in the
+#: southern galactic cap, are DECaLS ('S'), and exist only in the south directory.
+BRICKS_FN = '/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9/randoms/survey-bricks-dr9-randoms-0.48.0.fits'
+
+
+def get_brick_regions(fn=BRICKS_FN):
+    """Return a dictionary brick name: 'north' or 'south', from the DR9 brick list."""
+    import functools
+
+    @functools.lru_cache(maxsize=None)
+    def read(fn):
+        bricks = fitsio.read(str(fn), columns=['BRICKNAME', 'PHOTSYS'])
+        return dict(zip(np.char.strip(bricks['BRICKNAME'].astype(str)),
+                        np.where(np.char.strip(bricks['PHOTSYS'].astype(str)) == 'N', 'north', 'south')))
+
+    return read(str(fn))
+
 
 def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD, cache_dir=None):
     """
@@ -139,12 +157,17 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD, cache_d
     # Collect the brick pixel quantities in each brickname
     data = {}
     bricknames = np.unique(brickid_data['brickname'])
+    # Each brick is read from the imaging survey the DR9 brick list gives it; a brick that is not in the list (no
+    # imaging) falls back on the declination, and finds no file either way
+    brick_regions = get_brick_regions()
     # A pass over the bricks is long and says nothing until it ends, so it reports as it goes
     every = max(1, len(bricknames) // 10)
     for ibrick, brickname in enumerate(bricknames):
         mask_brick = brickid_data['brickname'] == brickname
         ra_tmp, dec_tmp = brickid_data['ra'][mask_brick], brickid_data['dec'][mask_brick]
-        region = 'north' if bricks.brick_radec(ra_tmp[0], dec_tmp[0])[1] > 32.375 else 'south'
+        region = brick_regions.get(str(brickname))
+        if region is None:
+            region = 'north' if bricks.brick_radec(ra_tmp[0], dec_tmp[0])[1] > 32.375 else 'south'
         tmp = {}
         for name, attrs in columns.items():
             if isinstance(name, str):

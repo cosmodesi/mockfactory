@@ -310,13 +310,14 @@ def compute_potential_assignments(targets_fn, output_fn, tiles_fn, program='DARK
 
     Returns
     -------
-    output_fn : str
+    output_fn : Path
         Path of the file that was written.
     """
     import fitsio
     from astropy.table import Table
 
-    if output_dir is None: output_dir = Path(Path(output_fn).parent) / 'tartiles'
+    output_fn = Path(output_fn)
+    if output_dir is None: output_dir = output_fn.parent / 'tartiles'
     if tile_temp_dir is None: tile_temp_dir = output_dir
 
     targets = read_targets(targets_fn)
@@ -337,9 +338,9 @@ def compute_potential_assignments(targets_fn, output_fn, tiles_fn, program='DARK
         hardware_cache.get(rundate)
     logger.info('Loaded {:d} distinct focal plane state(s).'.format(len(hardware_cache.ranges)))
 
-    utils.mkdir(Path(output_fn).parent)
+    utils.mkdir(output_fn.parent)
     tmp_fn = output_fn.parent / (output_fn.name + '.tmp')
-    fits = fitsio.FITS(tmp_fn, 'rw', clobber=True)
+    fits = fitsio.FITS(str(tmp_fn), 'rw', clobber=True)
     ntotal = ncollision = 0
 
     start = time.time()

@@ -7,11 +7,14 @@ that makes up for its neighbours: a target that shared a fiber location with oth
 for them. The randoms are given a redshift and a weight drawn from the data, separately in
 each imaging region, so that they follow the same radial and angular selection.
 
-Two ways of weighting incompleteness are supported. The default divides by the fraction of
-targets observed at the fiber location, which is what a single pass of the survey can measure.
-The alternative uses the probability of having been observed across many alternative merged
-target lists, which is what :mod:`mockfactory.desi.altmtl` produces bitweights for, and is
-unbiased where the first is not.
+Three ways of weighting incompleteness are supported. The default divides by the fraction of
+targets observed at the fiber location, which is what a single pass of the survey can measure,
+and leaves the fraction of the location that went to the tracer to the randoms. The nearest
+neighbour weights (``'nn'``) also hand the targets of locations where nothing was observed to
+their nearest observed neighbour on the sky, which then needs nothing on the randoms. The last
+uses the probability of having been observed across many alternative merged target lists, which
+is what :mod:`mockfactory.desi.altmtl` produces bitweights for, and is unbiased where the first
+is not.
 """
 
 from pathlib import Path
@@ -29,8 +32,9 @@ logger = logging.getLogger('lsscat.clustering')
 #: Redshift range each tracer is defined over.
 REDSHIFT_RANGE = {'LRG': (0.4, 1.1), 'ELG': (0.8, 1.6), 'QSO': (0.8, 2.1), 'BGS': (0.1, 0.5)}
 
-#: Largest target identifier of each tracer in a second generation mock, which is how the
-#: contaminants added to a sample are told apart from its own targets.
+#: Where the identifiers of the contaminants added to a second generation mock start (``1e8 * 2**23``, ``1e8 * 2**22``),
+#: which is how they are told apart from the tracer's own targets; see
+#: :data:`~mockfactory.desi.altmtl.contaminants.CONTAMINANT_TARGETID_OFFSET`.
 MOCK_TARGETID_MAX = {'ELG': 838860800000000, 'QSO': 419430400000000}
 
 
@@ -102,6 +106,46 @@ def compute_iip_weight(prob_obs, nbits=128):
 BGS_ABSMAG_CUT_DIR = '/pscratch/sd/z/zxzhai/DESI_LSS'
 
 
+def compute_nn_completeness(data):
+    """
+    Return the nearest neighbour completeness weight of every target of a vetoed full catalog, as the survey pipeline
+    builds it for its NN catalogs (``LSS.common_tools.get_fracz_pNNweight`` with ``get_nnweight=True``, through
+    ``mkCat_amtl.py --nearestneighbor y --redo_fracz y``): the number of targets sharing the target's fiber location
+    (``TILELOCID``), plus one for every target of a location where none was observed whose nearest observed target, on
+    the sky, it is.
+
+    Parameters
+    ----------
+    data : array
+        Vetoed full data catalog, every target observed or not, with 'TILELOCID', 'ZWARN', 'RA' and 'DEC'.
+
+    Returns
+    -------
+    weight : array
+    """
+    from scipy.spatial import cKDTree
+    tilelocid = np.asarray(data['TILELOCID'])
+    observed = np.asarray(data['ZWARN']) != NULL
+    _, inverse, counts = np.unique(tilelocid, return_inverse=True, return_counts=True)
+    weight = counts[inverse].astype('f8')
+    # the targets of a location no target of the tracer was observed at
+    orphan = ~np.isin(tilelocid, np.unique(tilelocid[observed]))
+    if orphan.any() and observed.any():
+        ra, dec = np.radians(np.asarray(data['RA'], dtype='f8')), np.radians(np.asarray(data['DEC'], dtype='f8'))
+        xyz = np.column_stack([np.cos(dec) * np.cos(ra), np.cos(dec) * np.sin(ra), np.sin(dec)])
+        index_observed = np.flatnonzero(observed)
+        _, nearest = cKDTree(xyz[index_observed]).query(xyz[orphan], k=1)
+        np.add.at(weight, index_observed[nearest], 1.)
+    logger.info('nearest neighbour completeness: {:d} targets at locations with nothing observed, handed to {:d} '
+                'observed neighbours.'.format(int(orphan.sum()), int(np.unique(nearest).size) if orphan.any() and observed.any() else 0))
+    return weight
+
+
+def tiles_on_randoms(completeness):
+    """Whether the fraction of a fiber location that went to the tracer (``FRAC_TLOBS_TILES``) is carried by the randoms."""
+    return completeness == 'fracz'
+
+
 def get_bgs_absmag_cut(coeff_dir=None, zsplit=0.3, offset=0.078):
     """
     Return the redshift dependent absolute magnitude threshold of the ``BGS_ANY-02`` sample.
@@ -164,9 +208,10 @@ def make_clustering_data(data, tracer, zmin=None, zmax=None, completeness='fracz
         Redshift range. Defaults to the tracer's own.
     completeness : str, default='fracz'
         How to weight the targets that were not observed. ``'fracz'`` divides by the fraction
-        observed at the fiber location, ``'fracz_tiles'`` also by the fraction of the location
-        that went to this tracer, and ``'bitweights'`` uses ``PROB_OBS`` over the alternative
-        realizations.
+        observed at the fiber location (the randoms then carry the fraction of the location that
+        went to this tracer), ``'fracz_tiles'`` also by the latter, ``'nn'`` uses
+        :func:`compute_nn_completeness`, and ``'bitweights'`` uses ``PROB_OBS`` over the
+        alternative realizations. Only ``'fracz'`` puts ``FRAC_TLOBS_TILES`` on the randoms.
     nbits : int, default=128
         Number of realizations behind ``PROB_OBS``.
     columns : tuple
@@ -201,6 +246,9 @@ def make_clustering_data(data, tracer, zmin=None, zmax=None, completeness='fracz
         zmax = default[1] if zmax is None else zmax
 
     data = as_table(data)
+    if completeness == 'nn':
+        # over every target of the vetoed full catalog, before any cut, as the survey pipeline does
+        set_column(data, 'WEIGHT_NN', compute_nn_completeness(data), dtype='f8')
     select = select_good_redshift(data, tracer, ismock=ismock)
     if subsample is not None:
         rng = np.random.default_rng(seed=seed)
@@ -233,6 +281,8 @@ def make_clustering_data(data, tracer, zmin=None, zmax=None, completeness='fracz
     if completeness == 'bitweights':
         set_column(toret, 'WEIGHT_COMP', compute_iip_weight(toret['PROB_OBS'], nbits=nbits),
                    dtype='f8')
+    elif completeness == 'nn':
+        set_column(toret, 'WEIGHT_COMP', toret['WEIGHT_NN'], dtype='f8')
     else:
         set_column(toret, 'WEIGHT_COMP', 1. / toret['FRACZ_TILELOCID'], dtype='f8')
         if completeness == 'fracz_tiles':
@@ -329,7 +379,7 @@ def make_clustering_randoms(randoms, data, seed=0, tracer='', completeness='frac
             toret[name][rsel] = drawn[name]
         toret['TARGETID_DATA'][rsel] = drawn['TARGETID']
 
-    if completeness != 'bitweights':
+    if tiles_on_randoms(completeness):
         # The data was weighted only by its fiber location, so the tile completeness that the
         # rest of the weight is missing belongs on the random instead.
         toret['WEIGHT'] *= toret['FRAC_TLOBS_TILES']
