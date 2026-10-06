@@ -211,7 +211,7 @@ class BaseGaussianMock(BaseClass):
 
         los : 'x', 'y', 'z'; int, 3-vector of int, default=None
             Line of sight :math:`\hat{\eta}` used to paint anisotropic power spectrum.
-            If provided, ``power`` should depend :math:`(k,\hat{k} \cdot \hat{\eta})`.
+            If provided, ``power`` should depend :math:`(k, \hat{k} \cdot \hat{\eta})`.
 
         seed : int, default=None
             The global random seed, used to set the seeds across all ranks.

@@ -150,7 +150,7 @@ def _format_positions(positions, position_type='xyz', dtype=None, copy=True, cos
 
     def __format_positions(positions):
         if position_type == 'pos':  # array of shape (N, 3)
-            positions = np.array(positions, dtype=dtype, copy=copy)
+            positions = np.array(positions, dtype=dtype) if copy else np.asarray(positions, dtype=dtype)
             if not np.issubdtype(positions.dtype, np.floating):
                 return None, 'Input position arrays should be of floating type, not {}'.format(positions.dtype)
             if positions.shape[-1] != 3:
@@ -160,7 +160,7 @@ def _format_positions(positions, position_type='xyz', dtype=None, copy=True, cos
         positions = list(positions)
         for ip, p in enumerate(positions):
             # Cast to the input dtype if exists (may be set by previous positions)
-            positions[ip] = np.array(p, dtype=dtype, copy=copy)
+            positions[ip] = np.array(p, dtype=dtype) if copy else np.asarray(p, dtype=dtype)
         size = len(positions[0])
         dt = positions[0].dtype
         if not np.issubdtype(dt, np.floating):

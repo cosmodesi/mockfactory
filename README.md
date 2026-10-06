@@ -78,10 +78,13 @@ Strict requirements are:
   - mpi4py
   - mpytools
 
+Optional requirements are:
+  - pmesh, for the deprecated mocks below (`pip install mockfactory[pmesh]`)
+
 Deprecated, kept for existing users and to be removed: the pmesh-based mocks `EulerianLinearMock`
-and `LagrangianLinearMock` need pmesh (`pip install mockfactory[deprecated]`); use the jaxpower
-routines in `jaxpower.mock` instead. `mockfactory.blinding` is deprecated as well, in favour of
-desiblind. Both raise a `FutureWarning` when imported.
+and `LagrangianLinearMock` need pmesh; use the jaxpower routines in `jaxpower.mock` instead.
+`mockfactory.blinding` is deprecated as well, in favour of desiblind. Both raise a `FutureWarning`
+when imported.
 
 ## Installation
 
@@ -100,12 +103,17 @@ git clone https://github.com/cosmodesi/mockfactory.git
 ```
 To install the code:
 ```
-python setup.py install --user
+pip install --user
 ```
-Or in development mode (any change to Python code will take place immediately):
+Or in development mode (any change to Python code will take place immediately) (Note the `.`):  
 ```
-python setup.py develop --user
+pip install --user -e .
 ```
+You may want to avoid installing dependencies in your local $HOME (in particular if you load the cosmodesi environment):
+```
+pip install --no-deps --user -e .
+```
+More information on pip: `https://pip.pypa.io/en/stable/cli/pip_install/`
 
 ## License
 

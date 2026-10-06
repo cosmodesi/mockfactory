@@ -11,12 +11,16 @@ name = "mockfactory"
 authors = [{name = "cosmodesi"}]
 description = "MPI-parallel package to apply cut-sky geometry to box galaxy mocks, for validation of clustering pipelines"
 version = "1.0.0"
-dependencies = ["numpy", "scipy", "mpi4py", "mpytools @ git+https://github.com/adematti/mpytools"]
-optional-dependencies = {deprecated = ["pmesh @ git+https://github.com/MP-Gadget/pmesh"]}
+dependencies = ["numpy", "scipy", "mpi4py", "mpytools @ git+https://github.com/cosmodesi/mpytools"]
 readme = "README.md"
 requires-python = ">=3.10"
 urls = {Repository = "http://github.com/cosmodesi/mockfactory"}
 classifiers = ["Programming Language :: Python :: 3"]
+
+[project.optional-dependencies]
+pmesh = [
+    "pmesh @ git+https://github.com/MP-Gadget/pmesh"
+]
 
 [tool.setuptools]
 packages = ["mockfactory"]
