@@ -86,7 +86,9 @@ def _make_clustering_randoms(i):
                                    maps_south=context['maps_south'],
                                    custom_masks=context['custom_masks'])
     if context['mask_random_targetid'] is not None:
-        array = _drop_targetid(array, context['mask_random_targetid'][i], 'random {:d}'.format(i))
+        keep = ~np.isin(np.asarray(array['TARGETID']), context['mask_random_targetid'][i])
+        logger.info('random {:d}: location mask removes {:d} of {:d}'.format(i, int((~keep).sum()), len(keep)))
+        array = array[keep]
     array = add_frac_tlobs(array, context['frac_tlobs'], missing=context['missing_frac_tlobs'],
                            data=context['full'])
     array = make_clustering_randoms(array, context['clustering'], seed=i,
@@ -156,15 +158,10 @@ def make_vetoed_full_data(data, assignments, tracer, notqso=False, targets=None,
     full = apply_veto_data(full, maxp, bits=bits, maps_north=maps_north, maps_south=maps_south,
                            custom_masks=custom_masks)
     if mask_targetid is not None:
-        full = _drop_targetid(full, mask_targetid, 'full data')
+        keep = ~np.isin(np.asarray(full['TARGETID']), mask_targetid)
+        logger.info('full data: location mask removes {:d} of {:d}'.format(int((~keep).sum()), len(keep)))
+        full = full[keep]
     return full
-
-
-def _drop_targetid(array, targetid, label):
-    """Remove the rows of ``array`` whose ``TARGETID`` is in ``targetid``."""
-    keep = ~np.isin(np.asarray(array['TARGETID']), targetid)
-    logger.info('{}: location mask removes {:d} of {:d}'.format(label, int((~keep).sum()), len(keep)))
-    return array[keep]
 
 
 def write_full_data(full, output_dir, tracer, notqso=False, completeness='fracz'):
@@ -299,16 +296,16 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
     mask_targetid : array, default=None
         Targets to remove, for an object level mask of fiber locations: removed from the full
         data once built and vetoed, before anything is measured on it (``FRAC_TLOBS_TILES``,
-        n(z), completeness per number of tiles). From the mock's raw potential assignments with
-        :func:`~mockfactory.desi.lsscat.combine.get_targetid_at_tilelocid`; ``data`` cannot
-        give them, having lost the locations outside ``good_tilelocid``. For the bad petal
-        nights, whose observations the merged target list accepted and which lose the targets
-        observed there for good, see
-        :func:`~mockfactory.desi.lsscat.combine.read_bad_petal_night_tilelocid`.
+        n(z), completeness per number of tiles). From the mock's raw potential assignments, as
+        :func:`~mockfactory.desi.lsscat.combine.mask_bad_petal_night_targetid` gives them for the
+        bad petal nights; ``data`` cannot give them, having lost the locations outside
+        ``good_tilelocid``.
     mask_random_targetid : list, default=None
         The same mask on the randoms, one array of random ``TARGETID`` per random catalog, from
         the survey's raw ``rancomb_{i}{program}wdupspec_zdone`` rows of the same index (the
-        dupran randoms have lost the rejected locations too). Removed once the full randoms are
+        dupran randoms have lost the rejected locations too), as
+        :func:`~mockfactory.desi.lsscat.combine.read_bad_petal_night_random_targetid` gives them
+        for the bad petal nights. Removed once the full randoms are
         built and vetoed. Give both or neither: masking one side only is an angular selection
         the randoms cannot describe.
     """

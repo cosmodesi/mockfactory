@@ -11,6 +11,7 @@ random catalogs, and reads them back at each stage. Nothing here writes: the tab
 returned, and :mod:`mockfactory.desi.lsscat.pipeline` hands them straight to the next stage.
 """
 
+import functools
 import logging
 from pathlib import Path
 
@@ -139,6 +140,24 @@ def read_bad_petal_nights(fn):
     return toret
 
 
+def _on_bad_petal_night(spec, bad_petal_nights, program='dark'):
+    """
+    Return whether each spectrum of ``spec`` (with ``FIBER``, ``LASTNIGHT``) was observed on a bad
+    petal night: ``bad_petal_nights`` as ``(night, petal)`` pairs, the path of a list, or ``True``
+    for :data:`BAD_PETAL_NIGHT_FN` of ``program``.
+    """
+    if bad_petal_nights is True:
+        bad_petal_nights = BAD_PETAL_NIGHT_FN[program]
+    if isinstance(bad_petal_nights, str):
+        bad_petal_nights = read_bad_petal_nights(bad_petal_nights)
+    # A petal is five hundred consecutive fibers, so a night and a petal name a block.
+    bad = np.zeros(len(spec), dtype='?')
+    for night, petal in bad_petal_nights:
+        bad |= ((spec['LASTNIGHT'] == night) & (spec['FIBER'] >= 500 * petal)
+                & (spec['FIBER'] < 500 * (petal + 1)))
+    return bad
+
+
 BAD_FIBER_TIME_FN = '/dvs_ro/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1/unique_badfibers_time-dependent.txt'
 
 
@@ -208,10 +227,6 @@ def read_good_tilelocid(spec_fn, program='dark', tsnr2_min=None, fiberstatus_bit
         bad_fibers = [bad_fibers]
     if bad_fibers is not None and len(bad_fibers) and isinstance(bad_fibers[0], str):
         bad_fibers = np.concatenate([np.atleast_1d(np.loadtxt(fn)) for fn in bad_fibers])
-    if bad_petal_nights is True:
-        bad_petal_nights = BAD_PETAL_NIGHT_FN[program]
-    if isinstance(bad_petal_nights, str):
-        bad_petal_nights = read_bad_petal_nights(bad_petal_nights)
     if bad_fibers_time is True:
         bad_fibers_time = BAD_FIBER_TIME_FN
     if isinstance(bad_fibers_time, str):
@@ -219,7 +234,7 @@ def read_good_tilelocid(spec_fn, program='dark', tsnr2_min=None, fiberstatus_bit
     columns = ['TILEID', 'LOCATION', 'FIBER', 'ZWARN', 'ZWARN_MTL', 'COADD_FIBERSTATUS', column]
     if bad_petal_nights or bad_fibers_time:
         columns.append('LASTNIGHT')
-    spec = fitsio.read(spec_fn, columns=columns)
+    spec = fitsio.read(str(spec_fn), columns=columns)
     select = (spec['ZWARN'] != NULL) & (spec['ZWARN'] * 0 == 0)
     select &= (spec['ZWARN_MTL'] & zwarn_mask.mask('NODATA|BAD_SPECQA|BAD_PETALQA')) == 0
     select &= spec[column] >= tsnr2_min
@@ -243,73 +258,86 @@ def read_good_tilelocid(spec_fn, program='dark', tsnr2_min=None, fiberstatus_bit
                     .format(int(bad.sum())))
         select &= ~bad
     if bad_petal_nights:
-        # A petal is five hundred consecutive fibers, so a night and a petal name a block.
-        bad = np.zeros(len(spec), dtype='?')
-        for night, petal in bad_petal_nights:
-            bad |= ((spec['LASTNIGHT'] == night) & (spec['FIBER'] >= 500 * petal)
-                    & (spec['FIBER'] < 500 * (petal + 1)))
+        bad = _on_bad_petal_night(spec, bad_petal_nights, program=program)
         logger.info('{:d} spectra rejected by the petal night list'.format(int(bad.sum())))
         select &= ~bad
     logger.info('{:d} of {:d} locations gave a usable spectrum'.format(select.sum(), len(spec)))
     return np.unique(10000 * spec['TILEID'][select].astype('i8') + spec['LOCATION'][select])
 
 
-def read_bad_petal_night_tilelocid(spec_fn, program='dark', bad_petal_nights=True):
-    """
-    Return the fiber locations the LSS catalogs reject for being observed on a bad petal night.
+#: The LSS catalogs' own products of the bad petal night lists: the locations, per program, and per random
+#: catalog the randoms with a row there (ran_{i}_{program}_badpetalnight_TARGETID.txt).
+BAD_PETAL_NIGHT_DIR = Path('/dvs_ro/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1')
+BAD_PETAL_NIGHT_TILELOCID_FN = {'dark': BAD_PETAL_NIGHT_DIR / 'dark_badpetalnight_TILELOCID.txt'}
 
-    The spectra were taken, and the merged target list read their redshifts at the time; only
-    the catalogs drop them, after the fact, from the list of bad petal nights.
+
+def mask_bad_petal_night_targetid(rows, program='dark', spec_fn=None, bad_petal_nights=True):
+    """
+    Return the targets with a row at a fiber location the LSS catalogs reject for being observed
+    on a bad petal night.
+
+    The spectra were taken, and the merged target list read their redshifts at the time and
+    marked the targets done; only the catalogs drop them, after the fact. Removing the targets
+    returned here from the data, and the randoms of :func:`read_bad_petal_night_random_targetid`
+    from the randoms, masks those locations at the object level: a target is dropped if any
+    fiber that could reach it is there, whether or not it got that fiber. Data and randoms lose
+    the same area, so the mask applies to the altmtl and to the complete catalogs alike; see
+    ``mask_targetid`` and ``mask_random_targetid`` of
+    :func:`~mockfactory.desi.lsscat.pipeline.run_tracer`.
+
+    The rows must be the raw ones, the mock's potential assignments ``pota-{PROGRAM}``: the
+    combined potential assignments of :func:`combine_data` have already lost the locations
+    outside ``good_tilelocid``, and with them every location the catalogs reject.
 
     Parameters
     ----------
-    spec_fn : str
-        Combined spectroscopic table of the real survey, ``datcomb_{program}_spec_zdone.fits``.
+    rows : array, str, Path
+        With ``TARGETID``, ``TILEID``, ``LOCATION``, or the path of a file holding them.
     program : str, default='dark'
-        Observing program, choosing the LSS list when ``bad_petal_nights`` is ``True``.
-    bad_petal_nights : list, str, default=True
-        Nights and petals, as ``(night, petal)`` pairs or as the path of the LSS list.
-        ``True`` uses :data:`BAD_PETAL_NIGHT_FN`.
+        Observing program.
+    spec_fn : str, Path, default=None
+        Combined spectroscopic table of the real survey, ``datcomb_{program}_spec_zdone.fits``,
+        to find the locations in, with ``bad_petal_nights``; read once per file and kept.
+        Defaults to the LSS catalogs' list of locations, :data:`BAD_PETAL_NIGHT_TILELOCID_FN`,
+        which only the dark program has.
+    bad_petal_nights : str, bool, default=True
+        With ``spec_fn``: path of the list of nights and petals; ``True`` uses
+        :data:`BAD_PETAL_NIGHT_FN`.
     """
     import fitsio
-    if bad_petal_nights is True:
-        bad_petal_nights = BAD_PETAL_NIGHT_FN[program]
-    if isinstance(bad_petal_nights, str):
-        bad_petal_nights = read_bad_petal_nights(bad_petal_nights)
-    spec = fitsio.read(str(spec_fn), columns=['TILEID', 'LOCATION', 'FIBER', 'LASTNIGHT'])
-    bad = np.zeros(len(spec), dtype='?')
-    for night, petal in bad_petal_nights:
-        bad |= ((spec['LASTNIGHT'] == night) & (spec['FIBER'] >= 500 * petal)
-                & (spec['FIBER'] < 500 * (petal + 1)))
+    if isinstance(rows, (str, Path)):
+        rows = fitsio.read(str(rows), columns=['TARGETID', 'TILEID', 'LOCATION'])
+    if spec_fn is None:
+        if program not in BAD_PETAL_NIGHT_TILELOCID_FN:
+            raise ValueError('no list of bad petal night locations for program {}; give spec_fn'.format(program))
+        tilelocid = np.loadtxt(BAD_PETAL_NIGHT_TILELOCID_FN[program], dtype='i8')
+    else:
+        if isinstance(bad_petal_nights, Path):
+            bad_petal_nights = str(bad_petal_nights)
+        tilelocid = _read_bad_petal_night_tilelocid(str(spec_fn), program, bad_petal_nights)
+    tl = 10000 * np.asarray(rows['TILEID'], dtype='i8') + np.asarray(rows['LOCATION'])
+    return np.unique(np.asarray(rows['TARGETID'])[np.isin(tl, tilelocid)])
+
+
+def read_bad_petal_night_random_targetid(i, program='dark'):
+    """
+    Return the randoms of the survey's random catalog ``i`` with a row at a location the LSS
+    catalogs reject for being observed on a bad petal night, as the LSS catalogs list them from
+    ``rancomb_{i}{program}wdupspec_zdone``: the randoms' counterpart of
+    :func:`mask_bad_petal_night_targetid`.
+    """
+    return np.loadtxt(BAD_PETAL_NIGHT_DIR / 'ran_{:d}_{}_badpetalnight_TARGETID.txt'.format(i, program), dtype='i8')
+
+
+@functools.lru_cache
+def _read_bad_petal_night_tilelocid(spec_fn, program, bad_petal_nights):
+    """The locations of ``spec_fn`` observed on a bad petal night, ``10000 * TILEID + LOCATION``."""
+    import fitsio
+    spec = fitsio.read(spec_fn, columns=['TILEID', 'LOCATION', 'FIBER', 'LASTNIGHT'])
+    bad = _on_bad_petal_night(spec, bad_petal_nights, program=program)
     toret = np.unique(10000 * spec['TILEID'][bad].astype('i8') + spec['LOCATION'][bad])
     logger.info('{:d} spectra, {:d} locations on bad petal nights'.format(int(bad.sum()), toret.size))
     return toret
-
-
-def get_targetid_at_tilelocid(rows, tilelocid):
-    """
-    Return the targets with a row at one of the fiber locations ``tilelocid``.
-
-    Removing them, from the data with the mock's potential assignments (``pota-{PROGRAM}``) and
-    from the randoms with the survey's (``rancomb_{i}{program}wdupspec_zdone``), masks those
-    locations at the object level: a target is dropped if any fiber that could reach it is
-    there, whether or not it got that fiber. Data and randoms lose the same area, so the mask
-    applies to the altmtl and to the complete catalogs alike; see ``mask_targetid`` and
-    ``mask_random_targetid`` of :func:`~mockfactory.desi.lsscat.pipeline.run_tracer`.
-
-    The rows must be the raw ones: the combined potential assignments of :func:`combine_data`
-    and the survey's ``dupran`` randoms have already lost the locations outside
-    ``good_tilelocid``, and with them every location the catalogs reject.
-
-    Parameters
-    ----------
-    rows : array
-        With ``TARGETID``, ``TILEID``, ``LOCATION``.
-    tilelocid : array
-        Locations, ``10000 * TILEID + LOCATION``.
-    """
-    tl = 10000 * np.asarray(rows['TILEID'], dtype='i8') + np.asarray(rows['LOCATION'])
-    return np.unique(np.asarray(rows['TARGETID'])[np.isin(tl, tilelocid)])
 
 
 #: Imaging randoms the catalogs are drawn from, carrying the legacy survey columns.

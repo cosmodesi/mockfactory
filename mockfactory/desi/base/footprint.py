@@ -24,7 +24,7 @@ except KeyError:
         os.environ['DESI_SURVEYOPS'] = '/global/cfs/cdirs/desi/survey/ops/surveyops/trunk'
 
 def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', survey='main',
-                         tiles_fn=redux_path + '/{redux}/tiles-{redux}.csv',
+                         tiles_fn=Path(redux_path) / '{redux}' / 'tiles-{redux}.csv',
                          return_tile_index=False):
     """
     Return mask for the requested DESI footprint.
@@ -101,7 +101,7 @@ def is_in_desi_footprint(ra, dec, release='m3', npasses=None, program='dark', su
         tiles = tiles[tiles['PROGRAM'] == program.upper()]
     else:
         import pandas as pd
-        tiles_fn = tiles_fn.format(redux=redux)
+        tiles_fn = str(tiles_fn).format(redux=redux)
         tiles = pd.read_csv(tiles_fn)
         tiles = tiles[(tiles['SURVEY'] == survey) & (tiles['FAPRGRM'] == program)]
         if lastnight is not None:

@@ -34,14 +34,14 @@ import numpy as np
 
 logger = logging.getLogger('run_mock')
 
-DESI_DIR = '/dvs_ro/cfs/cdirs/desi'
+DESI_DIR = Path('/dvs_ro/cfs/cdirs/desi')
+LSS_DIR = DESI_DIR / 'survey/catalogs/DA2/LSS'
 #: AbacusSummit high fidelity v2.0 cubic boxes.
-BOX_DIR = Path(DESI_DIR) / 'mocks/cai/abacus_HF/DR2_v2.0'
+BOX_DIR = DESI_DIR / 'mocks/cai/abacus_HF/DR2_v2.0'
 #: The HOD of the boxes, unless the tracer names its own in PROGRAMS: the quasar boxes come in 'base' only.
 BOX_COSMO, BOX_HOD = '000', 'base_B'
-#: The measured redshift distribution the cutsky is downsampled to.
-NZ_FN = DESI_DIR + '/survey/catalogs/DA2/LSS/loa-v1/LSScats/v2/nonKP/{tracer}_{region}_nz.txt'
-TILES_FN = DESI_DIR + '/survey/catalogs/DA2/LSS/tiles-{program}.fits'
+#: The measured redshift distributions the cutsky is downsampled to, {tracer}_{region}_nz.txt.
+NZ_DIR = LSS_DIR / 'loa-v1/LSScats/v2/nonKP'
 
 #: What each tracer needs, and nothing a tracer does not. ``box`` names the box directory and
 #: ``snapshots`` the redshift of each, which the light cone is stitched from: a snapshot covers
@@ -68,7 +68,7 @@ PROGRAMS = {
                 imsys_regions=('DES', 'SnotDES', 'N'), hod='base'),
 }
 #: Observing condition maps the imaging weights are fitted against, the survey's own.
-HPMAP_DIR = DESI_DIR + '/survey/catalogs/DA2/LSS/loa-v1/LSScats/v2/hpmaps'
+HPMAP_DIR = LSS_DIR / 'loa-v1/LSScats/v2/hpmaps'
 #: DR9 brick pixel maskbits, filled in per region and brick by get_brick_pixel_quantities.
 MASKBITS_FN = ('/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9/{region}/coadd/{brickname:.3s}/'
                '{brickname}/legacysurvey-{brickname}-maskbits.fits.fz')
@@ -78,10 +78,10 @@ NEXP_FN = ('/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9/{{region}}/coadd/{{bri
 #: Imaging bits the targets are vetoed on, and which the randoms must then be vetoed on too.
 #: Bit 11 is the bright galaxy sample's own; the dark tracers carry 12 and 13 instead.
 VETO_BITS = {'bright': (1, 5, 6, 7, 10, 11, 13), 'dark': (1, 5, 6, 7, 10, 12, 13)}
-#: The randoms' potential assignments, and where the survey got a usable spectrum. Both are
-#: survey products: only PRIORITY comes from the mock, which combine_randoms puts there.
-RANCOMB_FN = DESI_DIR + '/survey/catalogs/DA2/LSS/loa-v1/rancomb_{{:d}}{program}wdupspec_zdone.fits'
-SPEC_FN = DESI_DIR + '/survey/catalogs/DA2/LSS/loa-v1/datcomb_{program}_spec_zdone.fits'
+#: The randoms' potential assignments (rancomb_{i}{program}wdupspec_zdone.fits), and where the survey
+#: got a usable spectrum (datcomb_{program}_spec_zdone.fits). Both are survey products: only PRIORITY
+#: comes from the mock, which combine_randoms puts there.
+LOA_DIR = LSS_DIR / 'loa-v1'
 #: Only the columns the catalog stage reads: at 89 million rows a full read is 7.2 GB a catalog.
 RANDOM_COLUMNS = ('TARGETID', 'LOCATION', 'FIBER', 'TILEID', 'RA', 'DEC', 'PRIORITY')
 STAGES = ('cutsky', 'targets', 'altmtl', 'pota', 'lsscat', 'imsys')
@@ -161,7 +161,7 @@ def read_box(imock, box, zsnap, mpicomm, hod=BOX_HOD):
 def get_radial_mask(tracer, region, nbar_box, zrange):
     """Downsampling probability per redshift, taking the box density to the data's n(z)."""
     from mockfactory import TabulatedRadialMask
-    z, nbar = np.loadtxt(NZ_FN.format(tracer=tracer, region=region), usecols=(0, 3), unpack=True)
+    z, nbar = np.loadtxt(NZ_DIR / '{}_{}_nz.txt'.format(tracer, region), usecols=(0, 3), unpack=True)
     keep = (z > zrange[0]) & (z < zrange[1])
     if nbar[keep].max() > nbar_box:
         raise ValueError('the box (nbar {:.3e}) is too sparse for the {} {} n(z) (max {:.3e})'
@@ -351,7 +351,7 @@ def run_lsscat(args):
     for i in range(args.nrandom):
         start = time.time()
         imaging.append(read_random_imaging(i, tracer=args.tracer))
-        array = as_table(fitsio.read(args.rancomb_fn.format(i), columns=RANDOM_COLUMNS))
+        array = as_table(fitsio.read(args.rancomb_fns[i], columns=RANDOM_COLUMNS))
         set_column(array, 'TILELOCID', 10000 * array['TILEID'] + array['LOCATION'], dtype='i8')
         random_tiles.append(count_tiles(array[np.isin(array['TILELOCID'], good_tilelocid)]))
         del array
@@ -370,7 +370,7 @@ def run_lsscat(args):
 
         def _random(i, assignments=assignments):
             # combine_randoms replaces the survey's PRIORITY with the one this mock implies.
-            return combine_randoms(fitsio.read(args.rancomb_fn.format(i), columns=RANDOM_COLUMNS),
+            return combine_randoms(fitsio.read(args.rancomb_fns[i], columns=RANDOM_COLUMNS),
                                    assignments)
 
         randoms = [(lambda j: (lambda i: _random(j)))(i) for i in range(args.nrandom)]
@@ -513,9 +513,10 @@ def main(args=None):
     if args.bits is None:
         args.bits = list(VETO_BITS[args.obscon])
     if args.tiles_fn is None:
-        args.tiles_fn = TILES_FN.format(program=args.obscon.upper())
-    args.rancomb_fn = RANCOMB_FN.format(program=args.obscon.lower())
-    args.spec_fn = SPEC_FN.format(program=args.obscon.lower())
+        args.tiles_fn = str(LSS_DIR / 'tiles-{}.fits'.format(args.obscon.upper()))
+    args.rancomb_fns = [str(LOA_DIR / 'rancomb_{:d}{}wdupspec_zdone.fits'.format(i, args.obscon.lower()))
+                        for i in range(args.nrandom)]
+    args.spec_fn = str(LOA_DIR / 'datcomb_{}_spec_zdone.fits'.format(args.obscon.lower()))
     stages = args.stages.split(',')
     unknown = [stage for stage in stages if stage not in STAGES]
     if unknown:

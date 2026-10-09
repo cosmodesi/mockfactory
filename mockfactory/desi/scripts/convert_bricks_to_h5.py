@@ -50,11 +50,9 @@ import numpy as np
 
 logger = logging.getLogger('convert_bricks')
 
-DR9 = '/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9'
-#: Source brick file, by region, brick name and quantity.
-BRICK_FN = DR9 + '/{region}/coadd/{prefix}/{brickname}/legacysurvey-{brickname}-{quantity}.fits.fz'
-#: List of the bricks that carry data, per region.
-BRICKS_FN = DR9 + '/{region}/survey-bricks-dr9-{region}.fits.gz'
+#: Source bricks, {region}/coadd/{prefix}/{brickname}/legacysurvey-{brickname}-{quantity}.fits.fz, and the list of
+#: the bricks that carry data, {region}/survey-bricks-dr9-{region}.fits.gz.
+DR9 = Path('/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9')
 QUANTITIES = ('maskbits', 'nexp-g', 'nexp-r', 'nexp-z')
 #: Cards a reader needs to turn sky coordinates into pixels.
 WCS_KEYS = ('NAXIS1', 'NAXIS2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2',
@@ -69,7 +67,8 @@ def get_bricknames(region):
     """Brick names of ``region`` that carry data, sorted, grouped by their shard prefix."""
     import fitsio
 
-    bricknames = fitsio.read(BRICKS_FN.format(region=region), columns=['brickname'])['brickname']
+    bricknames = fitsio.read(str(DR9 / region / 'survey-bricks-dr9-{}.fits.gz'.format(region)),
+                             columns=['brickname'])['brickname']
     bricknames = np.sort(np.asarray(bricknames).astype('U8'))
     prefixes = np.array([name[:3] for name in bricknames])
     # Sorting the names sorts their prefixes too, so the shards are contiguous runs
@@ -91,13 +90,12 @@ def convert_prefix(region, prefix, bricknames, output_fn, quantities, chunk, cle
         for brickname in bricknames:
             group = h5.create_group(str(brickname))
             for quantity in quantities:
-                fn = BRICK_FN.format(region=region, prefix=prefix, brickname=brickname,
-                                     quantity=quantity)
-                if not Path(fn).is_file():
+                fn = DR9 / region / 'coadd' / prefix / brickname / 'legacysurvey-{}-{}.fits.fz'.format(brickname, quantity)
+                if not fn.is_file():
                     # An absent band is absent coverage, and must stay distinguishable from zero
                     nmissing += 1
                     continue
-                with fitsio.FITS(fn) as f:
+                with fitsio.FITS(str(fn)) as f:
                     data = f[1].read()
                     header = f[1].read_header()
                 shape = tuple(min(c, s) for c, s in zip((chunk, chunk), data.shape))
