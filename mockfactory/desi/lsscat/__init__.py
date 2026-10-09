@@ -28,11 +28,29 @@ keeps on disk in between, about 450 GB per realization for one tracer of the dar
 a terabyte for its three, is held in memory and passed along instead. The only reads are the
 survey's own inputs and the per tile assignments, and the only writes are the catalogs asked
 for.
+
+.. code-block:: python
+
+    from pathlib import Path
+    import fitsio
+    from mockfactory.desi.lsscat import read_bad_petal_night_tilelocid, get_targetid_at_tilelocid, run_tracer
+
+    lss_dir = Path('/global/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1')
+    mask = read_bad_petal_night_tilelocid(lss_dir / 'datcomb_dark_spec_zdone.fits', program='dark')
+
+    def masked(fn):
+        return get_targetid_at_tilelocid(fitsio.read(str(fn), columns=['TARGETID', 'TILEID', 'LOCATION']), mask)
+
+    run_tracer(data, randoms, assignments, 'QSO', ...,
+               mask_targetid=masked(altmtl_dir / 'pota-DARK.fits'),
+               mask_random_targetid=[masked(lss_dir / f'rancomb_{i:d}darkwdupspec_zdone.fits')
+                                     for i in range(len(randoms))])
 """
 
 from .utils import (as_table, get_photsys, get_galactic_cap, join_left, last_of_each,
                     group_fraction)
-from .combine import (read_assignments, combine_data, count_tiles, combine_randoms, read_good_tilelocid,
+from .combine import (read_assignments, combine_data, count_tiles, combine_randoms, read_dupran_randoms, read_good_tilelocid,
+                      read_bad_petal_night_tilelocid, get_targetid_at_tilelocid,
                       read_random_imaging)
 from .full import make_full_data, make_full_randoms, select_tracer, get_max_priority
 from .veto import (apply_veto_data, apply_veto_randoms, apply_imaging_veto, apply_map_veto,

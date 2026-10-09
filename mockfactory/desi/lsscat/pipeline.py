@@ -74,16 +74,19 @@ def _make_clustering_randoms(i):
     """
     context = _context
     array = _get_random(context['randoms'], i)
-    imaging = read_random_imaging(i, tracer=context['tracer']) \
-        if context['random_imaging'] is None else context['random_imaging'][i]
-    tiles = None if context['random_tiles'] is None else context['random_tiles'][i]
-    array = make_full_randoms(array, context['tracer'], notqso=context['notqso'],
-                              good_tilelocid=context['good_tilelocid'], imaging=imaging,
-                              tiles=tiles)
-    array = apply_veto_randoms(array, context['maxp'], bits=context['bits'],
-                               maps_north=context['maps_north'],
-                               maps_south=context['maps_south'],
-                               custom_masks=context['custom_masks'])
+    if not context['full_randoms']:
+        imaging = read_random_imaging(i, tracer=context['tracer']) \
+            if context['random_imaging'] is None else context['random_imaging'][i]
+        tiles = None if context['random_tiles'] is None else context['random_tiles'][i]
+        array = make_full_randoms(array, context['tracer'], notqso=context['notqso'],
+                                  good_tilelocid=context['good_tilelocid'], imaging=imaging,
+                                  tiles=tiles)
+        array = apply_veto_randoms(array, context['maxp'], bits=context['bits'],
+                                   maps_north=context['maps_north'],
+                                   maps_south=context['maps_south'],
+                                   custom_masks=context['custom_masks'])
+    if context['mask_random_targetid'] is not None:
+        array = _drop_targetid(array, context['mask_random_targetid'][i], 'random {:d}'.format(i))
     array = add_frac_tlobs(array, context['frac_tlobs'], missing=context['missing_frac_tlobs'],
                            data=context['full'])
     array = make_clustering_randoms(array, context['clustering'], seed=i,
@@ -128,7 +131,7 @@ def _finish_random(i, array):
 
 
 def make_vetoed_full_data(data, assignments, tracer, notqso=False, targets=None, good_tilelocid=None,
-                          hpmaps=None, bits=None, custom_masks=None):
+                          hpmaps=None, bits=None, custom_masks=None, mask_targetid=None):
     """
     Return the full data catalog with every veto applied, what the survey pipeline writes as
     ``{tracer}_full_HPmapcut.dat``; the arguments are those of :func:`run_tracer`. It depends on
@@ -150,8 +153,18 @@ def make_vetoed_full_data(data, assignments, tracer, notqso=False, targets=None,
     # workers fork, so that they do not inherit it either.
     del data
     logger.info('--- {}: vetoes ---'.format(tracer))
-    return apply_veto_data(full, maxp, bits=bits, maps_north=maps_north, maps_south=maps_south,
+    full = apply_veto_data(full, maxp, bits=bits, maps_north=maps_north, maps_south=maps_south,
                            custom_masks=custom_masks)
+    if mask_targetid is not None:
+        full = _drop_targetid(full, mask_targetid, 'full data')
+    return full
+
+
+def _drop_targetid(array, targetid, label):
+    """Remove the rows of ``array`` whose ``TARGETID`` is in ``targetid``."""
+    keep = ~np.isin(np.asarray(array['TARGETID']), targetid)
+    logger.info('{}: location mask removes {:d} of {:d}'.format(label, int((~keep).sum()), len(keep)))
+    return array[keep]
 
 
 def write_full_data(full, output_dir, tracer, notqso=False, completeness='fracz'):
@@ -175,7 +188,8 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                subsample=None, zsplit=None, data_selection=None, columns=(), name=None, output_dir=None,
                numproc=1,
                numproc_randoms=None,
-               keep=True, bits=None, custom_masks=None, write_full=False):
+               keep=True, bits=None, custom_masks=None, write_full=False, full_randoms=False,
+               mask_targetid=None, mask_random_targetid=None):
     """
     Run every stage for one tracer, and return its clustering catalogs.
 
@@ -276,7 +290,32 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
     write_full : bool, default=False
         Whether to write the vetoed full data catalog too, with ``output_dir``; see
         :func:`write_full_data`. The angular upweights of a measurement read it.
+    full_randoms : bool, default=False
+        Whether ``randoms`` are already the vetoed full randoms of the tracer, from
+        :func:`~mockfactory.desi.lsscat.combine.read_dupran_randoms`, carrying ``NTILE``,
+        ``TILES`` and ``PHOTSYS``. They then skip
+        :func:`~mockfactory.desi.lsscat.full.make_full_randoms` and the random veto, and
+        ``random_imaging`` and ``random_tiles`` are not used.
+    mask_targetid : array, default=None
+        Targets to remove, for an object level mask of fiber locations: removed from the full
+        data once built and vetoed, before anything is measured on it (``FRAC_TLOBS_TILES``,
+        n(z), completeness per number of tiles). From the mock's raw potential assignments with
+        :func:`~mockfactory.desi.lsscat.combine.get_targetid_at_tilelocid`; ``data`` cannot
+        give them, having lost the locations outside ``good_tilelocid``. For the bad petal
+        nights, whose observations the merged target list accepted and which lose the targets
+        observed there for good, see
+        :func:`~mockfactory.desi.lsscat.combine.read_bad_petal_night_tilelocid`.
+    mask_random_targetid : list, default=None
+        The same mask on the randoms, one array of random ``TARGETID`` per random catalog, from
+        the survey's raw ``rancomb_{i}{program}wdupspec_zdone`` rows of the same index (the
+        dupran randoms have lost the rejected locations too). Removed once the full randoms are
+        built and vetoed. Give both or neither: masking one side only is an angular selection
+        the randoms cannot describe.
     """
+    if (mask_targetid is None) != (mask_random_targetid is None):
+        raise ValueError('give mask_targetid and mask_random_targetid together')
+    if mask_random_targetid is not None and len(mask_random_targetid) != len(randoms):
+        raise ValueError('mask_random_targetid needs one array per random catalog')
     maxp = get_max_priority(tracer, notqso=notqso)
     if bits is None:
         bits = get_mask_bits(tracer)
@@ -296,7 +335,7 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
     # full catalog is built: an array passed in stays alive in the caller's frame for the whole run.
     full = make_vetoed_full_data(data, assignments, tracer, notqso=notqso, targets=targets,
                                  good_tilelocid=good_tilelocid, hpmaps=hpmaps, bits=bits,
-                                 custom_masks=custom_masks)
+                                 custom_masks=custom_masks, mask_targetid=mask_targetid)
     del data
     if write_full and output_dir is not None:
         write_full_data(full, output_dir, tracer, notqso=notqso, completeness=completeness)
@@ -309,13 +348,14 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                                       columns=columns, data_selection=data_selection)
 
     _context.clear()
-    _context.update(randoms=randoms, random_imaging=random_imaging, random_tiles=random_tiles,
+    _context.update(randoms=randoms, full_randoms=full_randoms, random_imaging=random_imaging, random_tiles=random_tiles,
                     tracer=tracer,
                     notqso=notqso, good_tilelocid=good_tilelocid, maxp=maxp, bits=bits, custom_masks=custom_masks,
                     maps_north=maps_north, maps_south=maps_south, frac_tlobs=frac_tlobs,
                     missing_frac_tlobs=missing_frac_tlobs, full=full, clustering=clustering,
                     completeness=completeness, zmin=zmin, dz=dz, p0=p0, name=name,
-                    output_dir=output_dir, keep=True, caps=None)
+                    output_dir=output_dir, keep=True, caps=None,
+                    mask_random_targetid=mask_random_targetid)
 
     # The first random catalog is built here, because the number density and the completeness
     # per number of tiles come from it and every other catalog needs them. The rest are then

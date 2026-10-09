@@ -117,8 +117,9 @@ TSNR2_MIN = {'dark': ('TSNR2_ELG', 80.), 'bright': ('TSNR2_BGS', 1000.)}
 BAD_FIBERSTATUS = (13, 14)
 
 
-#: Lists the survey drew up after the fact, of fibers and of petal nights whose redshifts
-#: cannot be trusted. They are survey and release specific, hence paths rather than code.
+#: Lists the LSS catalogs drew up after the fact, of fibers and of petal nights whose redshifts
+#: they do not trust; the spectra exist, and the merged target list used them at the time. They
+#: are release specific, hence paths rather than code.
 BAD_FIBER_FN = {'dark': ['/dvs_ro/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1/bad_nz_fibers_ks_test.txt',
                          '/dvs_ro/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1/elg_bad_nz_spike_fibers_1.498_1.499.txt'],
                 'bright': ['/dvs_ro/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1/bad_nz_fibers_ks_test.txt']}
@@ -128,7 +129,7 @@ BAD_PETAL_NIGHT_FN = {'dark': '/dvs_ro/cfs/cdirs/desi/survey/catalogs/DA2/LSS/lo
 
 
 def read_bad_petal_nights(fn):
-    """Return the (night, petal) pairs whose spectra the survey rejected."""
+    """Return the (night, petal) pairs whose spectra the LSS catalogs reject."""
     toret = []
     with open(fn) as file:
         for line in file:
@@ -138,13 +139,12 @@ def read_bad_petal_nights(fn):
     return toret
 
 
-#: Fibers that went bad for part of the survey rather than all of it.
 BAD_FIBER_TIME_FN = '/dvs_ro/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1/unique_badfibers_time-dependent.txt'
 
 
 def read_bad_fibers_time_dependent(fn):
     """
-    Return the fibers the survey rejected for part of its duration, as
+    Return the fibers the LSS catalogs reject for part of the survey, as
     ``(fiber, [(first night, last night), ...])``.
 
     A line names a fiber and then the nights it was bad over, as half open intervals; a night
@@ -189,10 +189,10 @@ def read_good_tilelocid(spec_fn, program='dark', tsnr2_min=None, fiberstatus_bit
         Bits of ``COADD_FIBERSTATUS`` that disqualify a location.
     bad_fibers : array, str, list, default=None
         Fibers found after the fact to have a poor redshift success rate, as values or as the
-        paths of the survey's lists. ``True`` uses :data:`BAD_FIBER_FN` for the program.
+        paths of the LSS lists. ``True`` uses :data:`BAD_FIBER_FN` for the program.
     bad_petal_nights : list, str, default=None
-        Nights and petals whose spectra the survey rejected, as ``(night, petal)`` pairs or as
-        the path of the survey's list. ``True`` uses :data:`BAD_PETAL_NIGHT_FN`.
+        Nights and petals whose spectra the LSS catalogs reject, as ``(night, petal)`` pairs or
+        as the path of their list. ``True`` uses :data:`BAD_PETAL_NIGHT_FN`.
     bad_fibers_time : list, str, default=None
         Fibers rejected over part of the survey only; see
         :func:`read_bad_fibers_time_dependent`. ``True`` uses :data:`BAD_FIBER_TIME_FN`.
@@ -252,6 +252,64 @@ def read_good_tilelocid(spec_fn, program='dark', tsnr2_min=None, fiberstatus_bit
         select &= ~bad
     logger.info('{:d} of {:d} locations gave a usable spectrum'.format(select.sum(), len(spec)))
     return np.unique(10000 * spec['TILEID'][select].astype('i8') + spec['LOCATION'][select])
+
+
+def read_bad_petal_night_tilelocid(spec_fn, program='dark', bad_petal_nights=True):
+    """
+    Return the fiber locations the LSS catalogs reject for being observed on a bad petal night.
+
+    The spectra were taken, and the merged target list read their redshifts at the time; only
+    the catalogs drop them, after the fact, from the list of bad petal nights.
+
+    Parameters
+    ----------
+    spec_fn : str
+        Combined spectroscopic table of the real survey, ``datcomb_{program}_spec_zdone.fits``.
+    program : str, default='dark'
+        Observing program, choosing the LSS list when ``bad_petal_nights`` is ``True``.
+    bad_petal_nights : list, str, default=True
+        Nights and petals, as ``(night, petal)`` pairs or as the path of the LSS list.
+        ``True`` uses :data:`BAD_PETAL_NIGHT_FN`.
+    """
+    import fitsio
+    if bad_petal_nights is True:
+        bad_petal_nights = BAD_PETAL_NIGHT_FN[program]
+    if isinstance(bad_petal_nights, str):
+        bad_petal_nights = read_bad_petal_nights(bad_petal_nights)
+    spec = fitsio.read(str(spec_fn), columns=['TILEID', 'LOCATION', 'FIBER', 'LASTNIGHT'])
+    bad = np.zeros(len(spec), dtype='?')
+    for night, petal in bad_petal_nights:
+        bad |= ((spec['LASTNIGHT'] == night) & (spec['FIBER'] >= 500 * petal)
+                & (spec['FIBER'] < 500 * (petal + 1)))
+    toret = np.unique(10000 * spec['TILEID'][bad].astype('i8') + spec['LOCATION'][bad])
+    logger.info('{:d} spectra, {:d} locations on bad petal nights'.format(int(bad.sum()), toret.size))
+    return toret
+
+
+def get_targetid_at_tilelocid(rows, tilelocid):
+    """
+    Return the targets with a row at one of the fiber locations ``tilelocid``.
+
+    Removing them, from the data with the mock's potential assignments (``pota-{PROGRAM}``) and
+    from the randoms with the survey's (``rancomb_{i}{program}wdupspec_zdone``), masks those
+    locations at the object level: a target is dropped if any fiber that could reach it is
+    there, whether or not it got that fiber. Data and randoms lose the same area, so the mask
+    applies to the altmtl and to the complete catalogs alike; see ``mask_targetid`` and
+    ``mask_random_targetid`` of :func:`~mockfactory.desi.lsscat.pipeline.run_tracer`.
+
+    The rows must be the raw ones: the combined potential assignments of :func:`combine_data`
+    and the survey's ``dupran`` randoms have already lost the locations outside
+    ``good_tilelocid``, and with them every location the catalogs reject.
+
+    Parameters
+    ----------
+    rows : array
+        With ``TARGETID``, ``TILEID``, ``LOCATION``.
+    tilelocid : array
+        Locations, ``10000 * TILEID + LOCATION``.
+    """
+    tl = 10000 * np.asarray(rows['TILEID'], dtype='i8') + np.asarray(rows['LOCATION'])
+    return np.unique(np.asarray(rows['TARGETID'])[np.isin(tl, tilelocid)])
 
 
 #: Imaging randoms the catalogs are drawn from, carrying the legacy survey columns.
@@ -465,6 +523,81 @@ def combine_randoms(randoms, assignments, columns=('PRIORITY',)):
     toret = join_left(toret, won, 'TILELOCID', columns=list(columns))
     logger.info('{:d} randoms re-priced from the mock assignment'.format(len(toret)))
     return toret
+
+
+def read_dupran_randoms(fn, assignments, max_priority):
+    """
+    Return the full random catalog of one tracer from the survey's own vetoed randoms, as
+    LSS ``mkCat_amtl.py`` builds the randoms of a mock.
+
+    ``{tracer}_{i}_dupran_masked_HPmapcut`` holds one row per random and fiber location that
+    could reach it, already cut on usable locations and on the imaging and map vetoes of the
+    tracer. What is left to the mock is the priority: the rows at a location the mock gave to a
+    target above the tracer's maximum priority are dropped, and each random keeps one row.
+
+    It gives the same randoms as :func:`combine_randoms` followed by
+    :func:`~mockfactory.desi.lsscat.full.make_full_randoms` and
+    :func:`~mockfactory.desi.lsscat.veto.apply_veto_randoms`, with the same ``NTILE`` and
+    ``TILES``, at a third of the cost, with two exceptions: it keeps the randoms whose only
+    locations the mock left unassigned (some 20 in 25 million), and it carries the veto on
+    imaging bits 1, 12 and 13 that the survey applies to every dark-time tracer.
+
+    Parameters
+    ----------
+    fn : str, Path
+        The survey's ``{tracer}_{i}_dupran_masked_HPmapcut`` catalog, ``.h5`` or ``.fits``.
+    assignments : array
+        Fibers given, from :func:`read_assignments`.
+    max_priority : int
+        Highest priority the tracer can be assigned at, from
+        :func:`~mockfactory.desi.lsscat.full.get_max_priority`.
+    """
+    columns = ['TARGETID', 'RA', 'DEC', 'TILEID', 'LOCATION', 'NTILE', 'TILES', 'PHOTSYS']
+    fn = str(fn)
+    if fn.endswith('.h5'):
+        import h5py
+        import hdf5plugin  # noqa: F401  registers the codec
+        with h5py.File(fn, 'r') as file:
+            rows = {name: file['LSS'][name][...] for name in columns}
+    else:
+        import fitsio
+        array = fitsio.read(fn, columns=columns)
+        rows = {name: array[name] for name in columns}
+    assignments = as_table(assignments)
+    won = 10000 * np.asarray(assignments['TILEID'], dtype='i8') + np.asarray(assignments['LOCATION'])
+    bad = won[np.asarray(assignments['PRIORITY']) > max_priority]
+    keep = ~np.isin(10000 * rows['TILEID'].astype('i8') + rows['LOCATION'], bad)
+    logger.info('{}: {:d} of {:d} rows at locations the mock gave a higher priority'
+                .format(Path(fn).name, int((~keep).sum()), len(keep)))
+    # NTILE and TILES belong to the random, not the row, so which row is kept does not matter.
+    _, index = np.unique(rows['TARGETID'][keep], return_index=True)
+    index = np.flatnonzero(keep)[index]
+    toret = Table({'TARGETID': rows['TARGETID'][index], 'RA': rows['RA'][index],
+                   'DEC': rows['DEC'][index], 'NTILE': rows['NTILE'][index].astype('i8'),
+                   'TILES': tiles_code(rows['TILES'][index]),
+                   'PHOTSYS': np.char.decode(rows['PHOTSYS'][index].astype('S1')).astype('U1')},
+                  copy=False)
+    logger.info('{}: {:d} randoms'.format(Path(fn).name, len(toret)))
+    return toret
+
+
+def tiles_code(names):
+    """
+    Return the code :func:`count_tiles` gives a set of tiles, from the name the survey pipeline
+    gives it: the tile identifiers sorted and joined by ``-``.
+    """
+    names = np.asarray(names)
+    unique, inverse = np.unique(names, return_inverse=True)
+    prime = np.uint64(1099511628211)
+    codes = np.empty(len(unique), dtype='u8')
+    with np.errstate(over='ignore'):
+        for i, name in enumerate(unique):
+            name = name.decode() if isinstance(name, bytes) else str(name)
+            code = np.uint64(14695981039346656037)
+            for tile in sorted(int(tile) for tile in name.split('-')):
+                code = (code ^ np.uint64(tile)) * prime
+            codes[i] = code
+    return codes[inverse].view('i8')
 
 
 def count_tiles(array, tilelocids=False):
