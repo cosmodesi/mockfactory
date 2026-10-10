@@ -36,21 +36,36 @@ logger = logging.getLogger('altmtl.tiletracker')
 #: Action types the loop knows how to carry out.
 SUPPORTED_ACTIONTYPES = ('fa', 'update', 'reproc')
 
+#: Surveys an action list can be built for.
+SUPPORTED_SURVEYS = ('main', 'sv3')
+
 #: Timestamp at which the real survey raised the number of observations requested for
 #: Lyman-alpha quasars. See https://github.com/desihub/desitarget/pull/845.
 LYA1B_TIMESTAMP = '2025-07-21T23:36:04+00:00'
 
 
-def _read_mtl_time(tileid_and_dir):
-    """Return the mtl time recorded in the real fiberassign header of one tile."""
+def _read_mtl_time(args):
+    """
+    Return the time of the ledger state the real assignment of one tile was made from.
+
+    The main survey records it as MTLTIME in the fiberassign header. SV3 tiles were often
+    designed days before that stamp: tile 315 carries MTLTIME 2021-04-22T18:55:39, but the
+    latest ledger row in its target file is from 2021-04-19T20:38:52, so it never saw the
+    observations of tile 314 folded in on 2021-04-22T17:09. For SV the time is therefore read
+    off the target file itself, as the latest ledger row it holds.
+    """
     import fitsio
-    tileid, fiberassign_dir = tileid_and_dir
-    return str(fitsio.read_header(utils.get_fiberassign_fn(tileid, fiberassign_dir=fiberassign_dir))['MTLTIME'])
+    tileid, fiberassign_dir, survey = args
+    if survey.lower() == 'main':
+        return str(fitsio.read_header(utils.get_fiberassign_fn(tileid, fiberassign_dir=fiberassign_dir))['MTLTIME'])
+    fn = utils.get_fiberassign_input_dir(tileid, survey=survey) / '{}-targ.fits'.format(utils.tile_string(tileid))
+    timestamps = fitsio.read(fn, columns=['TIMESTAMP'])['TIMESTAMP']
+    return max(str(timestamp).strip() for timestamp in np.unique(timestamps))
 
 
-def _read_mtl_times(tileids, fiberassign_dir=None, numproc=1):
-    """Return the mtl time of each tile in ``tileids``, reading headers in parallel."""
-    args = [(tileid, fiberassign_dir) for tileid in tileids]
+def _read_mtl_times(tileids, fiberassign_dir=None, survey='main', numproc=1):
+    """Return the mtl time of each tile in ``tileids``, reading them in parallel."""
+    args = [(tileid, fiberassign_dir, survey) for tileid in tileids]
     if numproc > 1:
         from multiprocessing import Pool
         with Pool(processes=numproc) as pool:
@@ -130,7 +145,7 @@ def make_tile_tracker(altmtl_dir, survey='main', obscon='dark', start_date=None,
         Directory of one alternative realization, e.g. ``.../altmtl0/Univ000``.
 
     survey : str, default='main'
-        Survey to replay. Only 'main' is supported.
+        Survey to replay, 'main' or 'sv3'.
 
     obscon : str, default='dark'
         Observing conditions, 'dark' or 'bright'.
@@ -184,8 +199,8 @@ def make_tile_tracker(altmtl_dir, survey='main', obscon='dark', start_date=None,
     from astropy.table import Table
     from desitarget.mtl import add_to_iso_date
 
-    if survey.lower() != 'main':
-        raise ValueError('only the main survey is supported, got {}'.format(survey))
+    if survey.lower() not in SUPPORTED_SURVEYS:
+        raise ValueError('survey must be one of {}, got {}'.format(SUPPORTED_SURVEYS, survey))
     if end_date is None:
         raise ValueError('end_date is required: it is what ties the mock to a data release')
 
@@ -221,13 +236,16 @@ def make_tile_tracker(altmtl_dir, survey='main', obscon='dark', start_date=None,
     logger.info('{:d} of them were folded into the real ledgers.'.format(tileids.size))
 
     # One header per tile, and they are gzipped: reading them serially is minutes of wall time.
-    mtltimes = _read_mtl_times(tileids, fiberassign_dir=fiberassign_dir, numproc=numproc)
+    mtltimes = _read_mtl_times(tileids, fiberassign_dir=fiberassign_dir, survey=survey, numproc=numproc)
 
-    tileid, actiontype, actiontime, doneflag, archivedate = [], [], [], [], []
+    # ZDATE is the last night folded into an update. The main survey reads its redshifts by
+    # ARCHIVEDATE, SV by ZDATE (desitarget.mtl.make_zcat_rr_backstop), so both are kept.
+    tileid, actiontype, actiontime, doneflag, archivedate, zdate = [], [], [], [], [], []
 
     for tid, istart, istop, mtltime in zip(tileids, start, stop, mtltimes):
-        # The fiber assignment of a tile happens at the mtl time recorded in its fiberassign
-        # header; one second is added so that it sorts after the update that preceded it.
+        # The fiber assignment of a tile happens at the time of the ledger state it was made
+        # from, see _read_mtl_time; one second is added so that it sorts after the update
+        # that preceded it.
         fa_time = add_to_iso_date(mtltime, 1)
         fa_night = utils.iso_to_night(fa_time)
         if fa_night > end_night:
@@ -246,6 +264,7 @@ def make_tile_tracker(altmtl_dir, survey='main', obscon='dark', start_date=None,
         actiontime.append(fa_time)
         doneflag.append(fa_night < start_night)
         archivedate.append(fa_night)
+        zdate.append(-1)
 
         for iupdate, update in enumerate(updates):
             update_night = utils.iso_to_night(update['TIMESTAMP'])
@@ -255,6 +274,7 @@ def make_tile_tracker(altmtl_dir, survey='main', obscon='dark', start_date=None,
             actiontime.append(update['TIMESTAMP'])
             doneflag.append(update_night < start_night)
             archivedate.append(update['ARCHIVEDATE'])
+            zdate.append(update['ZDATE'])
 
     # Vetoes are not attached to a tile, hence the -1 tile id.
     vetoes = Table.read(mtl_done_vetoes_fn)
@@ -267,6 +287,7 @@ def make_tile_tracker(altmtl_dir, survey='main', obscon='dark', start_date=None,
         actiontime[-1] = actiontime[-1].isoformat()
         doneflag.append(False)
         archivedate.append(-1)
+        zdate.append(-1)
 
     if lya1b and obscon.lower() == 'dark' and actiontime and max(actiontime) > LYA1B_TIMESTAMP:
         tileid.append(-1)
@@ -274,6 +295,7 @@ def make_tile_tracker(altmtl_dir, survey='main', obscon='dark', start_date=None,
         actiontime.append(LYA1B_TIMESTAMP)
         doneflag.append(False)
         archivedate.append(utils.iso_to_night(LYA1B_TIMESTAMP))
+        zdate.append(-1)
 
     if ledgers_yaml_dir is not None:
         import yaml
@@ -286,15 +308,16 @@ def make_tile_tracker(altmtl_dir, survey='main', obscon='dark', start_date=None,
                     actiontime.append('{}T00:00:00+00:00'.format(date))
                     doneflag.append(False)
                     archivedate.append(int(str(date).replace('-', '')))
+                    zdate.append(-1)
 
     if meta is None: meta = {}
     # str(), not the Path: the tracker is an ecsv, whose header goes through yaml, and yaml
     # has no representer for a PosixPath.
     meta = dict({'Name': 'AltMTLTileTracker', 'StartDate': start_night, 'EndDate': end_night,
                  'amtldir': str(altmtl_dir)}, **meta)
-    tile_tracker = Table([tileid, actiontype, actiontime, doneflag, archivedate],
-                         names=('TILEID', 'ACTIONTYPE', 'ACTIONTIME', 'DONEFLAG', 'ARCHIVEDATE'),
-                         dtype=('<i8', '<U6', '<U25', 'bool', '<i8'), meta=meta)
+    tile_tracker = Table([tileid, actiontype, actiontime, doneflag, archivedate, zdate],
+                         names=('TILEID', 'ACTIONTYPE', 'ACTIONTIME', 'DONEFLAG', 'ARCHIVEDATE', 'ZDATE'),
+                         dtype=('<i8', '<U6', '<U25', 'bool', '<i8', '<i8'), meta=meta)
     tile_tracker.sort(['ACTIONTIME', 'ACTIONTYPE', 'TILEID'])
 
     counts = {name: int((tile_tracker['ACTIONTYPE'] == name).sum()) for name in np.unique(tile_tracker['ACTIONTYPE'])}

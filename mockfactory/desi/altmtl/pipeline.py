@@ -26,7 +26,7 @@ logger = logging.getLogger('altmtl.pipeline')
 
 def run_mock(targets_fn, altmtl_dir, end_date, survey='main', obscon='dark', realization=0,
              numproc=1, shuffle_subpriority=False, seed=None, state=None, write_ledgers=False,
-             **kwargs):
+             tile_subpriority=None, **kwargs):
     """
     Replay the survey for one mock, from its target catalog to its assignments.
 
@@ -63,6 +63,12 @@ def run_mock(targets_fn, altmtl_dir, end_date, survey='main', obscon='dark', rea
     state : LedgerState, default=None
         State to replay against. Built from ``targets_fn`` when not given.
 
+    tile_subpriority : int, str, default=None
+        Subpriorities each tile breaks its ties with, see
+        :func:`mockfactory.desi.altmtl.assignment.set_tile_subpriority`. For an SV survey it
+        defaults to a seed drawn from ``seed`` and ``realization``, since SV3 redrew them on every
+        tile; for the main survey, to ``None``, keeping one per target.
+
     write_ledgers : bool, default=False
         Whether to write the final state out as healpix ledgers, in the survey's format, under
         ``altmtl_dir``. The replay itself never needs them, and it keeps the state in memory,
@@ -96,9 +102,12 @@ def run_mock(targets_fn, altmtl_dir, end_date, survey='main', obscon='dark', rea
     else:
         t_state = 0.
 
+    if tile_subpriority is None and survey.lower() != 'main':
+        # Offset from the state's seed, so the per-tile draws are not the per-target ones.
+        tile_subpriority = (314159 if seed is None else seed) + realization + 271828
     start = time.time()
     nactions = run_realization(altmtl_dir, survey=survey, obscon=obscon, numproc=numproc,
-                               state=state, **kwargs)
+                               state=state, tile_subpriority=tile_subpriority, **kwargs)
     t_replay = time.time() - start
 
     logger.info('{}: {:d} actions in {:.0f} s (setup {:.0f} s, state {:.0f} s).'.format(

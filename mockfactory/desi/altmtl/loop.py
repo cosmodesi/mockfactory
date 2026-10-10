@@ -435,7 +435,7 @@ def warm_hardware(tileids, fiberassign_dir=None):
 def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, numobs_from_ledger=True,
                     overwrite=False, fiberassign_dir=None, fiberassign_input_dir=None, nactions=None,
                     numproc=1, state=None, scratch_dir=None, tmp_dir=None, load_targets='file',
-                    zfix=None):
+                    zfix=None, tile_subpriority=None):
     """
     Replay the survey for one realization, carrying out every action not yet done.
 
@@ -489,6 +489,11 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
         Redshifts replacing the real ones for some targets on every update, see
         :func:`read_zfix`. The DR2 mocks give their quasars their own redshift this way.
 
+    tile_subpriority : int, str, default=None
+        Subpriorities each tile breaks its ties with, drawn afresh per tile as SV3 did; see
+        :func:`mockfactory.desi.altmtl.assignment.set_tile_subpriority`. ``None`` keeps those
+        of the state, as the main survey does.
+
     Returns
     -------
     nactions : int
@@ -521,7 +526,7 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
                            os.environ.get('OMP_NUM_THREADS', 'unset'), numproc))
     kwargs = dict(survey=survey, obscon=obscon, overwrite=overwrite, fiberassign_dir=fiberassign_dir,
                   fiberassign_input_dir=fiberassign_input_dir, state=state, tmp_dir=tmp_dir,
-                  load_targets=load_targets)
+                  load_targets=load_targets, tile_subpriority=tile_subpriority)
     idone = 0
     for run in group_actions(actions):
         if run[0]['ACTIONTYPE'] == 'update' and len(run) > 1 and state is not None:
@@ -546,7 +551,9 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
             # A batch of assignments, all reading the same state of the ledgers.
             tileids = [int(action['TILEID']) for action in run]
             start = time.time()
-            rundates = warm_hardware(tileids, fiberassign_dir=fiberassign_dir)
+            # SV tiles are assigned by an older fiberassign in a process of its own, which loads
+            # its own focal plane: warming this one would only fail on their run dates.
+            rundates = [] if survey.lower() != 'main' else warm_hardware(tileids, fiberassign_dir=fiberassign_dir)
             if state is not None:
                 # Built once here rather than once per worker; see LedgerState.build_index.
                 state.build_index()

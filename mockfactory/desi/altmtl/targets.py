@@ -24,13 +24,61 @@ logger = logging.getLogger('altmtl.targets')
 #: Group a target catalog is written under, and the name its FITS predecessor used.
 TARGETS_GROUP = 'TARGETS'
 
-#: Columns a target catalog must carry for the ledgers to be built from it.
+#: Columns a target catalog must carry for the ledgers to be built from it, for the main survey.
+#: An SV catalog carries the same, with the four bitmask columns prefixed; see
+#: :func:`get_target_columns`.
 TARGET_COLUMNS = ('RA', 'DEC', 'TARGETID', 'DESI_TARGET', 'BGS_TARGET', 'MWS_TARGET', 'SCND_TARGET',
                   'SUBPRIORITY', 'OBSCONDITIONS', 'PRIORITY_INIT', 'PRIORITY', 'NUMOBS_INIT',
                   'NUMOBS_MORE', 'ZWARN')
 
+#: Bitmask columns, named as in the main survey.
+_BIT_COLUMNS = ('DESI_TARGET', 'BGS_TARGET', 'MWS_TARGET', 'SCND_TARGET')
 
-def get_target_bits(tracer):
+
+def get_bit_columns(survey='main'):
+    """
+    Return the names of the ``DESI_TARGET``, ``BGS_TARGET``, ``MWS_TARGET`` and ``SCND_TARGET``
+    columns in ``survey``.
+
+    desitarget tells the survey a catalog belongs to from these names alone, 'SV3_DESI_TARGET'
+    meaning SV3, and then applies that survey's masks and priorities. So the names are all it
+    takes for the ledgers to follow the SV3 rules.
+    """
+    survey = survey.lower()
+    if survey == 'main':
+        return _BIT_COLUMNS
+    if not survey.startswith('sv'):
+        raise ValueError('survey must be main or svX, got {}'.format(survey))
+    return tuple('{}_{}'.format(survey.upper(), name) for name in _BIT_COLUMNS)
+
+
+def get_target_columns(survey='main'):
+    """Return the columns a target catalog of ``survey`` must carry, as :attr:`TARGET_COLUMNS`."""
+    rename = dict(zip(_BIT_COLUMNS, get_bit_columns(survey)))
+    return tuple(rename.get(name, name) for name in TARGET_COLUMNS)
+
+
+def get_survey(columns):
+    """Return the survey a target catalog with these ``columns`` belongs to, as desitarget does."""
+    for name in columns:
+        if name.endswith('_DESI_TARGET') and name.startswith('SV'):
+            return name.split('_')[0].lower()
+    return 'main'
+
+
+def get_masks(survey='main'):
+    """Return the ``desi_mask`` and ``bgs_mask`` of ``survey``."""
+    survey = survey.lower()
+    if survey == 'main':
+        from desitarget.targetmask import desi_mask, bgs_mask
+        return desi_mask, bgs_mask
+    from importlib import import_module
+    # The yaml keys are prefixed, sv3_desi_mask, but the module exports them unprefixed.
+    module = import_module('desitarget.{0}.{0}_targetmask'.format(survey))
+    return module.desi_mask, module.bgs_mask
+
+
+def get_target_bits(tracer, survey='main'):
     """
     Return the ``DESI_TARGET``, ``BGS_TARGET`` and ``MWS_TARGET`` bits of ``tracer``.
 
@@ -43,12 +91,16 @@ def get_target_bits(tracer):
         Tracer name, e.g. 'LRG', 'QSO', 'ELG_LOP', 'BGS_BRIGHT', or several of them, whose bits
         are then combined, as they are for a target selected by more than one cut.
 
+    survey : str, default='main'
+        Survey whose masks the bits are taken from, 'main' or 'sv3'. SV3 has its own, with
+        the same names at different bits, and an 'ELG_HIP' the main survey lacks.
+
     Returns
     -------
     desi_target, bgs_target, mws_target : int
         Target bits.
     """
-    from desitarget.targetmask import desi_mask, bgs_mask
+    desi_mask, bgs_mask = get_masks(survey)
 
     if isinstance(tracer, str): tracer = [tracer]
     desi_target = bgs_target = mws_target = 0
@@ -65,7 +117,7 @@ def get_target_bits(tracer):
     return desi_target, bgs_target, mws_target
 
 
-def get_priority_numobs(desi_target, bgs_target=0, mws_target=0, obscon='DARK'):
+def get_priority_numobs(desi_target, bgs_target=0, mws_target=0, obscon='DARK', survey='main'):
     """
     Return the initial priority and number of observations implied by a set of target bits.
 
@@ -76,13 +128,15 @@ def get_priority_numobs(desi_target, bgs_target=0, mws_target=0, obscon='DARK'):
     """
     from desitarget.targets import initial_priority_numobs
 
-    targets = np.zeros(1, dtype=[('DESI_TARGET', 'i8'), ('BGS_TARGET', 'i8'), ('MWS_TARGET', 'i8')])
-    targets['DESI_TARGET'], targets['BGS_TARGET'], targets['MWS_TARGET'] = desi_target, bgs_target, mws_target
+    names = get_bit_columns(survey)[:3]
+    targets = np.zeros(1, dtype=[(name, 'i8') for name in names])
+    for name, value in zip(names, (desi_target, bgs_target, mws_target)):
+        targets[name] = value
     priority, numobs = initial_priority_numobs(targets, obscon=obscon.upper())
     return int(priority[0]), int(numobs[0])
 
 
-def make_targets(catalogs, obscon='dark', seed=None, z=None, columns=(), mpicomm=None):
+def make_targets(catalogs, obscon='dark', seed=None, z=None, columns=(), survey='main', mpicomm=None):
     """
     Turn mockfactory catalogs into one target catalog the ledgers can be built from.
 
@@ -107,13 +161,18 @@ def make_targets(catalogs, obscon='dark', seed=None, z=None, columns=(), mpicomm
     z : str, default=None
         Name of the redshift column, written out as 'RSDZ'. Defaults to 'Z' when present.
 
+    survey : str, default='main'
+        Survey the targets are selected for, 'main' or 'sv3'. It sets the masks the bits are
+        taken from, and the names of the bitmask columns, e.g. 'SV3_DESI_TARGET', which is how
+        the ledgers come to follow that survey's priorities.
+
     mpicomm : MPI communicator, default=None
         Communicator the catalogs are scattered over. Defaults to that of the first catalog.
 
     Returns
     -------
     targets : Catalog
-        Merged target catalog, carrying :attr:`TARGET_COLUMNS` plus 'RSDZ'.
+        Merged target catalog, carrying :func:`get_target_columns` plus 'RSDZ'.
     """
     import mpytools as mpy
     from desitarget.targetmask import obsconditions
@@ -126,8 +185,9 @@ def make_targets(catalogs, obscon='dark', seed=None, z=None, columns=(), mpicomm
     merged, offset = [], 0
     for tracer, catalog in catalogs.items():
         names = tracer.split('|')
-        desi_target, bgs_target, mws_target = get_target_bits(names)
-        priority_init, numobs_init = get_priority_numobs(desi_target, bgs_target, mws_target, obscon=obscon)
+        desi_target, bgs_target, mws_target = get_target_bits(names, survey=survey)
+        priority_init, numobs_init = get_priority_numobs(desi_target, bgs_target, mws_target, obscon=obscon,
+                                                         survey=survey)
 
         zcol = z
         if zcol is None:
@@ -142,8 +202,9 @@ def make_targets(catalogs, obscon='dark', seed=None, z=None, columns=(), mpicomm
         target['DEC'] = np.asarray(catalog['DEC'], dtype='f8')
         target['RSDZ'] = np.asarray(catalog[zcol], dtype='f8')
         size = target.size
-        for name, value, dtype in [('DESI_TARGET', desi_target, 'i8'), ('BGS_TARGET', bgs_target, 'i8'),
-                                   ('MWS_TARGET', mws_target, 'i8'), ('SCND_TARGET', 0, 'i8'),
+        desi_name, bgs_name, mws_name, scnd_name = get_bit_columns(survey)
+        for name, value, dtype in [(desi_name, desi_target, 'i8'), (bgs_name, bgs_target, 'i8'),
+                                   (mws_name, mws_target, 'i8'), (scnd_name, 0, 'i8'),
                                    ('PRIORITY_INIT', priority_init, 'i8'), ('PRIORITY', priority_init, 'i8'),
                                    ('NUMOBS_INIT', numobs_init, 'i8'), ('NUMOBS_MORE', numobs_init, 'i8'),
                                    ('OBSCONDITIONS', obscondition, 'i8'), ('ZWARN', 0, 'i8')]:
@@ -230,7 +291,11 @@ def write_targets(targets, output_fn, obscon='dark', mpicomm=None):
     import fitsio
 
     if mpicomm is None: mpicomm = targets.mpicomm
-    missing = [name for name in TARGET_COLUMNS if name not in targets.columns()]
+    # The survey is read off the column names, as desitarget does, rather than passed: a
+    # catalog whose names and header disagreed would be built under one survey's rules and
+    # assigned under the other's.
+    survey = get_survey(targets.columns())
+    missing = [name for name in get_target_columns(survey) if name not in targets.columns()]
     if missing:
         raise ValueError('target catalog is missing {}'.format(missing))
     if mpicomm.rank == 0:
@@ -240,7 +305,7 @@ def write_targets(targets, output_fn, obscon='dark', mpicomm=None):
     # where the FITS writer gathers the whole catalog onto one rank and writes it serially --
     # 24 MB/s for a four gigabyte catalog, whatever the number of ranks.
     targets.write(output_fn, filetype='hdf5', group=TARGETS_GROUP,
-                  header={'OBSCON': obscon.upper()})
+                  header={'OBSCON': obscon.upper(), 'SURVEY': survey})
     # csize is a collective, so every rank takes it and only rank 0 logs it; asking for it
     # inside the branch deadlocks rank 0 against the others' barrier below
     csize = targets.csize

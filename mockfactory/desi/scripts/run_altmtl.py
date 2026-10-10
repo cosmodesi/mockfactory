@@ -16,6 +16,20 @@ every worker spawns a thread per core and the pool runs slower than one mock alo
 Defaults describe the DA2 dark ``AbacusHF_DR2v2`` mocks -- 25 realizations, each with its own
 quasar redshifts, which the updates need as ``zfix``. Point ``--forfa-dir`` elsewhere for
 another set; ``--forfa`` and ``--zfix`` are formats taking the mock number.
+
+SV3, with ``--survey sv3``: the replay stops at the end of SV3 (2021-07-01) unless told otherwise,
+and each target catalog must carry the SV3 bitmask columns, as
+:func:`mockfactory.desi.altmtl.make_targets` writes them with ``survey='sv3'``::
+
+    from mockfactory.desi.altmtl import make_targets, write_targets
+    targets = make_targets({'LRG': lrg, 'ELG_LOP': elg, 'QSO': qso}, obscon='dark', survey='sv3', seed=42)
+    write_targets(targets, 'forFA0.h5', obscon='dark')
+
+    srun -N1 -n1 -c 256 python run_altmtl.py --survey sv3 --forfa-dir $SCRATCH/sv3 --forfa forFA{:d}.h5 \
+         --zfix '' --imocks 0-7 --numproc 16 --nummocks 8 --altmtl-dir $SCRATCH/altmtl_sv3
+
+Each SV3 tile is assigned by the fiberassign release that assigned it in 2021, in a process of its
+own, and draws its subpriorities afresh, as SV3 did; see the SV3 section of the altmtl README.
 """
 
 import argparse
@@ -26,8 +40,9 @@ from pathlib import Path
 logger = logging.getLogger('run_altmtl')
 
 FORFA_DIR = '/dvs_ro/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/AbacusHF_DR2v2'
-#: The DA2 dark replay ends here: 6671 fa actions, the tiles of DA2 tiles-DARK.fits.
-END_DATE = 20240418
+#: The DA2 dark replay ends here: 6671 fa actions, the tiles of DA2 tiles-DARK.fits. SV3 ends
+#: with its last tiles, in June 2021.
+END_DATES = {'main': 20240418, 'sv3': 20210701}
 
 
 def parse_imocks(text):
@@ -53,11 +68,14 @@ def main(args=None):
                         help='redshifts replacing the real ones on update, '
                              'relative to --forfa-dir; pass an empty string for none')
     parser.add_argument('--imocks', default='0', help='which mocks, e.g. 0, 0,3 or 0-11')
+    parser.add_argument('--survey', default='main', choices=sorted(END_DATES))
     parser.add_argument('--obscon', default='dark')
-    parser.add_argument('--end-date', type=int, default=END_DATE)
+    parser.add_argument('--end-date', type=int, default=None, help='night the replay stops at; '
+                        'defaults to the end of DA2 for main, of SV3 for sv3')
     parser.add_argument('--numproc', type=int, default=32, help='workers per mock')
     parser.add_argument('--nummocks', type=int, default=1, help='mocks replayed side by side')
     args = parser.parse_args(args=args)
+    if args.end_date is None: args.end_date = END_DATES[args.survey]
 
     os.environ['OMP_NUM_THREADS'] = '1'
     from mockfactory import setup_logging
@@ -73,10 +91,10 @@ def main(args=None):
         mocks.append((Path(args.forfa_dir) / args.forfa.format(imock),
                       Path(args.altmtl_dir) / 'altmtl{:d}'.format(imock) / 'Univ000',
                       0, kwargs))
-    logger.info('Replaying mock(s) {} to {:d}, {:d} at a time, {:d} worker(s) each.'
-                .format(args.imocks, args.end_date, args.nummocks, args.numproc))
-    results = run_mocks(mocks, args.end_date, obscon=args.obscon, numproc=args.numproc,
-                        nummocks=args.nummocks)
+    logger.info('Replaying {} mock(s) {} to {:d}, {:d} at a time, {:d} worker(s) each.'
+                .format(args.survey, args.imocks, args.end_date, args.nummocks, args.numproc))
+    results = run_mocks(mocks, args.end_date, survey=args.survey, obscon=args.obscon,
+                        numproc=args.numproc, nummocks=args.nummocks)
     failed = [result['altmtl_dir'] for result in results if 'error' in result]
     total = 0.
     for result in results:

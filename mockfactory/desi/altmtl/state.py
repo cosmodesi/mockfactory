@@ -20,7 +20,7 @@ import logging
 
 import numpy as np
 
-from .targets import read_targets
+from .targets import read_targets, get_survey
 
 from . import utils
 
@@ -135,6 +135,11 @@ class LedgerState(object):
         from desitarget.mtl import make_mtl
 
         targets = read_targets(targets_fn)
+        # make_mtl takes the survey from the column names, not from this argument, so a
+        # mismatch would replay the tiles of one survey under the priorities of the other.
+        if get_survey(targets.colnames) != survey.lower():
+            raise ValueError('{} holds {} targets, not {}; build it with make_targets(survey={!r})'.format(
+                targets_fn, get_survey(targets.colnames), survey.lower(), survey.lower()))
         # make_mtl with no redshift catalog returns the unobserved state, which is what a
         # freshly built ledger holds.
         current = np.asarray(make_mtl(targets, obscon.upper(), trimcols=True))
@@ -323,9 +328,12 @@ class LedgerState(object):
         rows = np.concatenate(rows) if len(rows) > 1 else rows[0]
         pixel = np.concatenate(pixel) if len(pixel) > 1 else pixel[0]
 
+        # desitarget prefixes the survey outside the main one, sv3mtl-dark-hp-..., and looks
+        # ledgers up by that name.
+        prefix = '' if survey.lower() == 'main' else survey.lower()
         nwritten = 0
         for healpix in healpixels:
-            fn = Path(ledger_dir) / 'mtl-{}-hp-{:d}.ecsv'.format(obscon.lower(), int(healpix))
+            fn = Path(ledger_dir) / '{}mtl-{}-hp-{:d}.ecsv'.format(prefix, obscon.lower(), int(healpix))
             if Path(fn).is_file() and not overwrite:
                 continue
             block = rows[pixel == healpix]

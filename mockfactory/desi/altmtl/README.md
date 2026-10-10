@@ -183,6 +183,88 @@ compare against `desitarget` directly.
   for end dates from 2025 on.
 - Compute nodes only, inside an interactive allocation.
 
+## SV3
+
+`survey='sv3'` replays the third survey validation programme (April to June 2021: 239 dark and
+214 bright tiles, on rosettes passed over up to a dozen times) against a mock.
+
+```python
+from mockfactory.desi.altmtl import make_targets, write_targets, run_mock
+
+targets = make_targets({'LRG': lrg, 'ELG_LOP|ELG_HIP': elg_hip, 'ELG_LOP': elg, 'QSO': qso},
+                       obscon='dark', survey='sv3', seed=42)
+write_targets(targets, targets_fn, obscon='dark')
+run_mock(targets_fn, altmtl_dir, end_date=20210701, survey='sv3', obscon='dark', numproc=32)
+```
+
+What differs from the main survey, and why:
+
+- **Target bits.** The catalog carries `SV3_DESI_TARGET`, `SV3_BGS_TARGET`, `SV3_MWS_TARGET` and
+  `SV3_SCND_TARGET` in place of the main columns (`targets.get_target_columns('sv3')`), with bits
+  from `desitarget.sv3.sv3_targetmask`. desitarget reads the survey off these names and applies
+  the SV3 priorities: 103xxx in dark, `NUMOBS_INIT` 9 for LRG, ELG and BGS, a good redshift
+  retiring a target to priority 2. `LedgerState.from_targets` refuses a catalog whose columns
+  are not those of the survey it is asked to replay.
+- **Fiberassign.** No SV3 tile can be assigned by the current fiberassign: its SV3 masks have
+  no gaia standard bit, and the early run dates carry no timezone. Each SV3 tile is reassigned
+  in a subprocess, by `fba_run` of the release that assigned it (2.2.0 to 4.0.0), from the
+  desiconda 20230111-2.1.0 tree, with the options its `FAARGS` header records, and with
+  `SKYBRICKS_DIR` set, without which stuck positioners never land on sky (some 950 fibers of a
+  tile then differ): v2 for the 2.4 tiles, which differ by 8% with v3, and v3 from 2.5 on, with
+  v2 instead of which a stuck positioner here and there misses its sky and its slitblock bumps a
+  filler target to sky (`assignment.get_legacy_skybricks_dir`). The night of
+  2021-04-10T21:28:37 is reproduced only with the focal plane of 20:00
+  (`assignment.LEGACY_RUNDATES`). That tree's
+  modulefile asks for a cray-mpich Perlmutter no longer has, so `assignment.get_legacy_environ`
+  sets it up by hand. The label `2.2.0.dev2811` hides two codes: 2.2.0 reproduces it up to
+  2021-04-13, 2.3.0 from 2021-04-14 (`assignment.LEGACY_DEV2811_SWITCH`). Targets reach the
+  subprocess through a file, whatever `load_targets` says. Each tile pays for starting
+  python and loading its focal plane: a pass of 16 tiles takes 30 s on 32 workers, the whole
+  dark replay 19 minutes on one node.
+- **Subpriorities.** SV3 drew them afresh on every tile: a target shared by tiles 1 and 2 has
+  uncorrelated values on them (correlation -0.008 over 27535 targets), neither its ledger's.
+  `tile_subpriority` does the same, from a seed and the tile id; `run_mock` turns it on for SV.
+  One subpriority per target instead has the same targets lose every tie on every pass.
+- **Order of the replay.** Many SV3 tiles were designed days before the `MTLTIME` stamped on
+  them: tile 315 says 2021-04-22T18:55, but the latest ledger row in its target file is from
+  2021-04-19, so it never saw the observations of tile 314 folded in on 2021-04-22T17:09. An SV
+  `fa` is placed after the latest ledger row in the tile's own target file instead.
+- **Paths and redshifts.** Per-tile inputs live under `survey/fiberassign/SV3/<night>/`, looked
+  up by tile. Redshifts are read by desitarget's SV path, the `zbest` files of
+  `daily/tiles/cumulative/<tile>/<ZDATE>`, so the tile tracker carries `ZDATE`. SV3 has no
+  reprocessing and no veto actions.
+
+Validation, replaying the real SV3 data: the real targets in their initial state (first row of
+each in the surveyops SV3 ledgers) and `tile_subpriority='real'`, which takes each tile's own
+subpriorities from its real target file, so that the replay should put the real target on every
+fiber of every tile.
+
+| | fibers holding a real target | differ | agreement |
+| --- | --- | --- | --- |
+| dark, 239 tiles | 1 028 319 | 0 | 1 |
+| bright, 214 tiles | 911 914 | 0 | 1 |
+
+The replay is exact. Dark agreement along the way, in the order the fixes were found: 61% with
+one subpriority per target (first 80 actions), 97.4% with the tiles' own, 99.92% with `2.2.0.dev2811` split by
+date, unchanged by the replay order (which took bright from 98.7% to 99.983%), 1 fiber left
+with the 2021-04-10 run date, and none with skybricks v3 from fiberassign 2.5 on.
+
+Compared with desihub/LSS (`LSS.SV3.altmtltools`, `LSS.SV3.fatools`), which replays SV3 too:
+- the same release choice, including the 2.2.0 / 2.3.0 split of `2.2.0.dev2811` around
+  2021-04-13; and two fixes taken from there: the run date moved from 2021-04-10T21:28:37 to
+  20:00, without which the tiles of that night differ by some 15 fibers each, and through the
+  observations they move 800 fibers over the dark replay, and skybricks v2 for the 2.4 tiles
+  only;
+- the assignment options are those of `FAARGS` here, set by release there;
+- LSS orders an `fa` by `MTLTIME` and patches tile 315 alone, in its reproduction mode, with
+  the priorities of the real target file; here every SV tile is ordered by the ledger state its
+  target file was made from, which also applies to mocks;
+- LSS shuffles one subpriority per target and realization; SV3 drew them per tile, which
+  `tile_subpriority` reproduces, and which `run_mock` does by default for SV.
+
+Not done yet: potential assignments (`compute_potential_assignments` still loads the current
+fiberassign's focal plane, which an SV3 run date breaks), and bitweights over SV3 realizations.
+
 ## What makes it fast
 
 Against the survey's own altMTL -- one tile at a time, the MTL persisted as ecsv ledgers -- on a

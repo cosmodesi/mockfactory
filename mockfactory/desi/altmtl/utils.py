@@ -73,7 +73,26 @@ def get_fiberassign_input_dir(tileid, survey='main', fiberassign_input_dir=None)
     if fiberassign_input_dir is None:
         fiberassign_input_dir = FIBERASSIGN_INPUT_DIR
     ts = tile_string(tileid)
-    return Path(fiberassign_input_dir) / survey.lower() / ts[:3]
+    if survey.lower() == 'main':
+        return Path(fiberassign_input_dir) / 'main' / ts[:3]
+    # SV sharded these by the night the tile was designed for, under an upper case name, so
+    # the night is looked up rather than derived from the tile id.
+    return _get_sv_input_dirs(Path(fiberassign_input_dir) / survey.upper())[int(tileid)]
+
+
+_sv_input_dirs = {}
+
+
+def _get_sv_input_dirs(survey_dir):
+    """Return ``{tileid: night directory}`` over an SV input tree, listed once per process."""
+    survey_dir = Path(survey_dir)
+    if survey_dir not in _sv_input_dirs:
+        dirs = {}
+        # Each SV3 tile sits under one night only (528 tiles, checked 2026-10-09).
+        for fn in survey_dir.glob('*/*-tiles.fits'):
+            dirs[int(fn.name.split('-')[0])] = fn.parent
+        _sv_input_dirs[survey_dir] = dirs
+    return _sv_input_dirs[survey_dir]
 
 
 def get_universe_dir(altmtl_dir, realization=0):

@@ -27,10 +27,119 @@ logger = logging.getLogger('altmtl.assignment')
 
 
 #: Fiberassign versions from 4.0 on run under the standard desi environment; earlier tiles
-#: were assigned by versions that have to be loaded explicitly, which this module cannot do.
+#: were assigned by versions that have to be loaded explicitly, see :func:`run_legacy_fiber_assignment`.
 MIN_FIBERASSIGN_VERSION = 4.0
 
+#: The desiconda tree SV tiles are reassigned under. It installs every fiberassign release SV3
+#: was assigned with, 2.2.0 to 4.0.0; the current fiberassign cannot load SV3 targets at all,
+#: its SV3 masks having no gaia standard bit. Its modulefile asks for a cray-mpich Perlmutter
+#: no longer has, so the environment is set up by hand, see :func:`get_legacy_environ`.
+LEGACY_DESICONDA = os.environ.get('ALTMTL_LEGACY_DESICONDA',
+                                  '/global/common/software/desi/perlmutter/desiconda/20230111-2.1.0')
+
+#: Releases of the packages fiberassign imports, within :attr:`LEGACY_DESICONDA`.
+LEGACY_DEPENDENCIES = {'desitarget': '2.6.0', 'desimodel': '0.18.0', 'desiutil': '3.2.6', 'desimeter': '0.7.0'}
+
+#: Sky bricks the SV3 assignments looked stuck positioners up in, by fiberassign release. From
+#: 2.4 on, a stuck positioner landing on blank sky becomes a sky fiber; without them a tile
+#: loses some 550 sky and 400 science fibers. The 2.4 tiles used v2, and differ by 8% with v3;
+#: later ones v3, and with v2 a stuck positioner here and there misses its sky, which costs a
+#: slitblock its quota and bumps a filler target to sky (tiles 400, 579, 593). desihub/LSS
+#: makes the same choice (LSS.SV3.fatools.get_fba_fromnewmtl).
+LEGACY_SKYBRICKS = {'2.4': 'v2'}
+LEGACY_SKYBRICKS_DEFAULT = 'v3'
+
+
+def get_legacy_skybricks_dir(release):
+    """Return the sky bricks fiberassign ``release`` looked stuck positioners up in."""
+    version = LEGACY_SKYBRICKS.get('.'.join(str(release).split('.')[:2]), LEGACY_SKYBRICKS_DEFAULT)
+    return Path(utils.DESI_ROOT) / 'target' / 'skybricks' / version
+
+#: Assignment options carried over from a tile's ``FAARGS`` header; the others there built
+#: its target file, which the replay provides itself.
+LEGACY_FAARGS = ('--sky_per_petal', '--standards_per_petal', '--sky_per_slitblock', '--ha',
+                 '--margin_gfa', '--margin_petal', '--margin_pos')
+
 _accepts_fafns_for_stucksky = None
+
+
+def is_legacy(header):
+    """Whether the tile of this fiberassign header has to be reassigned in a legacy environment."""
+    return str(header.get('FA_SURV', 'main')).strip().lower() != 'main'
+
+
+#: '2.2.0.dev2811' labels every SV3 tile assigned up to 2021-04-22, but the code behind the
+#: label changed: tiles run up to 2021-04-13T23:27 are reproduced by 2.2.0 and not by 2.3.0,
+#: tiles run from 2021-04-14T22:12 by 2.3.0 and not by 2.2.0, the wrong one missing up to 45%
+#: of a tile's fibers. The switch is put in between.
+LEGACY_DEV2811_SWITCH = '2021-04-14T12:00:00'
+
+#: Run dates the real assignment did not use as recorded. The tiles of 2021-04-10T21:28:37
+#: (4, 30, 58, 364, ...) differ by some 15 fibers each under any release and desimodel data,
+#: and are reproduced exactly with the focal plane of 20:00, as desihub/LSS
+#: (LSS.SV3.fatools.get_fba_fromnewmtl) does.
+LEGACY_RUNDATES = {'2021-04-10T21:28:37': '2021-04-10T20:00:00'}
+
+
+def get_legacy_release(version, rundate=None):
+    """
+    Return the installed fiberassign release standing in for ``version``, at run date ``rundate``.
+
+    Some SV3 tiles were assigned by development builds, '2.2.0.dev2811' and '2.3.0.dev2838',
+    which are not installed. '2.3.0.dev2838' runs under 2.3.0; '2.2.0.dev2811' under 2.2.0 or
+    2.3.0 depending on the run date, see :attr:`LEGACY_DEV2811_SWITCH`.
+    """
+    version = str(version)
+    if version == '2.2.0.dev2811':
+        if rundate is None:
+            raise ValueError('fiberassign 2.2.0.dev2811 stands for two releases; pass the run date')
+        release = '2.2.0' if str(rundate)[:19] < LEGACY_DEV2811_SWITCH else '2.3.0'
+    else:
+        release = version.split('.dev')[0]
+    if not (Path(LEGACY_DESICONDA) / 'code' / 'fiberassign' / release).is_dir():
+        raise ValueError('fiberassign {} (for {}) is not installed under {}'.format(
+            release, version, LEGACY_DESICONDA))
+    return release
+
+
+def get_legacy_environ(release):
+    """
+    Return the environment running fiberassign ``release`` from :attr:`LEGACY_DESICONDA`,
+    an installed release as :func:`get_legacy_release` returns it.
+
+    This is what loading desimodules 23.1 and swapping in that fiberassign would set, minus MPI.
+    The user site is switched off, so that nothing installed for the current python leaks in.
+    """
+    root = Path(LEGACY_DESICONDA)
+    code, site = root / 'code', Path('lib') / 'python3.10' / 'site-packages'
+    packages = dict(LEGACY_DEPENDENCIES, fiberassign=release)
+    environ = {name: value for name, value in os.environ.items()
+               if not name.startswith(('PYTHON', 'CONDA', 'DESI'))}
+    environ.update(
+        PATH=os.pathsep.join([str(code / 'fiberassign' / packages['fiberassign'] / 'bin'),
+                              str(root / 'conda' / 'bin'), str(root / 'aux' / 'bin'),
+                              os.environ.get('PATH', '')]),
+        LD_LIBRARY_PATH=os.pathsep.join([str(root / 'aux' / 'lib'), os.environ.get('LD_LIBRARY_PATH', '')]),
+        PYTHONPATH=os.pathsep.join([str(code / name / release / site) for name, release in packages.items()]
+                                   + [str(root / 'conda' / site)]),
+        PYTHONNOUSERSITE='1',
+        DESIMODEL=str(code / 'desimodel' / packages['desimodel']),
+        DESI_ROOT=str(utils.DESI_ROOT),
+        SKYBRICKS_DIR=str(get_legacy_skybricks_dir(release)))
+    return environ
+
+
+def get_legacy_options(header):
+    """Return the assignment options the ``FAARGS`` header of a tile records, as fba_run takes them."""
+    import shlex
+
+    words = shlex.split(str(header['FAARGS']))
+    options = []
+    for iword, word in enumerate(words[:-1]):
+        if word in LEGACY_FAARGS:
+            # FAARGS spells the margins as fba_launch took them, fba_run with dashes.
+            options += [word.replace('_', '-') if word.startswith('--margin') else word, words[iword + 1]]
+    return options
 
 
 def accepts_fafns_for_stucksky():
@@ -199,7 +308,61 @@ def make_fiber_map(real_assignment, alt_assignment):
     return FiberMap(real_targetid[mask], alt_targetid[index[mask]])
 
 
-def read_alt_targets(tileid, ledger_dir, footprint_fn, isodate=None, state=None):
+def set_tile_subpriority(targets, tileid, tile_subpriority, footprint_fn):
+    """
+    Give the targets of one tile the subpriorities this tile breaks its ties with.
+
+    SV3 drew them afresh for every tile: a target shared by two overlapping tiles has
+    uncorrelated subpriorities on them (correlation -0.008 over 27535 targets of tiles 1 and 2),
+    and neither is the one its ledger holds. Keeping one per target instead would have the same
+    targets lose every tie on every pass of a rosette.
+
+    Parameters
+    ----------
+    targets : array
+        Targets of the tile; modified in place.
+
+    tileid : int
+        Tile they are assigned on.
+
+    tile_subpriority : int, str
+        An integer draws them uniformly, from a generator seeded with it and the tile. 'real'
+        takes those of the real tile target file, next to ``footprint_fn``, which only makes
+        sense when the targets are the real ones, to check the replay against the data.
+
+    footprint_fn : str
+        Real survey tile file.
+
+    Returns
+    -------
+    targets : array
+    """
+    import fitsio
+
+    if isinstance(tile_subpriority, str):
+        if tile_subpriority != 'real':
+            raise ValueError("tile_subpriority must be an integer seed or 'real', got {}".format(tile_subpriority))
+        real = fitsio.read(Path(footprint_fn).parent / '{}-targ.fits'.format(utils.tile_string(tileid)),
+                           columns=['TARGETID', 'SUBPRIORITY'])
+        real = real[np.argsort(real['TARGETID'])]
+        index = np.clip(np.searchsorted(real['TARGETID'], targets['TARGETID']), 0, len(real) - 1)
+        found = real['TARGETID'][index] == targets['TARGETID']
+        if not found.all():
+            raise ValueError('{:d} target(s) of tile {:d} are not in its real target file'.format(
+                int((~found).sum()), tileid))
+        targets['SUBPRIORITY'] = real['SUBPRIORITY'][index]
+        return targets
+    # Seeded by the tile as well, so that the draw does not depend on the order or the process
+    # the tiles are assigned in; ordered by target, so not on how the state is laid out either.
+    rng = np.random.default_rng([int(tile_subpriority), int(tileid)])
+    order = np.argsort(targets['TARGETID'])
+    subpriority = np.empty(len(targets), dtype='f8')
+    subpriority[order] = rng.uniform(size=len(targets))
+    targets['SUBPRIORITY'] = subpriority
+    return targets
+
+
+def read_alt_targets(tileid, ledger_dir, footprint_fn, isodate=None, state=None, tile_subpriority=None):
     """
     Return the science targets the alternative assignment of ``tileid`` runs on.
 
@@ -224,6 +387,10 @@ def read_alt_targets(tileid, ledger_dir, footprint_fn, isodate=None, state=None)
     state : LedgerState, default=None
         State to read the targets from, instead of the ledgers in ``ledger_dir``.
 
+    tile_subpriority : int, str, default=None
+        Subpriorities to break this tile's ties with, see :func:`set_tile_subpriority`.
+        ``None`` keeps those of the state, as the main survey does.
+
     Returns
     -------
     targets : array
@@ -243,6 +410,9 @@ def read_alt_targets(tileid, ledger_dir, footprint_fn, isodate=None, state=None)
     if not len(targets):
         raise ValueError('no target over tile {:d}, read from {}; does the mock cover this '
                          'tile?'.format(tileid, 'the state in memory' if state is not None else ledger_dir))
+    if tile_subpriority is not None:
+        # Copied, so that the state is never written through.
+        targets = set_tile_subpriority(np.array(targets), tileid, tile_subpriority, footprint_fn)
     return targets
 
 
@@ -298,7 +468,8 @@ def targets_in_memory(targets, targets_fn, survey='main'):
         assign.load_target_file = real
 
 
-def write_alt_targets(tileid, ledger_dir, output_fn, footprint_fn, isodate=None, state=None):
+def write_alt_targets(tileid, ledger_dir, output_fn, footprint_fn, isodate=None, state=None,
+                      tile_subpriority=None):
     """
     Write the science target file the alternative assignment of ``tileid`` runs on.
 
@@ -333,10 +504,56 @@ def write_alt_targets(tileid, ledger_dir, output_fn, footprint_fn, isodate=None,
     """
     from astropy.table import Table
 
-    targets = read_alt_targets(tileid, ledger_dir, footprint_fn, isodate=isodate, state=state)
+    targets = read_alt_targets(tileid, ledger_dir, footprint_fn, isodate=isodate, state=state,
+                               tile_subpriority=tile_subpriority)
     utils.mkdir(Path(output_fn).parent)
     Table(targets).write(output_fn, format='fits', overwrite=True)
     return len(targets)
+
+
+def run_legacy_fiber_assignment(tileid, targets_fn, output_dir, header, footprint_fn, sky_fn,
+                                scnd_fn=None, too_fn=None):
+    """
+    Run fiberassign for one SV tile, under the release that assigned it, in a separate process.
+
+    The run date, field rotation and the assignment options of the tile's ``FAARGS`` are passed
+    as the real run took them, and the environment is :func:`get_legacy_environ`. Reassigning a
+    real SV3 tile from its own target file this way reproduces the official assignment on
+    every fiber, over one tile per release and program, 2.2.0.dev2811 to 4.0.0 (15 tiles).
+
+    Parameters are those of :func:`run_fiber_assignment`, ``targets_fn`` having to exist.
+
+    Returns
+    -------
+    fn : str
+        Path of the assignment that was written.
+    """
+    import subprocess
+
+    release = get_legacy_release(header['FA_VER'], rundate=header['RUNDATE'])
+    environ = get_legacy_environ(release)
+    fba_run = Path(LEGACY_DESICONDA) / 'code' / 'fiberassign' / release / 'bin' / 'fba_run'
+    targets = [targets_fn] + [fn for fn in [scnd_fn, too_fn] if fn is not None]
+    # The run date as the header has it: early SV3 dates carry no timezone, which the current
+    # fiberassign rejects and the releases that wrote them expect.
+    rundate = LEGACY_RUNDATES.get(str(header['RUNDATE']), str(header['RUNDATE']))
+    optlist = ['--targets'] + targets + ['--sky', sky_fn, '--footprint', footprint_fn,
+               '--rundate', rundate,
+               '--fieldrot', np.format_float_positional(header['FIELDROT']),
+               '--dir', output_dir, '--overwrite'] + get_legacy_options(header)
+    utils.mkdir(output_dir)
+    fn = get_alt_fiberassign_fn(output_dir, tileid)
+    log_fn = Path(output_dir) / 'fba-{}.log'.format(utils.tile_string(tileid))
+    command = [str(Path(LEGACY_DESICONDA) / 'conda' / 'bin' / 'python'), str(fba_run)] + [str(option) for option in optlist]
+    logger.debug('Running fiberassign {} for tile {:d} at rundate {}.'.format(release, tileid, header['RUNDATE']))
+    with open(log_fn, 'w') as log:
+        status = subprocess.call(command, env=environ, stdout=log, stderr=subprocess.STDOUT)
+    if status or not Path(fn).is_file():
+        raise ValueError('fiberassign {} failed on tile {:d} (exit status {:d}); see {}'.format(
+            release, tileid, status, log_fn))
+    # Kept only when something went wrong: a replay writes one per tile per realization.
+    log_fn.unlink()
+    return fn
 
 
 def run_fiber_assignment(tileid, targets_fn, output_dir, header, footprint_fn, sky_fn,
@@ -404,6 +621,13 @@ def run_fiber_assignment(tileid, targets_fn, output_dir, header, footprint_fn, s
     if tmp_fn.exists():
         tmp_fn.unlink()
 
+    if is_legacy(header):
+        if targets is not None:
+            raise ValueError('tile {:d} is reassigned in a separate process, which reads its '
+                             'targets from {}; pass load_targets=\'file\''.format(tileid, targets_fn))
+        return run_legacy_fiber_assignment(tileid, targets_fn, output_dir, header, footprint_fn,
+                                           sky_fn, scnd_fn=scnd_fn, too_fn=too_fn)
+
     version = float(str(header['FA_VER'])[:3])
     if version < MIN_FIBERASSIGN_VERSION:
         raise NotImplementedError(
@@ -456,7 +680,7 @@ def run_fiber_assignment(tileid, targets_fn, output_dir, header, footprint_fn, s
 
 def do_fiber_assignment(altmtl_dir, tileid, survey='main', obscon='dark', overwrite=False,
                         fiberassign_dir=None, fiberassign_input_dir=None, state=None,
-                        tmp_dir=None, load_targets='file'):
+                        tmp_dir=None, load_targets='file', tile_subpriority=None):
     """
     Carry out one ``fa`` action: assign a tile and record the fiber map.
 
@@ -495,7 +719,10 @@ def do_fiber_assignment(altmtl_dir, tileid, survey='main', obscon='dark', overwr
         How the science targets reach fiberassign. ``'file'`` writes them out and lets
         fiberassign read them, which is what ``fba_run`` does. ``'memory'`` hands it the array,
         which is faster and leaves the assignment itself untouched; see
-        :func:`targets_in_memory`.
+        :func:`targets_in_memory`. SV tiles always go through a file.
+
+    tile_subpriority : int, str, default=None
+        Subpriorities to break this tile's ties with, see :func:`set_tile_subpriority`.
 
     Returns
     -------
@@ -544,14 +771,17 @@ def do_fiber_assignment(altmtl_dir, tileid, survey='main', obscon='dark', overwr
         utils.mkdir(targets_dir)
     targets_fn = Path(targets_dir) / '{}-targ.fits'.format(ts)
     ledger_dir = None if state is not None else get_ledger_dir(altmtl_dir, survey=survey, obscon=obscon)
-    in_memory = load_targets == 'memory'
+    # A legacy tile is assigned in another interpreter, which can only be handed a file.
+    in_memory = load_targets == 'memory' and not is_legacy(header)
     try:
         if in_memory:
-            array = read_alt_targets(tileid, ledger_dir, footprint_fn, state=state)
+            array = read_alt_targets(tileid, ledger_dir, footprint_fn, state=state,
+                                     tile_subpriority=tile_subpriority)
             ntargets = len(array)
         else:
             array = None
-            ntargets = write_alt_targets(tileid, ledger_dir, targets_fn, footprint_fn, state=state)
+            ntargets = write_alt_targets(tileid, ledger_dir, targets_fn, footprint_fn, state=state,
+                                         tile_subpriority=tile_subpriority)
         logger.debug('Tile {:d}: {:d} alternative targets in footprint.'.format(tileid, ntargets))
 
         run_fiber_assignment(tileid, targets_fn, fa_dir, header, footprint_fn, sky_fn,
