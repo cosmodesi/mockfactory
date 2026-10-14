@@ -156,11 +156,7 @@ def make_vetoed_full_data(data, assignments, tracer, notqso=False, targets=None,
     del data
     logger.info('--- {}: vetoes ---'.format(tracer))
     full = apply_veto_data(full, maxp, bits=bits, maps_north=maps_north, maps_south=maps_south,
-                           custom_masks=custom_masks)
-    if mask_targetid is not None:
-        keep = ~np.isin(np.asarray(full['TARGETID']), mask_targetid)
-        logger.info('full data: location mask removes {:d} of {:d}'.format(int((~keep).sum()), len(keep)))
-        full = full[keep]
+                           custom_masks=custom_masks, mask_targetid=mask_targetid)
     return full
 
 
@@ -295,8 +291,9 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
         ``random_imaging`` and ``random_tiles`` are not used.
     mask_targetid : array, default=None
         Targets to remove, for an object level mask of fiber locations: removed from the full
-        data once built and vetoed, before anything is measured on it (``FRAC_TLOBS_TILES``,
-        n(z), completeness per number of tiles). From the mock's raw potential assignments, as
+        data with the vetoes, before anything is measured on it (``COMP_TILE``,
+        ``FRAC_TLOBS_TILES``, n(z), completeness per number of tiles), as the survey pipeline
+        does from LSS v2.2 on. From the mock's raw potential assignments, as
         :func:`~mockfactory.desi.lsscat.combine.mask_bad_petal_night_targetid` gives them for the
         bad petal nights; ``data`` cannot give them, having lost the locations outside
         ``good_tilelocid``.

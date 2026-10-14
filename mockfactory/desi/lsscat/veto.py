@@ -170,7 +170,7 @@ def apply_map_veto(array, maps_north, maps_south, cuts=None, nside=256):
 
 
 def apply_veto_data(data, max_priority, bits=None, maps_north=None, maps_south=None,
-                    cuts=None, nside=256, custom_masks=None):
+                    cuts=None, nside=256, custom_masks=None, mask_targetid=None):
     """
     Return the vetoed full data catalog, with its completeness recomputed over what is left.
 
@@ -192,11 +192,21 @@ def apply_veto_data(data, max_priority, bits=None, maps_north=None, maps_south=N
         Observing condition maps. The map veto is skipped when not given.
     custom_masks : list, default=None
         Custom mask files, from :func:`get_custom_masks`, applied before the imaging bits.
+    mask_targetid : array, default=None
+        Targets to remove, for an object level mask of fiber locations; see
+        :func:`~mockfactory.desi.lsscat.pipeline.run_tracer`. Removed before the completeness
+        is measured, as the survey pipeline does (``LSS.common_tools.apply_veto``, ``tids2mask``):
+        the masked targets are the ones that reached a bad location, so the sets of tiles they
+        shared would otherwise keep a completeness the catalog no longer has.
     """
     data = as_table(data)
     size = len(data)
     keep = data['GOODHARDLOC'] & (data['PRIORITY_ASSIGNED'] <= max_priority)
     logger.info('priority and hardware keep {:d} of {:d} rows'.format(int(keep.sum()), size))
+    if mask_targetid is not None:
+        masked = np.isin(np.asarray(data['TARGETID']), mask_targetid)
+        logger.info('location mask removes {:d} of {:d} rows'.format(int((keep & masked).sum()), int(keep.sum())))
+        keep &= ~masked
     if custom_masks:
         masked = in_custom_mask(data['RA'], data['DEC'], custom_masks)
         logger.info('custom masks remove {:d} of {:d} rows'.format(int((keep & masked).sum()), int(keep.sum())))
