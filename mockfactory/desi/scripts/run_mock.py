@@ -405,7 +405,7 @@ def run_imsys(args):
     """
     import h5py
     from astropy.table import Table, vstack
-    from mockfactory.desi.lsscat import compute_imaging_weights, compute_sysnet_weights, read_hpmaps, write_catalogs, FIT_MAPS, SYSNET_FIT_MAPS
+    from mockfactory.desi.lsscat import compute_imaging_weights, compute_sysnet_weights, read_hpmaps, write_weights, FIT_MAPS, SYSNET_FIT_MAPS
 
     sysnet = args.program.get('imsys_method', 'linear') == 'sysnet'
     maps_north, maps_south = read_hpmaps(args.hpmap_dir, args.program.get('imsys_maps', args.tracer))
@@ -430,7 +430,10 @@ def run_imsys(args):
 
         start = time.time()
         data = vstack([read(fn('dat', cap), data_columns) for cap in caps])
-        randoms = vstack([read(fn('ran', cap, i), randoms_columns) for cap in caps for i in range(args.nrandom)])
+        # the linear fit takes the randoms one catalog at a time (compute_imaging_weights reads each when it gets to it, in this
+        # order, the order the catalogs used to be stacked in): all 36 at once were ~48 GB a mock of quasars; SYSNet takes them stacked
+        randoms = [(lambda path: (lambda: read(path, randoms_columns)))(fn('ran', cap, i)) for cap in caps for i in range(args.nrandom)]
+        if sysnet: randoms = vstack([get() for get in randoms])
         if sysnet:
             weights, _ = compute_sysnet_weights(data, randoms, maps_north, maps_south, fit_maps,
                                                 args.program['imsys_zranges'], mock_dir / 'sysnet',
@@ -449,28 +452,11 @@ def run_imsys(args):
         targetid, weights = np.asarray(data['TARGETID'])[order], weights[order]
         del data
         files = [(fn('dat', cap), 'TARGETID') for cap in (None,) + caps]
-        files += [(fn('ran', cap, i), 'TARGETID_DATA') for i in range(args.nrandom) for cap in (None,) + caps]
-        # Updated one by one and written numproc at a time: writing is most of the cost and it
-        # parallelises over processes (see write_catalogs), but holding every catalog until the end
-        # costs a mock's whole size, about 110 GB at eighteen randoms, which five mocks on a node
-        # cannot afford.
-        writes = []
-        for path, key in files:
-            if len(writes) >= args.numproc:
-                write_catalogs(writes, numproc=args.numproc)
-                writes = []
-            catalog = read(path)
-            index = np.clip(np.searchsorted(targetid, catalog[key]), 0, len(targetid) - 1)
-            found = targetid[index] == catalog[key]
-            # A random whose region had no data to draw from has no donor: its weights stay as they were.
-            new = np.array(catalog['WEIGHT_SYS'], dtype='f8')
-            new[found] = weights[index[found]]
-            catalog['WEIGHT'] = catalog['WEIGHT'] / catalog['WEIGHT_SYS'] * new
-            catalog['WEIGHT_SYS'] = new
-            catalog[syscol] = new
-            writes.append((path, catalog))
-        write_catalogs(writes, numproc=args.numproc)
-        del writes
+        # the whole random catalogs only where they were written (lsscat run_tracer write_all_randoms)
+        files += [(fn('ran', cap, i), 'TARGETID_DATA') for i in range(args.nrandom) for cap in (None,) + caps
+                  if cap is not None or Path(fn('ran', cap, i)).exists()]
+        # in place, three columns of each catalog (write_weights): rewriting every catalog whole was most of the cost
+        write_weights(files, targetid, weights, syscol, numproc=args.numproc)
         logger.info('mock {:d}: imaging weights written into {:d} catalogs.'.format(imock, len(files)))
 
 

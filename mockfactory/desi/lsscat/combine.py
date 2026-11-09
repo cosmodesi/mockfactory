@@ -11,8 +11,10 @@ random catalogs, and reads them back at each stage. Nothing here writes: the tab
 returned, and :mod:`mockfactory.desi.lsscat.pipeline` hands them straight to the next stage.
 """
 
+import os
 import functools
 import logging
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +23,7 @@ from ..altmtl.assignment import get_alt_fiberassign_fn, get_fa_dir
 from ..altmtl.tiletracker import read_tile_tracker
 from astropy.table import Table, vstack
 
-from .utils import NULL, as_table, encode_keys, join_left, set_column
+from .utils import NULL, as_table, encode_keys, join_left, set_column, fork_map
 
 
 logger = logging.getLogger('lsscat.combine')
@@ -57,11 +59,10 @@ def read_assignments(altmtl_dir, tileids, fadates=None, survey='main', obscon='d
         if missing:
             raise ValueError('no assignment written for tiles {}{}'.format(
                 missing[:10], ' and {:d} more'.format(len(missing) - 10) if len(missing) > 10 else ''))
-        args = [(found[int(tileid)],) for tileid in tileids]
+        fns = [found[int(tileid)] for tileid in tileids]
     else:
-        args = [(get_alt_fiberassign_fn(get_fa_dir(altmtl_dir, fadate, survey=survey), tileid),)
-                for tileid, fadate in zip(tileids, fadates)]
-    arrays = _map(_read_assignment_one_tile, args, numproc=numproc)
+        fns = [get_alt_fiberassign_fn(get_fa_dir(altmtl_dir, fadate, survey=survey), tileid) for tileid, fadate in zip(tileids, fadates)]
+    arrays = fork_map(_read_assignment_one_tile, fns, numproc=numproc)
     toret = vstack([array for array in arrays if len(array)], join_type='exact',
                    metadata_conflicts='silent')
     logger.info('combined {:d} assignments over {:d} tiles'.format(len(toret), len(tileids)))
@@ -306,7 +307,8 @@ def mask_bad_petal_night_targetid(rows, program='dark', spec_fn=None, bad_petal_
     """
     import fitsio
     if isinstance(rows, (str, Path)):
-        rows = fitsio.read(str(rows), columns=['TARGETID', 'TILEID', 'LOCATION'])
+        from mockfactory.desi.altmtl.pota import read_potential_assignments
+        rows = read_potential_assignments(rows, columns=['TARGETID', 'TILEID', 'LOCATION'])
     if spec_fn is None:
         if program not in BAD_PETAL_NIGHT_TILELOCID_FN:
             raise ValueError('no list of bad petal night locations for program {}; give spec_fn'.format(program))
@@ -321,10 +323,21 @@ def mask_bad_petal_night_targetid(rows, program='dark', spec_fn=None, bad_petal_
 
 def read_bad_petal_night_random_targetid(i, program='dark'):
     """
-    Return the randoms of the survey's random catalog ``i`` with a row at a location the LSS
-    catalogs reject for being observed on a bad petal night, as the LSS catalogs list them from
-    ``rancomb_{i}{program}wdupspec_zdone``: the randoms' counterpart of
+    Return the randoms of the survey's random catalog ``i`` with a row at a location the LSS catalogs reject for being observed on
+    a bad petal night, as the LSS catalogs list them from ``rancomb_{i}{program}wdupspec_zdone``: the randoms' counterpart of
     :func:`mask_bad_petal_night_targetid`.
+
+    Parameters
+    ----------
+    i : int
+        Random catalog index.
+    program : str, default='dark'
+        Program.
+
+    Returns
+    -------
+    targetid : array
+        TARGETID of the randoms to remove.
     """
     return np.loadtxt(BAD_PETAL_NIGHT_DIR / 'ran_{:d}_{}_badpetalnight_TARGETID.txt'.format(i, program), dtype='i8')
 
@@ -553,7 +566,69 @@ def combine_randoms(randoms, assignments, columns=('PRIORITY',)):
     return toret
 
 
-def read_dupran_randoms(fn, assignments, max_priority):
+#: The columns of a dupran random catalog the randoms are made from (TILELOCID from TILEID and LOCATION, TILES as its code).
+DUPRAN_COLUMNS = ('TILELOCID', 'TARGETID', 'RA', 'DEC', 'NTILE', 'TILES', 'PHOTSYS')
+
+
+@contextmanager
+def open_dupran(fn, cache_dir=None):
+    """
+    Open a dupran random catalog and yield ``get(name)``, its column ``name`` (:data:`DUPRAN_COLUMNS`) read when asked.
+
+    A dupran catalog (``{tracer}_{i}_dupran_masked_HPmapcut``, see :func:`read_dupran_randoms`) holds one row per random and fiber
+    location that could reach it. ``get('TILELOCID')`` is computed from TILEID and LOCATION, ``get('TILES')`` is the code of the set
+    of tiles (:func:`tiles_code`), which ``cache_dir`` keeps if given ({name}.tiles_code.h5): the same for every mock, computed by
+    the first that reads the catalog (the strings took a fifth of the time of a random).
+
+    Parameters
+    ----------
+    fn : str, Path
+        The dupran catalog, ``.h5`` or ``.fits``.
+    cache_dir : str, Path, default=None
+        Directory of the TILES codes.
+
+    Yields
+    ------
+    get : callable
+        ``get(name)`` returns the column ``name``, every row.
+    """
+    import h5py
+    fn = str(fn)
+    if fn.endswith('.h5'):
+        import hdf5plugin  # noqa: F401  blosc
+        file = h5py.File(fn, 'r')
+        read = lambda name: file['LSS'][name][...]
+    else:
+        import fitsio
+        file = None
+        read = lambda name: fitsio.read(fn, columns=[name])[name]
+
+    def get(name):
+        """Return the column ``name`` of the catalog, every row (TILELOCID computed, TILES as its code)."""
+        if name == 'TILELOCID':
+            return 10000 * read('TILEID').astype('i8') + read('LOCATION')
+        if name != 'TILES':
+            return read(name)
+        if cache_dir is None:
+            return tiles_code(read('TILES'))
+        cache_fn = Path(cache_dir) / (Path(fn).name.replace('.h5', '').replace('.fits', '') + '.tiles_code.h5')
+        if cache_fn.exists():
+            with h5py.File(cache_fn, 'r') as cache: return cache['TILES_CODE'][...]
+        codes = tiles_code(read('TILES'))
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        tmp_fn = str(cache_fn) + '.{:d}.tmp'.format(os.getpid())  # renamed into place: several mocks computing it leave one file
+        with h5py.File(tmp_fn, 'w') as cache: cache.create_dataset('TILES_CODE', data=codes)
+        os.replace(tmp_fn, cache_fn)
+        logger.info('{}: TILES codes cached in {}'.format(Path(fn).name, cache_fn))
+        return codes
+
+    try:
+        yield get
+    finally:
+        if file is not None: file.close()
+
+
+def read_dupran_randoms(fn, assignments, max_priority, cache_dir=None):
     """
     Return the full random catalog of one tracer from the survey's own vetoed randoms, as
     LSS ``mkCat_amtl.py`` builds the randoms of a mock.
@@ -579,44 +654,120 @@ def read_dupran_randoms(fn, assignments, max_priority):
     max_priority : int
         Highest priority the tracer can be assigned at, from
         :func:`~mockfactory.desi.lsscat.full.get_max_priority`.
+    cache_dir : str, Path, default=None
+        Directory of what the catalog gives every mock alike, computed by the first that reads it: the code of every row's TILES
+        (:func:`open_dupran`).
     """
-    columns = ['TARGETID', 'RA', 'DEC', 'TILEID', 'LOCATION', 'NTILE', 'TILES', 'PHOTSYS']
-    fn = str(fn)
-    if fn.endswith('.h5'):
-        import h5py
-        import hdf5plugin  # noqa: F401  registers the codec
-        with h5py.File(fn, 'r') as file:
-            rows = {name: file['LSS'][name][...] for name in columns}
-    else:
-        import fitsio
-        array = fitsio.read(fn, columns=columns)
-        rows = {name: array[name] for name in columns}
+    # one column at a time, each cut to the rows kept as soon as it is read: the file holds ~100 million rows per random (one per tile
+    # and location a random could get), a fourth of them kept
+    with open_dupran(fn, cache_dir=cache_dir) as get:
+        return select_dupran_randoms(get, dupran_bad_tilelocid(assignments, max_priority), name=Path(fn).name)
+
+
+def dupran_bad_tilelocid(assignments, max_priority):
+    """
+    Return the fiber locations (TILEID * 10000 + LOCATION) the mock gave a target above ``max_priority``: the rows of a dupran
+    random catalog at one of them are dropped (:func:`select_dupran_randoms`). What a mock adds to the rows of the catalog.
+
+    Parameters
+    ----------
+    assignments : array
+        Fibers given, from :func:`read_assignments`, with 'TILEID', 'LOCATION', 'PRIORITY'.
+    max_priority : int
+        Highest priority the tracer can be assigned at (:func:`~mockfactory.desi.lsscat.full.get_max_priority`).
+
+    Returns
+    -------
+    tilelocid : array
+    """
     assignments = as_table(assignments)
     won = 10000 * np.asarray(assignments['TILEID'], dtype='i8') + np.asarray(assignments['LOCATION'])
-    bad = won[np.asarray(assignments['PRIORITY']) > max_priority]
-    keep = ~np.isin(10000 * rows['TILEID'].astype('i8') + rows['LOCATION'], bad)
-    logger.info('{}: {:d} of {:d} rows at locations the mock gave a higher priority'
-                .format(Path(fn).name, int((~keep).sum()), len(keep)))
-    # NTILE and TILES belong to the random, not the row, so which row is kept does not matter.
-    _, index = np.unique(rows['TARGETID'][keep], return_index=True)
-    index = np.flatnonzero(keep)[index]
-    toret = Table({'TARGETID': rows['TARGETID'][index], 'RA': rows['RA'][index],
-                   'DEC': rows['DEC'][index], 'NTILE': rows['NTILE'][index].astype('i8'),
-                   'TILES': tiles_code(rows['TILES'][index]),
-                   'PHOTSYS': np.char.decode(rows['PHOTSYS'][index].astype('S1')).astype('U1')},
-                  copy=False)
-    logger.info('{}: {:d} randoms'.format(Path(fn).name, len(toret)))
+    return won[np.asarray(assignments['PRIORITY']) > max_priority]
+
+
+def read_dupran_rows(fn, cache_dir=None):
+    """
+    Read every row of a dupran random catalog (:func:`open_dupran`): what does not depend on the mock, read once for all of them
+    and handed to :func:`select_dupran_randoms` for each mock (:func:`~mockfactory.desi.lsscat.run_deferred_randoms`).
+
+    Parameters
+    ----------
+    fn : str, Path
+        The dupran catalog.
+    cache_dir : str, Path, default=None
+        Directory of the TILES codes (:func:`open_dupran`).
+
+    Returns
+    -------
+    rows : dict
+        The :data:`DUPRAN_COLUMNS`, and 'name', the file name (for the logs).
+    """
+    with open_dupran(fn, cache_dir=cache_dir) as get:
+        return dict({name: get(name) for name in DUPRAN_COLUMNS}, name=Path(fn).name)
+
+
+def select_dupran_randoms(rows, bad_tilelocid, name=None):
+    """
+    Return the full random catalog of one mock from a dupran random catalog: its rows without those at the locations the mock gave
+    a higher priority, one row per random. NTILE and TILES belong to the random, not the row, so which row is kept does not matter.
+
+    Parameters
+    ----------
+    rows : dict, callable
+        The rows of the catalog (:func:`read_dupran_rows`), or the ``get`` of :func:`open_dupran`, reading each column when asked.
+    bad_tilelocid : array
+        Locations the mock gave a target above the tracer's maximum priority (:func:`dupran_bad_tilelocid`).
+    name : str, default=None
+        Name for the logs; that of ``rows`` if a dict.
+
+    Returns
+    -------
+    randoms : Table
+        TARGETID, RA, DEC, NTILE, TILES (code), PHOTSYS.
+    """
+    get = rows.__getitem__ if isinstance(rows, dict) else rows
+    if name is None: name = rows.get('name', '') if isinstance(rows, dict) else ''
+    keep = ~np.isin(get('TILELOCID'), bad_tilelocid)
+    logger.info('{}: {:d} of {:d} rows at locations the mock gave a higher priority'.format(name, int((~keep).sum()), len(keep)))
+    keep = np.flatnonzero(keep)
+    targetid = get('TARGETID')[keep]
+    _, index = np.unique(targetid, return_index=True)
+    toret = Table({'TARGETID': targetid[index]}, copy=False)
+    del targetid
+    index = keep[index]
+    del keep
+    toret['RA'] = get('RA')[index]
+    toret['DEC'] = get('DEC')[index]
+    toret['NTILE'] = get('NTILE')[index].astype('i8')
+    toret['TILES'] = get('TILES')[index]
+    # a byte string cast to str, as np.char.decode did for these single ASCII letters, without its loop over the rows
+    toret['PHOTSYS'] = get('PHOTSYS')[index].astype('S1').astype('U1')
+    logger.info('{}: {:d} randoms'.format(name, len(toret)))
     return toret
 
 
 def tiles_code(names):
     """
-    Return the code :func:`count_tiles` gives a set of tiles, from the name the survey pipeline
-    gives it: the tile identifiers sorted and joined by ``-``.
+    Return the code :func:`count_tiles` gives a set of tiles, from the name the survey pipeline gives it: the tile identifiers sorted
+    and joined by ``-``. A random catalog holds ~25 million names of a few thousand distinct values: the distinct ones are found on a
+    64-bit hash of each (its bytes taken four at a time where the width allows), every name checked against the one standing for its
+    hash, and the names sorted only were two to share a hash.
     """
     names = np.asarray(names)
-    unique, inverse = np.unique(names, return_inverse=True)
     prime = np.uint64(1099511628211)
+    unique, inverse = None, None
+    if names.dtype.kind == 'S' and names.ndim == 1 and names.size:
+        data = np.ascontiguousarray(names).view('u4' if names.dtype.itemsize % 4 == 0 else 'u1').reshape(len(names), -1)
+        code = np.full(len(names), np.uint64(14695981039346656037))
+        with np.errstate(over='ignore'):
+            for i in range(data.shape[1]):
+                code ^= data[:, i].astype('u8')
+                code *= prime
+        _, first, inverse = np.unique(code, return_index=True, return_inverse=True)
+        unique = names[first]
+        if not np.array_equal(names, unique[inverse]): unique = None
+    if unique is None:
+        unique, inverse = np.unique(names, return_inverse=True)
     codes = np.empty(len(unique), dtype='u8')
     with np.errstate(over='ignore'):
         for i, name in enumerate(unique):
@@ -755,10 +906,53 @@ def _group_names(targetid, value):
     return unique, counts.astype('i8'), toret
 
 
-def _map(func, args, numproc=1):
-    """Apply ``func`` to each of ``args``, in a pool of ``numproc`` processes."""
-    if numproc <= 1:
-        return [func(*arg) for arg in args]
-    import multiprocessing
-    with multiprocessing.Pool(numproc) as pool:
-        return pool.starmap(func, args)
+def potential_data(pota_fn, assignments, good_tilelocid=None):
+    """
+    Return ``data(tracer=None, notqso=False)``, the potential assignments of a mock combined with its assignments
+    (:func:`combine_data`), for :func:`~mockfactory.desi.lsscat.make_vetoed_full_data`.
+
+    Without ``tracer``, ``data()`` returns every row at once. With one, an object the full data reads in two passes:
+    ``narrow()``, the rows of the tracer only (select_tracer, which make_full_data applies first anyway; combine_data works row by
+    row) with only the columns the choice of a row per target reads, and ``POTA_ROW``, the row in the file; then ``wide(rows)``,
+    those rows of the file, with every column. The ~80 million potential assignments of the emission line galaxies are then never
+    held with all their columns, nor read twice.
+
+    Parameters
+    ----------
+    pota_fn : str, Path
+        Potential assignment file (:func:`mockfactory.desi.altmtl.compute_potential_assignments`), HDF5 for the two passes to
+        read a few columns.
+    assignments : array
+        Fibers given, from :func:`read_assignments`, with the truth columns combine_data takes.
+    good_tilelocid : array, default=None
+        Locations the real survey got a usable spectrum from (see :func:`combine_data`).
+
+    Returns
+    -------
+    data : callable
+    """
+    from types import SimpleNamespace
+    from astropy.table import Table
+    from ..altmtl.pota import read_potential_assignments
+    from .full import select_tracer
+
+    def read(columns, rows):
+        """Read ``columns`` (all if ``None``) of the potential assignments at ``rows``, with ``POTA_ROW``, their row in the file."""
+        potential = Table(read_potential_assignments(pota_fn, columns=columns, rows=rows), copy=False)
+        potential['POTA_ROW'] = np.asarray(rows, dtype='i8')
+        return potential
+
+    def data(tracer=None, notqso=False):
+        """The combined potential assignments: every row, or for ``tracer``, the two-pass object (see :func:`potential_data`)."""
+        if tracer is None:
+            return combine_data(read_potential_assignments(pota_fn), assignments, good_tilelocid=good_tilelocid)
+        bits = read_potential_assignments(pota_fn, columns=['TARGETID', 'DESI_TARGET', 'BGS_TARGET'])
+        rows = np.flatnonzero(select_tracer(bits, tracer, notqso=notqso))
+        del bits
+        bit = 'BGS_TARGET' if tracer.upper().startswith('BGS') else 'DESI_TARGET'
+        narrow = lambda: combine_data(read(('LOCATION', 'TARGETID', 'COLLISION', 'TILEID', bit, 'PRIORITY'), rows),
+                                      assignments[['TARGETID', 'LOCATION', 'TILEID', 'ZWARN']], columns=('ZWARN',), good_tilelocid=good_tilelocid)
+        wide = lambda kept: combine_data(read(None, kept), assignments, good_tilelocid=good_tilelocid)
+        return SimpleNamespace(narrow=narrow, wide=wide)
+
+    return data

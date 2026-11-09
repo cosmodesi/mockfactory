@@ -28,6 +28,24 @@ from . import utils
 logger = logging.getLogger('altmtl.state')
 
 
+def compact_dtype(dtype):
+    """
+    Return ``dtype`` with its str (U) fields as bytes (S) of the same number of characters, the other fields unchanged.
+
+    Parameters
+    ----------
+    dtype : np.dtype, str, list
+        Structured dtype, or anything :class:`numpy.dtype` takes.
+
+    Returns
+    -------
+    dtype : np.dtype
+        Compact structured dtype, 1 byte a character rather than 4.
+    """
+    dtype = np.dtype(dtype)
+    return np.dtype([(name, 'S{:d}'.format(dtype[name].itemsize // 4) if dtype[name].kind == 'U' else dtype[name]) for name in dtype.names])
+
+
 class LedgerState(object):
     """
     Merged target list state of one realization, held in memory.
@@ -41,11 +59,37 @@ class LedgerState(object):
         Blocks of superseded rows, oldest first. Together with :attr:`current` these are the
         rows an append-only ledger would hold.
     """
-    def __init__(self, current, nside=None):
+    def __init__(self, current, nside=None, dtype=None):
+        """
+        Initialize the state from the current rows of every target, with no history.
+
+        The rows are stored compact (text columns as bytes, see :func:`compact_dtype`) and sorted by ``TARGETID``,
+        and the healpix of each is computed once.
+
+        Parameters
+        ----------
+        current : array
+            Latest state of every target, a merged target list, one row per target.
+
+        nside : int, default=None
+            Healpix nside the state is indexed at. Defaults to the one the real ledgers use,
+            :data:`mockfactory.desi.altmtl.ledger.MTL_NSIDE`.
+
+        dtype : np.dtype, default=None
+            Dtype rows are exported with (text columns as str), see :meth:`export`. Defaults to that of ``current``;
+            to be given when ``current`` is already compact.
+        """
         from .ledger import MTL_NSIDE
 
         self.nside = MTL_NSIDE if nside is None else nside
         current = np.asarray(current)
+        # The text columns of the merged target list (TIMESTAMP U25, VERSION U14, TARGET_STATE U30) are two thirds of its 420 bytes
+        # a row; they are ASCII, so they are held as bytes (1 byte a character, not 4), which halves the memory of a replay, and
+        # turned back into str wherever rows leave the state (export). ``dtype`` is that of the rows given, when they come compact.
+        self._dtype = current.dtype if dtype is None else np.dtype(dtype)
+        compact = compact_dtype(self._dtype)
+        # converted before sorting, so that the copy made by the sort is the small one
+        if current.dtype != compact: current = current.astype(compact)
         # Sorted by target, so that a row can be found by binary search.
         self.current = current[np.argsort(current['TARGETID'])]
         self.history = []
@@ -57,12 +101,30 @@ class LedgerState(object):
         # scanning the whole catalog for them costs the same as the assignment itself.
         self._pixel_index = None
 
+    def export(self, rows):
+        """
+        Return ``rows`` of this state with the dtype they came in with (text columns as str).
+
+        Parameters
+        ----------
+        rows : array
+            Rows of this state, in its compact dtype.
+
+        Returns
+        -------
+        rows : array
+            A copy, in the original dtype.
+        """
+        return np.asarray(rows).astype(self._dtype)
+
     def _healpix(self, ra, dec):
+        """Return the nested healpix, at :attr:`nside`, of positions ``ra``, ``dec`` (degrees)."""
         import healpy as hp
         return hp.ang2pix(self.nside, np.radians(90. - np.asarray(dec)), np.radians(np.asarray(ra)),
                           nest=True)
 
     def __len__(self):
+        """Return the number of targets, superseded rows not counted."""
         return len(self.current)
 
     @property
@@ -105,7 +167,7 @@ class LedgerState(object):
         return np.concatenate(blocks) if len(blocks) > 1 else blocks[0]
 
     @classmethod
-    def from_targets(cls, targets_fn, obscon='dark', survey='main', nside=None):
+    def from_targets(cls, targets_fn, obscon='dark', survey='main', nside=None, chunk_size=4_000_000):
         """
         Build the initial state from a mock target catalog.
 
@@ -127,9 +189,18 @@ class LedgerState(object):
         nside : int, default=None
             Healpix nside the state is indexed at. Defaults to the one the real ledgers use.
 
+        chunk_size : int, default=4_000_000
+            Number of targets :func:`desitarget.mtl.make_mtl` is run on at a time.
+
         Returns
         -------
         state : LedgerState
+            The unobserved state of every target, with no history.
+
+        Raises
+        ------
+        ValueError
+            If the catalog holds targets of another survey than ``survey``.
         """
         import fitsio
         from desitarget.mtl import make_mtl
@@ -141,14 +212,48 @@ class LedgerState(object):
             raise ValueError('{} holds {} targets, not {}; build it with make_targets(survey={!r})'.format(
                 targets_fn, get_survey(targets.colnames), survey.lower(), survey.lower()))
         # make_mtl with no redshift catalog returns the unobserved state, which is what a
-        # freshly built ledger holds.
-        current = np.asarray(make_mtl(targets, obscon.upper(), trimcols=True))
+        # freshly built ledger holds. It works target by target, so it is run on chunks of
+        # chunk_size targets, each made compact (text as bytes) at once: run on all 42 million
+        # targets of a dark mock at once, its str columns and copies peak at 40 GB, for a state
+        # that holds 10 GB. It stamps TIMESTAMP when it runs: every chunk gets the first's.
+        chunks, dtype, timestamp = [], None, None
+        for start in range(0, len(targets), chunk_size):
+            chunk = np.asarray(make_mtl(targets[start:start + chunk_size], obscon.upper(), trimcols=True))
+            if dtype is None: dtype, timestamp = chunk.dtype, chunk['TIMESTAMP'][:1].copy()
+            elif len(chunk): chunk['TIMESTAMP'] = timestamp
+            chunks.append(chunk.astype(compact_dtype(dtype)))
+            del chunk
+        del targets
+        current = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
+        del chunks
         logger.info('Built state of {:d} targets from {}.'.format(len(current), targets_fn))
-        return cls(current, nside=nside)
+        return cls(current, nside=nside, dtype=dtype)
 
     @classmethod
     def from_ledgers(cls, altmtl_dir, survey='main', obscon='dark', nside=None):
-        """Build the state by reading existing healpix ledgers, to pick a run up again."""
+        """
+        Build the state by reading existing healpix ledgers, to pick a run up again.
+
+        Only the latest row of each target is read (``unique=True``): the state starts with no history.
+
+        Parameters
+        ----------
+        altmtl_dir : str
+            Directory of the realization holding the ledgers.
+
+        survey : str, default='main'
+            Survey the ledgers belong to.
+
+        obscon : str, default='dark'
+            Observing conditions.
+
+        nside : int, default=None
+            Healpix nside of the ledgers, and of the state. Defaults to the one the real ledgers use.
+
+        Returns
+        -------
+        state : LedgerState
+        """
         from desitarget import io
         from .compat import supported
         from .ledger import get_ledger_dir, get_healpixels, MTL_NSIDE
@@ -167,13 +272,24 @@ class LedgerState(object):
 
         Stands in for :func:`desitarget.io.read_targets_in_tiles`: the healpix index narrows
         the catalog down, and the tile geometry then makes the cut exact.
+
+        Parameters
+        ----------
+        tiles : array
+            Tiles, with the columns :func:`desimodel.footprint.tiles2pix` and
+            :func:`desimodel.footprint.is_point_in_desi` take (``RA``, ``DEC``, ...).
+
+        Returns
+        -------
+        targets : array
+            Latest rows of the targets in the tiles, exported (text columns as str).
         """
         import desimodel.footprint
 
         pixels = desimodel.footprint.tiles2pix(self.nside, tiles=tiles)
         targets = self.current[self._rows_of_healpixels(pixels)]
         mask = desimodel.footprint.is_point_in_desi(tiles, targets['RA'], targets['DEC'])
-        return targets[mask]
+        return self.export(targets[mask])
 
     def update(self, zcat, obscon='dark', numobs_from_ledger=True, ext=False):
         """
@@ -198,10 +314,18 @@ class LedgerState(object):
         ext : bool, default=False
             Whether to apply the 1b rules.
 
+        Redshifts of targets this state does not hold are dropped. The rows replaced are kept in
+        :attr:`history`.
+
         Returns
         -------
         nupdated : int
             Number of targets whose state changed.
+
+        Raises
+        ------
+        ValueError
+            If :func:`desitarget.mtl.make_mtl` returns a target absent from the state.
         """
         from astropy.table import Table
         from desitarget.mtl import make_mtl
@@ -217,7 +341,7 @@ class LedgerState(object):
         if not len(zcat):
             return 0
 
-        targets = Table(self.current[index])
+        targets = Table(self.export(self.current[index]))
         if numobs_from_ledger:
             zcat = Table(zcat)
             zcat['NUMOBS'] = targets['NUMOBS'] + 1
@@ -251,7 +375,22 @@ class LedgerState(object):
         return index
 
     def numobs(self, targetid=None):
-        """Return how many times each target was observed, for ``targetid`` or for all."""
+        """
+        Return how many times each target was observed, for ``targetid`` or for all.
+
+        Parameters
+        ----------
+        targetid : array, default=None
+            Targets to look up; a target the state does not hold gets 0. ``None`` returns every target.
+
+        Returns
+        -------
+        targetid : array
+            Target identifiers, ``targetid`` as given, or every target sorted by identifier.
+
+        numobs : array
+            ``NUMOBS`` of each target.
+        """
         if targetid is None:
             return self.current['TARGETID'], self.current['NUMOBS']
         index = self._index_of(targetid)
@@ -261,10 +400,17 @@ class LedgerState(object):
         return targetid, numobs
 
     def all_rows(self):
-        """Every row this state holds, superseded ones first, as an append-only ledger would."""
+        """
+        Return every row this state holds, superseded ones first, as an append-only ledger would.
+
+        Returns
+        -------
+        rows : array
+            History blocks, oldest first, then the current rows, exported (text columns as str).
+        """
         if not self.history:
-            return self.current
-        return np.concatenate(self.history + [self.current])
+            return self.export(self.current)
+        return self.export(np.concatenate(self.history + [self.current]))
 
     @property
     def nrows(self):
@@ -325,7 +471,7 @@ class LedgerState(object):
         mask = np.isin(self._pixel, healpixels)
         rows.append(self.current[mask])
         pixel.append(self._pixel[mask])
-        rows = np.concatenate(rows) if len(rows) > 1 else rows[0]
+        rows = self.export(np.concatenate(rows) if len(rows) > 1 else rows[0])
         pixel = np.concatenate(pixel) if len(pixel) > 1 else pixel[0]
 
         # desitarget prefixes the survey outside the main one, sv3mtl-dark-hp-..., and looks
@@ -352,11 +498,31 @@ class LedgerState(object):
 
         Used after handing a few healpixels to desitarget for reprocessing: the ledgers are
         then the authority on those targets, both their latest state and their history.
+        The last row of each target read becomes its current row; the others replace its history.
+
+        Parameters
+        ----------
+        ledger_dir : str
+            Directory of the healpix ledgers to read.
+
+        healpixels : int, array
+            Healpixels (nested, at :attr:`nside`) to replace.
+
+        survey : str, default='main'
+            Survey the ledgers belong to. Unused: the ledgers are found by healpix in ``ledger_dir``.
+
+        obscon : str, default='dark'
+            Observing conditions. Unused, as ``survey``.
 
         Returns
         -------
         nrows : int
             Number of rows read back.
+
+        Raises
+        ------
+        ValueError
+            If the ledgers hold a target the state does not.
         """
         from desitarget import io
         from .compat import supported
@@ -378,7 +544,7 @@ class LedgerState(object):
         self._history_pixel = [pixel[mask] for pixel, mask in zip(self._history_pixel, keep)
                                if mask.any()]
         if len(superseded):
-            self.history.append(superseded)
+            self.history.append(superseded.astype(self.current.dtype))
             self._history_pixel.append(self._healpix(superseded['RA'], superseded['DEC']))
 
         # Write the new states over the rows they replace, rather than rebuilding the whole
@@ -411,13 +577,32 @@ class LedgerState(object):
         exists, and a pool of them argsorting at once is worse than the sum of its parts.
 
         Calling this in the parent before forking means the index is built once and inherited.
+
+        Returns
+        -------
+        self : LedgerState
         """
         if self._pixel_index is None:
             self.rows_in_healpixels(self._pixel[:1])
         return self
 
     def healpixels_of(self, ra, dec):
-        """Return the distinct healpixels the given positions fall in."""
+        """
+        Return the distinct healpixels the given positions fall in, nested, at :attr:`nside`.
+
+        Parameters
+        ----------
+        ra : array
+            Right ascension (degree).
+
+        dec : array
+            Declination (degree).
+
+        Returns
+        -------
+        healpixels : array
+            Sorted distinct healpixels.
+        """
         return np.unique(self._healpix(ra, dec))
 
     def rows_in_healpixels(self, healpixels):
@@ -426,6 +611,16 @@ class LedgerState(object):
 
         This is what reading those healpix ledgers without taking the latest row of each
         target would give, and it is what a replay from the unobserved state needs.
+
+        Parameters
+        ----------
+        healpixels : int, array
+            Healpixels, nested, at :attr:`nside`.
+
+        Returns
+        -------
+        rows : array
+            Superseded rows, oldest block first, then the current rows, exported (text columns as str).
         """
         healpixels = np.atleast_1d(healpixels)
         rows = []
@@ -433,7 +628,7 @@ class LedgerState(object):
             mask = np.isin(pixel, healpixels)
             if mask.any(): rows.append(block[mask])
         rows.append(self.current[self._rows_of_healpixels(healpixels)])
-        return np.concatenate(rows) if len(rows) > 1 else rows[0]
+        return self.export(np.concatenate(rows) if len(rows) > 1 else rows[0])
 
     def absorb_rows(self, rows):
         """
@@ -442,10 +637,20 @@ class LedgerState(object):
         The last row of a target is its state now; the others are what it passed through, and
         so is whatever the state held for it before, since the replay supersedes all of it.
 
+        Parameters
+        ----------
+        rows : array
+            Rows produced by the replay, oldest first, several per target possibly.
+
         Returns
         -------
         nupdated : int
             Number of targets whose state changed.
+
+        Raises
+        ------
+        ValueError
+            If the replay returned a target the state does not hold.
         """
         from .reprocess import last_of_each
 

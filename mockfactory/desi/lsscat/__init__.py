@@ -38,8 +38,12 @@ for.
                mask_random_targetid=[read_bad_petal_night_random_targetid(i, program='dark') for i in range(len(randoms))])
 """
 
+# registers the HDF5 filters (blosc) the compressed catalogs are written with (pipeline.CLUSTERING_COMPRESSION), for every reader
+import hdf5plugin  # noqa: F401
+
 from .utils import (as_table, get_photsys, get_galactic_cap, join_left, last_of_each,
                     group_fraction)
+from .combine import (read_dupran_rows, select_dupran_randoms, dupran_bad_tilelocid, potential_data)
 from .combine import (read_assignments, combine_data, count_tiles, combine_randoms, read_dupran_randoms, read_good_tilelocid,
                       mask_bad_petal_night_targetid, read_bad_petal_night_random_targetid,
                       read_random_imaging)
@@ -50,7 +54,8 @@ from .clustering import (make_clustering_data, make_clustering_randoms, select_g
                          compute_iip_weight, get_redshift_range,
                          get_bgs_absmag_cut)
 from .nz import compute_nz, write_nz, add_nz_weights, get_fkp_p0
-from .pipeline import run_tracer, read_hpmaps, write_catalog, write_catalogs, make_vetoed_full_data, write_full_data
+from .pipeline import (run_tracer, run_deferred_randoms, read_hpmaps, write_catalog, write_catalogs, write_weights, make_vetoed_full_data,
+                       write_full_data)
 from .imaging import (compute_imaging_weights, LinearRegression, get_template_maps, get_template_values,
                       read_ebv_diff, select_photometric_region, FIT_MAPS)
 from .sysnet import (compute_sysnet_weights, prepare_sysnet_table, run_sysnet, get_sysnet_pixel_weights,

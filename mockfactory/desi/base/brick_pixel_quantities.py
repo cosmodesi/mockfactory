@@ -28,11 +28,24 @@ BRICKS_FN = '/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9/randoms/survey-bricks
 
 
 def get_brick_regions(fn=BRICKS_FN):
-    """Return a dictionary brick name: 'north' or 'south', from the DR9 brick list."""
+    """
+    Return a dictionary brick name: 'north' or 'south', from the DR9 brick list, 'north' for ``PHOTSYS`` 'N'.
+
+    Parameters
+    ----------
+    fn : str, Path, default=BRICKS_FN
+        DR9 brick list, with 'BRICKNAME' and 'PHOTSYS' columns.
+
+    Returns
+    -------
+    regions : dict
+        Imaging survey directory, 'north' or 'south', of each brick name.
+    """
     import functools
 
     @functools.lru_cache(maxsize=None)
     def read(fn):
+        """Read the brick list ``fn`` into the dictionary brick name: 'north' or 'south'."""
         bricks = fitsio.read(str(fn), columns=['BRICKNAME', 'PHOTSYS'])
         return dict(zip(np.char.strip(bricks['BRICKNAME'].astype(str)),
                         np.where(np.char.strip(bricks['PHOTSYS'].astype(str)) == 'N', 'north', 'south')))
@@ -42,9 +55,13 @@ def get_brick_regions(fn=BRICKS_FN):
 
 def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD, cache_dir=None):
     """
-    Return value of brick pixel-level qunantity at input RA/Dec, expected to be scattered on all MPI processes.
+    Return value of brick pixel-level quantity at input RA/Dec, expected to be scattered on all MPI processes.
     Based on Rongpu Zhou's code:
     https://github.com/rongpu/desi-examples/blob/master/bright_star_mask/read_pixel_maskbit.py
+
+    Positions are sorted across processes by brick id, so that each process reads whole bricks, each brick from the
+    imaging survey the DR9 brick list gives it (:func:`get_brick_regions`; by declination for a brick not in it), and
+    the values are then sorted back to the input order and shape.
 
     Parameters
     ----------
@@ -55,12 +72,17 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD, cache_d
         Declination (degree).
 
     columns : dict
-        Dictionary of column name: {'fn': path to brick file, 'dtype': dtype (optional), 'default': default value in case brick does not exist (optional)}.
+        Dictionary of column name: {'fn': path to brick file, 'dtype': dtype (optional),
+        'default': default value in case brick does not exist (optional)}.
         Path to brick file can contain keywords 'region' and 'brickname'.
-        One can also provide callable: kwargs; callable will be called on each brick as callable(ra, dec, brickname, region ('north' or 'south'), **kwargs), and must return a dictionary of arrays (brick quantities); for example desitarget.randoms.quantities_at_positions_in_a_brick: {'drdir': '/global/project/projectdirs/cosmo/data/legacysurvey/dr9/{region}'}.
+        One can also provide callable: kwargs; callable will be called on each brick as
+        callable(ra, dec, brickname, **kwargs), string kwargs formatted with 'region' ('north' or 'south'),
+        and must return a dictionary of arrays (brick quantities); for example
+        desitarget.randoms.quantities_at_positions_in_a_brick:
+        {'drdir': '/global/project/projectdirs/cosmo/data/legacysurvey/dr9/{region}'}.
         To register brickname, brickid, or photsys (N or S), just pass e.g. 'brickname': None.
 
-    mpicomm : MPI communicator, default=None
+    mpicomm : MPI communicator, default=MPI.COMM_WORLD
         The current MPI communicator.
 
     cache_dir : str, default=None
@@ -75,7 +97,13 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD, cache_d
     Returns
     -------
     di : dict
-        Dictionary with requested columns.
+        Dictionary with requested columns, each an array of the shape of ``ra``; empty if ``columns`` is empty or
+        no process holds a position.
+
+    Raises
+    ------
+    ValueError
+        If a column given as None is neither 'photsys' nor one of 'ra', 'dec', 'brickid', 'brickname', 'index'.
     """
     import mpytools as mpy
     from desiutil import brick
@@ -90,7 +118,7 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD, cache_d
         return {}
     ra, dec = np.ravel(ra), np.ravel(dec)
 
-    handles = {}
+    handles, pixels = {}, {}
 
     def _one_brick_cached(fn, brickname, region, ra, dec, dtype=None, default=None):
         """Extract the same quantity from the converted HDF5 shards."""
@@ -113,10 +141,14 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD, cache_d
             # An absent map is absent coverage, which must read the same as an absent file
             return np.full(ra.size, default, dtype=dtype)
         group = h5[brickname]
-        header = fits.Header(dict(h5.attrs))
-        header.update(dict(group.attrs))
-        coadd_x, coadd_y = wcs.WCS(header).wcs_world2pix(ra, dec, 0)
-        coadd_x, coadd_y = np.round(coadd_x).astype(int), np.round(coadd_y).astype(int)
+        # the quantities of a brick share its pixel mapping: computed once a brick (building the WCS from the cards took ~20% of
+        # the time, four times a brick)
+        if pixels.get('key') != (region, brickname, ra.size):
+            header = fits.Header(dict(h5.attrs))
+            header.update(dict(group.attrs))
+            coadd_x, coadd_y = wcs.WCS(header).wcs_world2pix(ra, dec, 0)
+            pixels.update(key=(region, brickname, ra.size), xy=(np.round(coadd_y).astype(int), np.round(coadd_x).astype(int)))
+        coadd_y, coadd_x = pixels['xy']
         return np.asarray(group[quantity][:][coadd_y, coadd_x], dtype=dtype)
 
     def _one_brick(fn, ra, dec, dtype=None, default=None):
@@ -156,15 +188,24 @@ def get_brick_pixel_quantities(ra, dec, columns, mpicomm=MPI.COMM_WORLD, cache_d
 
     # Collect the brick pixel quantities in each brickname
     data = {}
-    bricknames = np.unique(brickid_data['brickname'])
+    # The rows are sorted by brick id: each brick is one contiguous slice. Comparing every row with every brick name
+    # (rows x bricks string comparisons) took most of the time of a mock's targets.
+    brickids = np.asarray(brickid_data['brickid'])
+    _, starts = np.unique(brickids, return_index=True)
+    stops = np.append(starts[1:], brickids.size)
+    all_ra, all_dec, all_bricknames = np.asarray(brickid_data['ra']), np.asarray(brickid_data['dec']), np.asarray(brickid_data['brickname'])
+    bricknames = all_bricknames[starts]
+    # by name, as before: consecutive bricks then share a cache shard (the first three characters), which stays open
+    order = np.argsort(bricknames, kind='stable')
+    bricknames, starts, stops = bricknames[order], starts[order], stops[order]
     # Each brick is read from the imaging survey the DR9 brick list gives it; a brick that is not in the list (no
     # imaging) falls back on the declination, and finds no file either way
     brick_regions = get_brick_regions()
     # A pass over the bricks is long and says nothing until it ends, so it reports as it goes
     every = max(1, len(bricknames) // 10)
-    for ibrick, brickname in enumerate(bricknames):
-        mask_brick = brickid_data['brickname'] == brickname
-        ra_tmp, dec_tmp = brickid_data['ra'][mask_brick], brickid_data['dec'][mask_brick]
+    for ibrick, (brickname, start, stop) in enumerate(zip(bricknames, starts, stops)):
+        mask_brick = slice(start, stop)
+        ra_tmp, dec_tmp = all_ra[mask_brick], all_dec[mask_brick]
         region = brick_regions.get(str(brickname))
         if region is None:
             region = 'north' if bricks.brick_radec(ra_tmp[0], dec_tmp[0])[1] > 32.375 else 'south'

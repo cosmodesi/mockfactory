@@ -27,7 +27,20 @@ MAX_PRIORITY = {'LRG': 3200, 'ELG': 3400, 'QSO': 3400, 'BGS': 2100}
 
 
 def get_max_priority(tracer, notqso=False):
-    """Return the priority above which ``tracer`` could not have been assigned."""
+    """
+    Return the priority above which ``tracer`` could not have been assigned.
+
+    Parameters
+    ----------
+    tracer : str
+        Tracer.
+    notqso : bool, default=False
+        Whether the quasar targets are rejected (ELG_LOPnotqso): 3200.
+
+    Returns
+    -------
+    priority : int
+    """
     if notqso:
         return 3200
     return MAX_PRIORITY.get(tracer[:3], 3400)
@@ -74,7 +87,12 @@ def make_full_data(data, assignments, tracer, tiles=None, targets=None, notqso=F
     ----------
     data : array
         Combined potential assignments, from
-        :func:`~mockfactory.desi.lsscat.combine.combine_data`.
+        :func:`~mockfactory.desi.lsscat.combine.combine_data`. Or an object with two methods: ``narrow()``, the combined potential
+        assignments of the tracer with only the columns the choice of a row per target reads (TARGETID, TILEID, LOCATION, the
+        targeting bits, PRIORITY, ZWARN) and ``POTA_ROW``, the index of each row in the potential assignment file
+        (:func:`~mockfactory.desi.lsscat.combine.potential_data`); and ``wide(rows)``, the combined
+        potential assignments of those rows of the file, with every column. Only the rows kept are then held whole: a fourth of
+        the 79 million rows of the emission line galaxies of a dark mock.
     assignments : array
         Fibers given, from :func:`~mockfactory.desi.lsscat.combine.read_assignments`; the
         priority of the target that won each location says whether this tracer stood a chance.
@@ -84,8 +102,8 @@ def make_full_data(data, assignments, tracer, tiles=None, targets=None, notqso=F
         Tile counts, from :func:`~mockfactory.desi.lsscat.combine.count_tiles`. Counted here
         from the rows at good hardware when not given, which is what the survey pipeline does
         and what makes the count agree with ``good_tilelocid``.
-    targets : array, default=None
-        Target catalog, joined on for the imaging columns the vetoes need.
+    targets : array, callable, default=None
+        Target catalog, joined on for the imaging columns the vetoes need; or a function returning it, called for the join only.
     notqso : bool, default=False
         Whether to reject targets that are also quasar targets.
     truez : str, default='RSDZ'
@@ -106,58 +124,73 @@ def make_full_data(data, assignments, tracer, tiles=None, targets=None, notqso=F
         :data:`~mockfactory.desi.lsscat.utils.NULL` wherever the fiber went to another target.
     """
     maxp = get_max_priority(tracer, notqso=notqso)
-    data, assignments = as_table(data), as_table(assignments)
-    toret = data[select_tracer(data, tracer, notqso=notqso)]
-
+    assignments = as_table(assignments)
     # The priority the winning target had, at each location this tracer could have reached.
     won = Table({'TILELOCID': (10000 * assignments['TILEID'].value
                                + assignments['LOCATION'].value).astype('i8', copy=False),
                  'PRIORITY_ASSIGNED': assignments['PRIORITY'].value.astype('i8', copy=False)},
                 copy=False)
     won = won[last_of_each(won['TILELOCID'])]
-    toret = join_left(toret, won, 'TILELOCID', fill={'PRIORITY_ASSIGNED': NULL})
 
-    # A location whose winner outranked this tracer was never available to it; one no target
-    # reached at all still was.
-    set_column(toret, 'GOODPRI', (toret['PRIORITY_ASSIGNED'] <= maxp)
-               | (toret['PRIORITY_ASSIGNED'] == NULL), dtype='?')
-    # A mock inherits the real survey's broken fibers and bad petals, which is the only way a
-    # location can be unusable to it: it has no spectroscopic failures of its own.
-    set_column(toret, 'GOODHARDLOC', True if good_tilelocid is None
-               else np.isin(toret['TILELOCID'], good_tilelocid), dtype='?')
-    set_column(toret, 'LOCATION_ASSIGNED', (toret['ZWARN'] != NULL) & (toret['ZWARN'] * 0 == 0),
-               dtype='?')
-    set_column(toret, 'TILELOCID_ASSIGNED', np.isin(
-        toret['TILELOCID'], np.unique(toret['TILELOCID'][toret['LOCATION_ASSIGNED']])), dtype='?')
-    logger.info('{:d} assigned, {:d} of them at a good priority'
-                .format(int(toret['LOCATION_ASSIGNED'].sum()),
-                        int((toret['LOCATION_ASSIGNED'] & toret['GOODPRI']).sum())))
+    def rows_of(array):
+        """The rows of the tracer in ``array``, with what happened at each location a target of it could have taken."""
+        array = as_table(array)
+        select = select_tracer(array, tracer, notqso=notqso)
+        array = join_left(array if select.all() else array[select], won, 'TILELOCID', fill={'PRIORITY_ASSIGNED': NULL})
+        # A location whose winner outranked this tracer was never available to it; one no target
+        # reached at all still was.
+        set_column(array, 'GOODPRI', (array['PRIORITY_ASSIGNED'] <= maxp) | (array['PRIORITY_ASSIGNED'] == NULL), dtype='?')
+        # A mock inherits the real survey's broken fibers and bad petals, which is the only way a
+        # location can be unusable to it: it has no spectroscopic failures of its own.
+        set_column(array, 'GOODHARDLOC', True if good_tilelocid is None else np.isin(array['TILELOCID'], good_tilelocid), dtype='?')
+        set_column(array, 'LOCATION_ASSIGNED', (array['ZWARN'] != NULL) & (array['ZWARN'] * 0 == 0), dtype='?')
+        return array
 
-    if tiles is None:
-        from .combine import count_tiles
-        # Counted before the cut to one row per target, and only over the locations the target
-        # could actually have been observed at: a tile reaching it through a broken fiber does
-        # not make it any more likely to have been seen.
-        tiles = count_tiles(toret[toret['GOODHARDLOC']])
+    def one_per_target(array):
+        """The index of the row kept for each target of ``array`` (all its rows there): the one that says the most."""
+        nonlocal tiles
+        set_column(array, 'TILELOCID_ASSIGNED', np.isin(array['TILELOCID'], assigned_tilelocid), dtype='?')
+        logger.info('{:d} assigned, {:d} of them at a good priority'
+                    .format(int(array['LOCATION_ASSIGNED'].sum()), int((array['LOCATION_ASSIGNED'] & array['GOODPRI']).sum())))
+        if tiles is None:
+            from .combine import count_tiles
+            # Counted before the cut to one row per target, and only over the locations the target
+            # could actually have been observed at: a tile reaching it through a broken fiber does
+            # not make it any more likely to have been seen.
+            tiles = count_tiles(array[array['GOODHARDLOC']])
+        # A quasar is ranked by the priority it was observed at too, so that a target kept for
+        # Lyman-alpha follow-up wins over the same target observed once.
+        usable = array['GOODHARDLOC'] & array['GOODPRI']
+        value = np.where(array['LOCATION_ASSIGNED'], array['PRIORITY'], 0) if tracer.startswith('QSO') else 1
+        sort = array['LOCATION_ASSIGNED'] * usable * value + array['TILELOCID_ASSIGNED'] * usable + array['GOODHARDLOC'] + array['GOODPRI']
+        return last_of_each(array['TARGETID'], sort=sort, tie=array['TILELOCID'])
 
-    # Keep one row per target: the one that says the most about it. A quasar is ranked by the
-    # priority it was observed at too, so that a target kept for Lyman-alpha follow-up wins
-    # over the same target observed once.
-    usable = toret['GOODHARDLOC'] & toret['GOODPRI']
-    if tracer.startswith('QSO'):
-        value = np.where(toret['LOCATION_ASSIGNED'], toret['PRIORITY'], 0)
-    else:
-        value = 1
-    sort = (toret['LOCATION_ASSIGNED'] * usable * value + toret['TILELOCID_ASSIGNED'] * usable
-            + toret['GOODHARDLOC'] + toret['GOODPRI'])
-    toret = toret[last_of_each(toret['TARGETID'], sort=sort, tie=toret['TILELOCID'])]
-    logger.info('cut to {:d} unique targets, {:d} of them assigned'
-                .format(len(toret), int(toret['LOCATION_ASSIGNED'].sum())))
-
+    two_passes = hasattr(data, 'narrow')
+    toret = rows_of(data.narrow() if two_passes else data)
+    if not two_passes: del data
+    assigned_tilelocid = np.unique(toret['TILELOCID'][toret['LOCATION_ASSIGNED']])
+    index = one_per_target(toret)
+    if two_passes:
+        # Which row each target keeps is settled on the few columns it depends on, over every row; then only the rows kept are read
+        # whole and combined (the same row-wise functions, so the same values), and cut again, which keeps them all.
+        rows = np.asarray(toret['POTA_ROW'])[index]
+        del toret, index
+        toret = as_table(data.wide(rows))
+        del data
+        if len(toret) != len(rows) or not np.array_equal(np.asarray(toret['POTA_ROW']), rows):
+            raise ValueError('the rows kept read again are not the same rows: {:d} for {:d}'.format(len(toret), len(rows)))
+        del rows
+        toret = rows_of(toret)
+        index = one_per_target(toret)
+    toret = toret[index]
+    logger.info('cut to {:d} unique targets, {:d} of them assigned'.format(len(toret), int(toret['LOCATION_ASSIGNED'].sum())))
     toret = join_left(toret, tiles, 'TARGETID', fill={'NTILE': 0, 'TILES': 0, 'TILELOCIDS': 0})
+    if 'POTA_ROW' in toret.colnames: toret.remove_column('POTA_ROW')
 
     if targets is not None:
-        targets = as_table(targets)
+        # a function reading the target catalog is called here only, once the rows are cut to one per target: the catalog is not
+        # held through the passes over the potential assignments
+        targets = as_table(targets() if callable(targets) else targets)
         # Positions and targeting bits come back from the target file, which carries the
         # imaging columns the vetoes read.
         #
@@ -170,9 +203,13 @@ def make_full_data(data, assignments, tracer, tiles=None, targets=None, notqso=F
         # fiber location never gave anything.
         columns = [name for name in targets.colnames
                    if name != 'TARGETID' and name not in truth]
-        replaced = [name for name in ('RA', 'DEC', 'DESI_TARGET', 'BGS_TARGET') if name in columns]
+        # (the assignments may come without some of them: read with the minimal columns, see
+        # mockfactory.desi.altmtl.pota.LSSCAT_COLUMNS)
+        replaced = [name for name in ('RA', 'DEC', 'DESI_TARGET', 'BGS_TARGET')
+                    if name in columns and name in toret.colnames]
         toret.remove_columns(replaced)
         toret = join_left(toret, targets, 'TARGETID', columns=columns)
+        del targets
 
     if truez in toret.colnames and 'Z' not in toret.colnames:
         # The observed redshift is the mock's own, carried over by the assignment; a target

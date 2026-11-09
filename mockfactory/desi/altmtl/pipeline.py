@@ -14,6 +14,7 @@ batches within a mock, and the useful knob is that split rather than either numb
 import os
 import time
 import logging
+from pathlib import Path
 from multiprocessing import get_context
 
 import numpy as np
@@ -138,9 +139,9 @@ def _run_one(mock):
         return {'altmtl_dir': altmtl_dir, 'targets_fn': targets_fn, 'error': repr(exc)}
 
 
-def _run_many(mocks, nummocks):
+def _run_many(mocks, nummocks, stagger=0.):
     """
-    Replay ``mocks``, ``nummocks`` at a time, in processes that may fork pools of their own.
+    Replay ``mocks``, ``nummocks`` at a time, in processes that may fork pools of their own, started ``stagger`` seconds apart.
 
     Returns their results in the order the mocks were given.
     """
@@ -148,6 +149,7 @@ def _run_many(mocks, nummocks):
     queue = ctx.Queue()
 
     def _target(index, mock):
+        """Replay one mock in its own process and put ``(index, result)`` on the queue."""
         queue.put((index, _run_one(mock)))
 
     results = [None] * len(mocks)
@@ -159,6 +161,8 @@ def _run_many(mocks, nummocks):
             process = ctx.Process(target=_target, args=(index, mock), daemon=False)
             process.start()
             running.append(process)
+            # a mock's setup (its state) peaks at about twice what it then holds: starting them all at once adds up the peaks
+            if stagger and pending: time.sleep(stagger)
         index, result = queue.get()
         results[index] = result
         done += 1
@@ -168,7 +172,92 @@ def _run_many(mocks, nummocks):
     return results
 
 
-def run_mocks(mocks, end_date, survey='main', obscon='dark', numproc=1, nummocks=1, **kwargs):
+def tile_tracker_template(template_dir, end_date, survey='main', obscon='dark', numproc=1):
+    """
+    Return a tile tracker (the action list of a replay) built once, to be copied into each mock (:func:`seed_tile_tracker`).
+
+    It is built in ``template_dir`` by the call a replay makes (:func:`~mockfactory.desi.altmtl.ledger.initialize_realization`:
+    realization 0, no start date, ``end_date``), under a lock, so that concurrent callers build it once. The list depends on the
+    survey's operations files and the end date only, and building it reads one fiberassign header per tile, minutes a mock.
+
+    Parameters
+    ----------
+    template_dir : str, Path
+        Directory of the templates; this one goes in ``{survey}_{obscon}_{end_date}``.
+    end_date : int, str
+        Night the replays stop at.
+    survey : str, default='main'
+        Survey.
+    obscon : str, default='dark'
+        Observing conditions.
+    numproc : int, default=1
+        Processes to read the fiberassign headers with.
+
+    Returns
+    -------
+    fn : Path
+        The template tile tracker.
+    """
+    import fcntl
+    from .ledger import initialize_realization
+    from .tiletracker import get_tile_tracker_fn
+    template_dir = Path(template_dir) / '{}_{}_{}'.format(survey, obscon.lower(), end_date)
+    fn = Path(get_tile_tracker_fn(template_dir, survey=survey, obscon=obscon))
+    template_dir.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(template_dir) + '.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not fn.is_file():
+            initialize_realization(None, str(template_dir), realization=0, survey=survey, obscon=obscon, end_date=end_date,
+                                   shuffle_subpriority=False, ledgers=False, numproc=numproc)
+            logger.info('Tile tracker template -> {}.'.format(fn))
+    return fn
+
+
+def seed_tile_tracker(template_fn, altmtl_dir, survey='main', obscon='dark', realization=0, seed=None, shuffle_subpriority=False):
+    """
+    Write the tile tracker of one realization from a template (:func:`tile_tracker_template`), with its own path, realization,
+    seed and subpriority shuffling in the metadata, unless it has one already. The replay keeps the tracker it finds, so it does
+    not build its own.
+
+    Parameters
+    ----------
+    template_fn : str, Path
+        Template tile tracker.
+    altmtl_dir : str, Path
+        Directory of the realization, e.g. ``.../altmtl0/Univ000``.
+    survey : str, default='main'
+        Survey.
+    obscon : str, default='dark'
+        Observing conditions.
+    realization : int, default=0
+        Realization number.
+    seed : int, default=None
+        Seed of the realization (314159 if ``None``, as the replay).
+    shuffle_subpriority : bool, default=False
+        Whether the realization shuffles subpriorities.
+
+    Returns
+    -------
+    fn : Path
+        The tile tracker of the realization.
+    """
+    from .tiletracker import get_tile_tracker_fn
+    fn = Path(get_tile_tracker_fn(altmtl_dir, survey=survey, obscon=obscon))
+    if fn.is_file(): return fn
+    meta = {'amtldir': str(altmtl_dir), 'seed': 314159 if seed is None else seed, 'realization': realization,
+            'shuffleSubpriorities': 'true' if shuffle_subpriority else 'false'}
+    out = []
+    for line in Path(template_fn).read_text().splitlines():
+        for key, value in meta.items():
+            if line.startswith('# - {{{}:'.format(key)): line = '# - {{{}: {}}}'.format(key, value)
+        out.append(line)
+    fn.parent.mkdir(parents=True, exist_ok=True)
+    fn.write_text('\n'.join(out) + '\n')
+    return fn
+
+
+def run_mocks(mocks, end_date, survey='main', obscon='dark', numproc=1, nummocks=1, stagger=0., tile_tracker_dir=None,
+              zcat_cache_dir=None, **kwargs):
     """
     Replay several mocks at once on one node.
 
@@ -197,6 +286,18 @@ def run_mocks(mocks, end_date, survey='main', obscon='dark', numproc=1, nummocks
         How many mocks to replay at the same time. ``numproc * nummocks`` should not exceed the
         cores of the node: the two levels of processes compete for the same ones.
 
+    stagger : float, default=0.
+        Seconds between the starts of the mocks replayed at the same time (``nummocks > 1``), so that their setups, which
+        peak at about twice the memory a replay then holds, do not all coincide.
+
+    tile_tracker_dir : str, Path, default=None
+        If given, the tile tracker is built once there (:func:`tile_tracker_template`, shared by every call given the same
+        directory) and each mock's is written from it, instead of every mock building its own. Same replays.
+
+    zcat_cache_dir : str, Path, default=None
+        If given, the real redshift catalog each tile update reads (ten petal files a tile) is kept there the first time and
+        read back by every other mock and call (:mod:`mockfactory.desi.altmtl.loop`). Same replays.
+
     kwargs : dict
         Other arguments for :func:`run_mock`.
 
@@ -215,6 +316,15 @@ def run_mocks(mocks, end_date, survey='main', obscon='dark', numproc=1, nummocks
         logger.warning('OMP_NUM_THREADS is {}, not 1; fiberassign will spawn a thread per core '
                        'in every worker.'.format(os.environ.get('OMP_NUM_THREADS', 'unset')))
 
+    if zcat_cache_dir is not None:  # read by the forked replays
+        from . import loop
+        loop.ZCAT_CACHE_DIR = str(zcat_cache_dir)
+    if tile_tracker_dir is not None:
+        template_fn = tile_tracker_template(tile_tracker_dir, end_date, survey=survey, obscon=obscon, numproc=numproc)
+        for targets_fn, altmtl_dir, realization, options in mocks:
+            options = dict(kwargs, **options)
+            seed_tile_tracker(template_fn, altmtl_dir, survey=survey, obscon=obscon, realization=realization,
+                              seed=options.get('seed', None), shuffle_subpriority=options.get('shuffle_subpriority', False))
     _mock_options.update(end_date=end_date, survey=survey, obscon=obscon, numproc=numproc, **kwargs)
     logger.info('Replaying {:d} mock(s), {:d} at a time, {:d} process(es) each.'.format(
         len(mocks), nummocks, numproc))
@@ -225,7 +335,7 @@ def run_mocks(mocks, end_date, survey='main', obscon='dark', numproc=1, nummocks
         # fork a pool of its own to assign its tiles; a daemonic process may not have children.
         # Forked, so that a worker inherits whatever the parent has already loaded; each mock
         # then builds its own state, which is the bulk of the memory.
-        results = _run_many(mocks, nummocks)
+        results = _run_many(mocks, nummocks, stagger=stagger)
     else:
         results = [_run_one(mock) for mock in mocks]
 

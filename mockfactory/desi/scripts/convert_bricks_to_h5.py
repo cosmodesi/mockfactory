@@ -35,6 +35,9 @@ and a scattered handful of positions only 1.2 times slower, at half the size.
     salloc -N 1 -C cpu -q interactive -t 02:00:00 -A desi
     srun -n 128 python -m mockfactory.desi.scripts.convert_bricks_to_h5 \
         --output-dir $SCRATCH/legacysurvey/dr9-hdf5
+    # the LRG brick masks, the same layout (<brickname>/lrgmask), in their own directory
+    srun -n 128 python -m mockfactory.desi.scripts.convert_bricks_to_h5 --source lrgmask \
+        --output-dir $SCRATCH/legacysurvey/lrgmask-v1.1-hdf5
 
 Ranks take whole prefixes, so no two write the same file. Re-running skips prefixes already
 finished, which is what makes a long pass restartable.
@@ -54,6 +57,12 @@ logger = logging.getLogger('convert_bricks')
 #: the bricks that carry data, {region}/survey-bricks-dr9-{region}.fits.gz.
 DR9 = Path('/dvs_ro/cfs/cdirs/cosmo/data/legacysurvey/dr9')
 QUANTITIES = ('maskbits', 'nexp-g', 'nexp-r', 'nexp-z')
+#: Other brick maps on the same grid (``--source``): the path of a quantity's file, from the region, prefix, brickname and quantity, and
+#: the quantities. The LRG mask (DESI LRG brick masks v1.1, gzip, uint8) is read by the dark mocks' imaging as ``lrg_mask``.
+SOURCES = {'dr9': (lambda region, prefix, brickname, quantity: DR9 / region / 'coadd' / prefix / brickname / 'legacysurvey-{}-{}.fits.fz'.format(brickname, quantity),
+                   QUANTITIES),
+           'lrgmask': (lambda region, prefix, brickname, quantity: Path('/dvs_ro/cfs/cdirs/desi/survey/catalogs/brickmasks/LRG/v1.1') / region / 'coadd' / prefix / brickname / '{}-{}.fits.gz'.format(brickname, quantity),
+                       ('lrgmask',))}
 #: Cards a reader needs to turn sky coordinates into pixels.
 WCS_KEYS = ('NAXIS1', 'NAXIS2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2',
             'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2')
@@ -76,7 +85,7 @@ def get_bricknames(region):
     return {group[0][:3]: group for group in np.split(bricknames, edges)}
 
 
-def convert_prefix(region, prefix, bricknames, output_fn, quantities, chunk, clevel):
+def convert_prefix(region, prefix, bricknames, output_fn, quantities, chunk, clevel, source='dr9'):
     """Write one shard: every brick of ``prefix``, every quantity that exists."""
     import fitsio
     import h5py
@@ -90,7 +99,7 @@ def convert_prefix(region, prefix, bricknames, output_fn, quantities, chunk, cle
         for brickname in bricknames:
             group = h5.create_group(str(brickname))
             for quantity in quantities:
-                fn = DR9 / region / 'coadd' / prefix / brickname / 'legacysurvey-{}-{}.fits.fz'.format(brickname, quantity)
+                fn = SOURCES[source][0](region, prefix, brickname, quantity)
                 if not fn.is_file():
                     # An absent band is absent coverage, and must stay distinguishable from zero
                     nmissing += 1
@@ -134,7 +143,8 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--output-dir', required=True, help='where the converted bricks go')
     parser.add_argument('--regions', nargs='*', default=['north', 'south'])
-    parser.add_argument('--quantities', nargs='*', default=list(QUANTITIES))
+    parser.add_argument('--source', choices=list(SOURCES), default='dr9', help="'dr9': the legacy survey coadd maps; 'lrgmask': the LRG brick masks")
+    parser.add_argument('--quantities', nargs='*', default=None, help='default: those of --source')
     parser.add_argument('--chunk', type=int, default=600, help='chunk side, in pixels')
     parser.add_argument('--clevel', type=int, default=1, help='zstd level')
     parser.add_argument('--max-prefixes', type=int, default=None,
@@ -142,6 +152,7 @@ def main():
     parser.add_argument('--overwrite', action='store_true',
                         help='redo shards that are already there')
     args = parser.parse_args()
+    if args.quantities is None: args.quantities = list(SOURCES[args.source][1])
 
     from mpi4py import MPI
     from mockfactory import setup_logging
@@ -167,7 +178,7 @@ def main():
             if Path(output_fn).is_file() and not args.overwrite:
                 continue
             nwritten, nmissing = convert_prefix(region, prefix, groups[prefix], output_fn,
-                                                args.quantities, args.chunk, args.clevel)
+                                                args.quantities, args.chunk, args.clevel, source=args.source)
             logger.info('{} {}: {:d} bricks, {:d} maps, {:d} absent, {:.1f} MB, {:.0f} s elapsed.'
                         .format(region, prefix, len(groups[prefix]), nwritten, nmissing,
                                 Path(output_fn).stat().st_size / 1e6, time.time() - start))

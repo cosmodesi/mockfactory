@@ -12,13 +12,14 @@ Realizations are independent, so they are spread over the ranks of an MPI commun
 """
 
 import os
+from pathlib import Path
 import time
 import logging
-from multiprocessing import get_context
 
 import numpy as np
 
 from . import utils
+from ...utils import fork_map
 from .assignment import do_fiber_assignment
 from .reprocess import reprocess_state
 from .ledger import get_ledger_dir
@@ -52,6 +53,16 @@ def read_zfix(zfix):
     ``zfix`` is a text file with two columns, TARGETID and redshift, the format of the
     ``qsos/qso<i>.txt`` files of the DR2 mocks; or the pair already read, which is returned as is.
     Targets are sorted by TARGETID, so :func:`fix_redshifts` can look them up by binary search.
+
+    Parameters
+    ----------
+    zfix : str, tuple, None
+        Path of the text file, or the ``(targetid, z)`` pair already read, or ``None``.
+
+    Returns
+    -------
+    zfix : tuple, None
+        ``(targetid, z)``, sorted by target identifier (int64 and float arrays); ``None`` if ``zfix`` is ``None``.
     """
     if zfix is None or isinstance(zfix, tuple):
         return zfix
@@ -72,6 +83,20 @@ def fix_redshifts(zcat, zfix):
     whether it is followed up as a high redshift quasar, and zero ``Z_QN``, as LSS
     `update_alt_ledger` does with ``zfix``. Only updates are fixed, not reprocessing, also as
     LSS does.
+
+    Parameters
+    ----------
+    zcat : astropy.table.Table
+        Redshift catalog, with ``TARGETID`` and ``Z`` (and optionally ``Z_QN``) columns, target identifiers
+        already relabelled to this realization; modified in place.
+
+    zfix : tuple, None
+        ``(targetid, z)`` sorted by target identifier, as :func:`read_zfix` returns it; ``None`` changes nothing.
+
+    Returns
+    -------
+    zcat : astropy.table.Table
+        The same catalog, the ``zfix`` targets given their own ``Z`` and a zero ``Z_QN``.
     """
     if zfix is None:
         return zcat
@@ -123,7 +148,8 @@ def update_ledgers(altmtl_dir, action, fiber_map, survey='main', obscon='dark', 
     Returns
     -------
     nz : int
-        Number of redshifts folded in.
+        Number of redshifts folded in; with ``state``, the number of targets whose state changed,
+        as :meth:`~mockfactory.desi.altmtl.state.LedgerState.update` returns it.
     """
     from astropy.table import Table
     from desitarget.mtl import make_zcat, update_ledger
@@ -335,14 +361,32 @@ def _assign_one(tileid):
     return tileid
 
 
+#: Directory where the real redshift catalog of each tile is kept once read (make_zcat: ten petal files, half the cost of an update, the
+#: same for every mock), keyed by the tile, its action and the reading options: None, read every time (run_mocks zcat_cache_dir).
+ZCAT_CACHE_DIR = None
+
+
 def _read_zcat(action):
-    """Read the real redshift catalog of one tile. Read-only, so it parallelises freely."""
+    """Read the real redshift catalog of one tile (from ZCAT_CACHE_DIR if there). Read-only, so it parallelises freely."""
+    import hashlib
     from astropy.table import Table
     from desitarget.mtl import make_zcat
 
     options = _batch_options
+    fn = None
+    if ZCAT_CACHE_DIR is not None:
+        names = getattr(action, 'colnames', None) or action.dtype.names
+        key = repr((str(options['zcat_dir']), options['obscon'].upper(), options['survey'], [(name, str(action[name])) for name in names]))
+        fn = Path(ZCAT_CACHE_DIR) / '{:06d}-{}.npy'.format(int(action['TILEID']), hashlib.md5(key.encode()).hexdigest()[:16])
+        if fn.exists():
+            return int(action['TILEID']), Table(np.load(fn))
     zcat = _to_big_endian(Table(make_zcat(options['zcat_dir'], [action], options['obscon'].upper(),
                                           options['survey'])))
+    if fn is not None:
+        fn.parent.mkdir(parents=True, exist_ok=True)
+        tmp_fn = '{}.{:d}.tmp.npy'.format(fn, os.getpid())
+        np.save(tmp_fn, np.asarray(zcat))
+        os.replace(tmp_fn, fn)
     return int(action['TILEID']), zcat
 
 
@@ -351,19 +395,35 @@ def read_zcats(actions, survey='main', obscon='dark', zcat_dir=None, numproc=1):
     Read the redshift catalogs of ``actions``, in parallel.
 
     Each one reads the ten petal files of a tile, which is half the cost of an update and is
-    pure input, so it is worth doing for the whole batch at once.
+    pure input, so it is worth doing for the whole batch at once. The reading options are set in
+    the module's ``_batch_options`` for the forked workers, and catalogs are cached in
+    :data:`ZCAT_CACHE_DIR` if it is set.
+
+    Parameters
+    ----------
+    actions : list
+        Update actions, one per tile.
+
+    survey : str, default='main'
+        Survey to replay.
+
+    obscon : str, default='dark'
+        Observing conditions.
+
+    zcat_dir : str, default=None
+        Directory holding the real redshift catalogs. Defaults to the daily reduction.
+
+    numproc : int, default=1
+        Number of processes to read the catalogs with.
 
     Returns
     -------
     zcats : dict
-        Redshift catalog of each tile.
+        Redshift catalog of each tile, keyed by tile identifier.
     """
     if zcat_dir is None: zcat_dir = utils.ZCAT_DIR
     _batch_options.update(zcat_dir=zcat_dir, survey=survey, obscon=obscon)
-    if numproc > 1 and len(actions) > 1:
-        with get_context('fork').Pool(processes=min(numproc, len(actions))) as pool:
-            return dict(pool.map(_read_zcat, list(actions)))
-    return dict(_read_zcat(action) for action in actions)
+    return dict(fork_map(_read_zcat, actions, numproc=numproc))
 
 
 def group_actions(actions):
@@ -411,7 +471,17 @@ def warm_hardware(tileids, fiberassign_dir=None):
 
     Loading one costs seconds, and fiberassign reloads it per tile from a cache held inside
     desimodel. Warming that cache in the parent before forking means a batch pays once per run
-    date rather than once per tile per worker.
+    date rather than once per tile per worker. The states go to
+    :func:`mockfactory.desi.altmtl.assignment.cached_load_hardware`, with fiberassign's default exclusion
+    margins; only the last :data:`~mockfactory.desi.altmtl.assignment.HARDWARE_CACHE_SIZE` run dates are loaded.
+
+    Parameters
+    ----------
+    tileids : list
+        Tiles of the batch.
+
+    fiberassign_dir : str, default=None
+        Directory of the real fiberassign files, whose headers give the run dates.
 
     Returns
     -------
@@ -419,7 +489,8 @@ def warm_hardware(tileids, fiberassign_dir=None):
         The distinct run dates that were loaded.
     """
     import fitsio
-    from fiberassign.hardware import load_hardware, get_default_exclusion_margins
+    from fiberassign.hardware import get_default_exclusion_margins
+    from .assignment import cached_load_hardware, HARDWARE_CACHE_SIZE
 
     rundates = []
     for tileid in tileids:
@@ -427,8 +498,10 @@ def warm_hardware(tileids, fiberassign_dir=None):
         rundate = str(header['RUNDATE'])
         if rundate not in rundates: rundates.append(rundate)
     margins = get_default_exclusion_margins()
-    for rundate in rundates:
-        load_hardware(rundate=rundate, add_margins=margins)
+    # into the cache fiberassign takes its focal plane from (cached_load_hardware), which the workers inherit at fork: the batch
+    # then builds each run date once, not once per tile per worker
+    for rundate in rundates[-HARDWARE_CACHE_SIZE:]:
+        cached_load_hardware(rundate=rundate, add_margins=margins)
     return rundates
 
 
@@ -485,6 +558,10 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
         Where to put the per-tile target files, which are read once and thrown away. Defaults
         to memory.
 
+    load_targets : str, default='file'
+        How the science targets reach fiberassign, ``'file'`` or ``'memory'``; see
+        :func:`mockfactory.desi.altmtl.assignment.do_fiber_assignment`.
+
     zfix : str, tuple, default=None
         Redshifts replacing the real ones for some targets on every update, see
         :func:`read_zfix`. The DR2 mocks give their quasars their own redshift this way.
@@ -498,6 +575,14 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
     -------
     nactions : int
         Number of actions carried out.
+
+    Raises
+    ------
+    ValueError
+        If ``altmtl_dir`` looks like the real surveyops ledgers ('trunk' or 'ops' in the path).
+
+    NotImplementedError
+        If the action list holds an action type the loop cannot carry out.
     """
     # str(), since altmtl_dir may be a Path: this guard must never fail open.
     if 'trunk' in str(altmtl_dir).lower() or 'ops' in str(altmtl_dir).lower():
@@ -559,8 +644,7 @@ def run_realization(altmtl_dir, survey='main', obscon='dark', zcat_dir=None, num
                 state.build_index()
             _batch_options.update(altmtl_dir=altmtl_dir, kwargs=kwargs)
             # Forked workers inherit the focal planes just loaded; spawned ones would not.
-            with get_context('fork').Pool(processes=min(numproc, len(tileids))) as pool:
-                pool.map(_assign_one, tileids)
+            fork_map(_assign_one, tileids, numproc=numproc)
             mark_actions_done(altmtl_dir, run, survey=survey, obscon=obscon)
             idone += len(run)
             logger.info('Actions {:d}/{:d} done: fa on {:d} tiles ({:d} run date(s)) in {:.1f} s.'.format(

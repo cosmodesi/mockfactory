@@ -24,7 +24,7 @@ from .combine import combine_data, count_tiles, read_random_imaging
 from .full import get_max_priority, make_full_data, make_full_randoms
 from .nz import (add_nz_weights, compute_completeness_per_ntile, compute_nz, get_fkp_p0,
                  write_nz)
-from .utils import as_table, get_galactic_cap
+from .utils import as_table, get_galactic_cap, fork_map
 from .veto import (add_frac_tlobs, apply_veto_data, apply_veto_randoms, get_frac_tlobs,
                    get_mask_bits, get_custom_masks)
 
@@ -47,7 +47,22 @@ _context = {}
 
 
 def read_hpmaps(hpmap_dir, tracer, nside=256):
-    """Return the northern and southern observing condition maps used for ``tracer``."""
+    """
+    Return the northern and southern observing condition maps used for the map veto of ``tracer``.
+
+    Parameters
+    ----------
+    hpmap_dir : str, Path
+        Directory of the LSS ``{name}_mapprops_healpix_nested_nside{nside}_{N,S}.fits`` maps.
+    tracer : str
+        Tracer; ELG reads the ELG_LOPnotqso maps, BGS the BGS_BRIGHT ones.
+    nside : int, default=256
+        HEALPix resolution of the maps.
+
+    Returns
+    -------
+    maps_north, maps_south : array
+    """
     import fitsio
     name = 'ELG_LOPnotqso' if 'ELG' in tracer else ('BGS_BRIGHT' if 'BGS' in tracer else tracer)
     return tuple(fitsio.read(Path(hpmap_dir) / '{}_mapprops_healpix_nested_nside{:d}_{}.fits'.format(name, nside, region))
@@ -126,7 +141,9 @@ def _finish_random(i, array):
     writes = []
     if context['output_dir'] is not None:
         name = context['name']
-        writes.append((Path(context['output_dir']) / '{}_{:d}_clustering.ran.h5'.format(name, i), array))
+        # the whole random, both caps in one file, is what the two cap files hold together: optional (write_all_randoms)
+        if context.get('write_all_randoms', True):
+            writes.append((Path(context['output_dir']) / '{}_{:d}_clustering.ran.h5'.format(name, i), array))
         writes += [(Path(context['output_dir']) / '{}_{}_{:d}_clustering.ran.h5'.format(name, cap, i),
                     split[cap]) for cap in split]
     return array, split, writes
@@ -135,9 +152,22 @@ def _finish_random(i, array):
 def make_vetoed_full_data(data, assignments, tracer, notqso=False, targets=None, good_tilelocid=None,
                           hpmaps=None, bits=None, custom_masks=None, mask_targetid=None):
     """
-    Return the full data catalog with every veto applied, what the survey pipeline writes as
-    ``{tracer}_full_HPmapcut.dat``; the arguments are those of :func:`run_tracer`. It depends on
-    nothing drawn at random, so it is the same catalog the clustering catalogs of a mock were cut from.
+    Return the full data catalog with every veto applied, what the survey pipeline writes as ``{tracer}_full_HPmapcut.dat``. It
+    depends on nothing drawn at random, so it is the same catalog the clustering catalogs of a mock were cut from.
+
+    Parameters
+    ----------
+    data : array, callable
+        Combined potential assignments (see :func:`~mockfactory.desi.lsscat.full.make_full_data`), or a function returning them,
+        called here so that they can be dropped once the full catalog is built, or an object with ``narrow()`` and ``wide(rows)``
+        (:func:`~mockfactory.desi.lsscat.combine.potential_data`).
+    assignments, tracer, notqso, targets, good_tilelocid, hpmaps, bits, custom_masks, mask_targetid
+        See :func:`run_tracer`.
+
+    Returns
+    -------
+    full : Table
+        The vetoed full data catalog.
     """
     maxp = get_max_priority(tracer, notqso=notqso)
     if bits is None:
@@ -146,7 +176,8 @@ def make_vetoed_full_data(data, assignments, tracer, notqso=False, targets=None,
         custom_masks = get_custom_masks(tracer)
     maps_north, maps_south = hpmaps if hpmaps is not None else (None, None)
     logger.info('--- {}: full data ---'.format(tracer))
-    if callable(data):
+    # an object with narrow() and wide(rows) is read in two passes by make_full_data
+    if callable(data) and not hasattr(data, 'narrow'):
         data = data()
     full = make_full_data(data, assignments, tracer, targets=targets, notqso=notqso,
                           good_tilelocid=good_tilelocid)
@@ -162,9 +193,27 @@ def make_vetoed_full_data(data, assignments, tracer, notqso=False, targets=None,
 
 def write_full_data(full, output_dir, tracer, notqso=False, completeness='fracz'):
     """
-    Write the vetoed full data catalog as ``{tracer}[notqso]_full_HPmapcut.dat.h5``, named after the
-    targeting class as the survey names it, not after the clustering sample cut from it. With the
-    nearest neighbour completeness, its weight goes in ``NEW_WEIGHTFRACZ``, the survey's name for it.
+    Write the vetoed full data catalog as ``{tracer}[notqso]_full_HPmapcut.dat.h5``, named after the targeting class as the
+    survey names it, not after the clustering sample cut from it. With the nearest neighbour completeness, its weight goes in
+    ``NEW_WEIGHTFRACZ``, the survey's name for it.
+
+    Parameters
+    ----------
+    full : array
+        Vetoed full data catalog (:func:`make_vetoed_full_data`).
+    output_dir : str, Path
+        Directory to write in.
+    tracer : str
+        Targeting class.
+    notqso : bool, default=False
+        Whether the quasar targets were rejected (named ``{tracer}notqso``).
+    completeness : str, default='fracz'
+        'fracz' or 'nn' (adds ``NEW_WEIGHTFRACZ``).
+
+    Returns
+    -------
+    fn : Path
+        The file written.
     """
     full = as_table(full)
     if completeness == 'nn':
@@ -175,6 +224,48 @@ def write_full_data(full, output_dir, tracer, notqso=False, completeness='fracz'
     return fn
 
 
+def run_deferred_randoms(contexts, read_rows, indices=None, numproc=1):
+    """
+    Make the random catalogs :func:`run_tracer` deferred (``defer_randoms``) for several mocks: for each random index, its rows read
+    once (``read_rows(i)``, e.g. :func:`~mockfactory.desi.lsscat.combine.read_dupran_rows`), then each mock's catalog made from them
+    and written, ``numproc`` mocks at a time in forked processes that share the rows and the contexts. The same catalogs as run_tracer
+    makes, the survey's random catalogs read once for all the mocks instead of once each.
+
+    Parameters
+    ----------
+    contexts : list
+        The files run_tracer saved (``defer_randoms``), one per mock, all of the same tracer.
+    read_rows : callable
+        Returns the rows of random catalog ``i``.
+    indices : list, default=None
+        The random catalogs to make; all but the first (which run_tracer made) by default.
+    numproc : int, default=1
+        Mocks made at a time.
+    """
+    import pickle
+    from .combine import select_dupran_randoms
+    loaded = []
+    for context_fn in contexts:
+        with open(context_fn, 'rb') as file: loaded.append(pickle.load(file))
+    if indices is None: indices = range(1, loaded[0]['nrandoms'])
+    for i in indices:
+        logger.info('--- random {:d} of {:d} mocks ---'.format(i, len(loaded)))
+        rows = read_rows(i)
+
+        def make(context):
+            """Make and write random ``i`` of the mock of ``context``, from the rows shared by all the mocks."""
+            context = dict(context)
+            bad_tilelocid = context.pop('bad_tilelocid')
+            context.pop('nrandoms')
+            _context.clear()
+            _context.update(context, randoms={i: select_dupran_randoms(rows, bad_tilelocid)})
+            _make_clustering_randoms(i)
+            _context.clear()
+
+        fork_map(make, loaded, numproc=numproc)
+        del rows
+
+
 def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                random_imaging=None, random_tiles=None, good_tilelocid=None, hpmaps=None, survey='DA2',
                completeness='fracz', nbits=128, missing_frac_tlobs=1., seed=0, zrange=None,
@@ -182,7 +273,7 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                numproc=1,
                numproc_randoms=None,
                keep=True, bits=None, custom_masks=None, write_full=False, full_randoms=False,
-               mask_targetid=None, mask_random_targetid=None):
+               mask_targetid=None, mask_random_targetid=None, write_all_randoms=True, defer_randoms=None):
     """
     Run every stage for one tracer, and return its clustering catalogs.
 
@@ -305,6 +396,14 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
         for the bad petal nights. Removed once the full randoms are
         built and vetoed. Give both or neither: masking one side only is an angular selection
         the randoms cannot describe.
+    write_all_randoms : bool, default=True
+        Whether to write each random catalog whole (``{name}_{i}_clustering.ran.h5``) besides its two galactic caps, which hold
+        the same rows; without it, only the caps: half the random catalogs written, which were most of the cost of a random.
+    defer_randoms : str, Path, default=None
+        With full randoms (the survey's dupran catalogs, ``full_randoms``), a file to save what the randoms but the first need of this
+        mock (the clustering data, the n(z) weights of each cap, the locations it gave a higher priority...) instead of making them:
+        :func:`run_deferred_randoms` then makes them for many mocks at once, each random catalog of the survey read once for all.
+        The data catalogs and the first random are made and written as without it.
     """
     if (mask_targetid is None) != (mask_random_targetid is None):
         raise ValueError('give mask_targetid and mask_random_targetid together')
@@ -330,6 +429,8 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
     full = make_vetoed_full_data(data, assignments, tracer, notqso=notqso, targets=targets,
                                  good_tilelocid=good_tilelocid, hpmaps=hpmaps, bits=bits,
                                  custom_masks=custom_masks, mask_targetid=mask_targetid)
+    # the target catalog (or the function reading it) has done its work: not held through the randoms
+    targets = None
     del data
     if write_full and output_dir is not None:
         write_full_data(full, output_dir, tracer, notqso=notqso, completeness=completeness)
@@ -341,14 +442,18 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                                       subsample=subsample, zsplit=zsplit, seed=seed,
                                       columns=columns, data_selection=data_selection)
 
+    # the randoms read the full catalog only to fill the tile completeness of the sets of tiles the data lacks with its mean per
+    # NTILE (missing_frac_tlobs='ntile'): only those two columns are kept for them, the catalog itself released (gigabytes for ELG)
+    full_for_randoms = full[['NTILE', 'FRAC_TLOBS_TILES']].copy() if missing_frac_tlobs == 'ntile' else None
+    del full
     _context.clear()
     _context.update(randoms=randoms, full_randoms=full_randoms, random_imaging=random_imaging, random_tiles=random_tiles,
                     tracer=tracer,
                     notqso=notqso, good_tilelocid=good_tilelocid, maxp=maxp, bits=bits, custom_masks=custom_masks,
                     maps_north=maps_north, maps_south=maps_south, frac_tlobs=frac_tlobs,
-                    missing_frac_tlobs=missing_frac_tlobs, full=full, clustering=clustering,
+                    missing_frac_tlobs=missing_frac_tlobs, full=full_for_randoms, clustering=clustering,
                     completeness=completeness, zmin=zmin, dz=dz, p0=p0, name=name,
-                    output_dir=output_dir, keep=True, caps=None,
+                    output_dir=output_dir, keep=True, caps=None, write_all_randoms=write_all_randoms,
                     mask_random_targetid=mask_random_targetid)
 
     # The first random catalog is built here, because the number density and the completeness
@@ -378,6 +483,35 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
                      area=len(sub_random) / 2500., effective_area=area)
     _context.update(caps=caps, keep=keep)
 
+    if defer_randoms is not None:
+        if not full_randoms:
+            raise ValueError('defer_randoms needs the dupran randoms (full_randoms)')
+        import inspect
+        import pickle
+        from .combine import dupran_bad_tilelocid
+        array, split, writes = _finish_random(0, first)
+        del first, array, split
+        # what _make_clustering_randoms and _finish_random read of the context, with the dupran randoms, for run_deferred_randoms; the
+        # clustering data with only what the randoms take of it (make_clustering_randoms): ~10 times smaller for ELG
+        keys = ['full_randoms', 'tracer', 'notqso', 'maxp', 'frac_tlobs', 'missing_frac_tlobs', 'full', 'completeness', 'zmin', 'dz', 'p0',
+                'name', 'output_dir', 'keep', 'caps', 'write_all_randoms', 'mask_random_targetid']
+        context = {key: _context[key] for key in keys}
+        taken = ['RA', 'DEC', 'PHOTSYS', 'TARGETID', 'WEIGHT'] + list(inspect.signature(make_clustering_randoms).parameters['columns'].default)
+        context.update(clustering=clustering[[name for name in clustering.colnames if name in taken]], nrandoms=len(randoms),
+                       bad_tilelocid=dupran_bad_tilelocid(assignments, maxp))
+        defer_randoms = Path(defer_randoms)
+        defer_randoms.parent.mkdir(parents=True, exist_ok=True)
+        tmp_fn = '{}.{:d}.tmp'.format(defer_randoms, os.getpid())
+        with open(tmp_fn, 'wb') as file: pickle.dump(context, file, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_fn, defer_randoms)
+        if output_dir is not None:
+            writes.append((Path(output_dir) / '{}_clustering.dat.h5'.format(name), out_data['ALL']))
+            writes += [(Path(output_dir) / '{}_{}_clustering.dat.h5'.format(name, cap), out_data[cap]) for cap in caps]
+            write_catalogs(writes, numproc=numproc)
+        _context.clear()
+        logger.info('--- {}: randoms 1 to {:d} deferred to {} ---'.format(tracer, len(randoms) - 1, defer_randoms))
+        return out_data, None
+
     if numproc_randoms is None: numproc_randoms = numproc
     logger.info('--- {}: randoms 1 to {:d}, numproc={:d} ---'
                 .format(tracer, len(randoms) - 1, numproc_randoms))
@@ -385,23 +519,8 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
     array, split, todo = _finish_random(0, first)
     results[0], writes = (array, split), writes + todo
     del first
-    rest = indices[1:]
-    if numproc_randoms > 1 and len(rest) > 1:
-        import multiprocessing
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-        # Not multiprocessing.Pool. It quietly starts a replacement for a worker the kernel
-        # kills, and then waits forever for the result that worker was carrying, which from
-        # the outside is indistinguishable from slow progress. The executor raises instead.
-        context = multiprocessing.get_context('fork')
-        with ProcessPoolExecutor(max_workers=min(numproc_randoms, len(rest)),
-                                 mp_context=context) as pool:
-            futures = [pool.submit(_make_clustering_randoms, i) for i in rest]
-            for future in as_completed(futures):
-                i, array, split = future.result()
-                results[i] = (array, split)
-    else:
-        for i in rest:
-            results[i] = _make_clustering_randoms(i)[1:]
+    for i, array, split in fork_map(_make_clustering_randoms, indices[1:], numproc=numproc_randoms):
+        results[i] = (array, split)
 
     # A worker that wrote its own catalog hands back nothing, so those entries stay empty.
     out_randoms = {'ALL': [results[i][0] for i in indices]}
@@ -421,67 +540,132 @@ def run_tracer(data, randoms, assignments, tracer, notqso=False, targets=None,
     return out_data, out_randoms
 
 
-#: Catalogs waiting to be written, so that a forked writer inherits them rather than being
-#: sent them: a clustering random catalog is a couple of gigabytes.
-_writes = []
+#: The format of the clustering catalogs is that of the LSS mock pipeline (DA2/mocks/Holiv3.00): NTILE int8, HDF5 blosc zstd with byte
+#: shuffle in 64 kB chunks, the imaging weight column on the data only.
+#: Types the columns of the clustering catalogs (data and randoms, {name}[_{cap}][_{i}]_clustering.{dat,ran}.h5) are written as, by
+#: write_catalog, the others as they are computed (Z float64, as RA and DEC).
+CLUSTERING_DTYPES = {'NTILE': 'i1'}
+#: Compression of the clustering catalogs (hdf5plugin.Blosc arguments; None, none), in chunks of CHUNK_BYTES. Level 1 rather than the LSS
+#: pipeline's 5: a 16.5 million row random is written in 3.3 s instead of 11.1 s (1.7 s uncompressed), 0.73 GB instead of 0.71 (1.62
+#: uncompressed), read in 1.3 s. Reading them needs hdf5plugin imported (this package does).
+CLUSTERING_COMPRESSION = dict(cname='zstd', clevel=1, shuffle=1)
+CHUNK_BYTES = 65272
+#: Whether :func:`write_weights` writes the imaging weight column itself (WEIGHT_IMLIN, WEIGHT_SN) into the random catalogs too, or only
+#: into the data (False), the randoms carrying it in WEIGHT_SYS alone, as the LSS mock pipeline (Holi v3) and the LSS LRG randoms do.
+RANDOMS_SYSCOL = False
+#: Attribute set on a catalog's group while :func:`write_weights` updates it, removed once done: a catalog still carrying it was left
+#: half-updated (WEIGHT rescaled, WEIGHT_SYS not, or the reverse) and has to be made again.
+UPDATING_ATTR = 'WEIGHTS_UPDATING'
+
+
+def _dataset_options(column, fn):
+    """The h5py create_dataset options of ``column`` of the catalog ``fn``: compressed (CLUSTERING_COMPRESSION) for a clustering catalog."""
+    if CLUSTERING_COMPRESSION is None or '_clustering.' not in Path(fn).name or len(column) == 0:
+        return {}
+    import hdf5plugin
+    column = np.asarray(column)
+    rows = max(1, min(len(column), CHUNK_BYTES // max(column.dtype.itemsize * int(np.prod(column.shape[1:], dtype='i8')), 1)))
+    return dict(chunks=(rows,) + column.shape[1:], **hdf5plugin.Blosc(**CLUSTERING_COMPRESSION))
+
+
+def write_weights(files, targetid, weights, syscol, numproc=1):
+    """
+    Put imaging weights into clustering catalogs already written, in place.
+
+    WEIGHT_SYS and ``syscol`` take the weight of each row's data target (a random's is the data object it took its redshift
+    from), the previous one where the target has none (a random whose region had no data to draw from); WEIGHT is rescaled to
+    match. Only those columns and the row's target are read and written, not the whole catalog, which cost most of the time of
+    the imaging weights and a whole random catalog of memory per process. The randoms get ``syscol`` only with
+    :data:`RANDOMS_SYSCOL`. A catalog is flagged (:data:`UPDATING_ATTR`) while it is updated, so one left half-updated by a killed
+    job is caught.
+
+    Parameters
+    ----------
+    files : list
+        Pairs of a catalog path and the column holding its data target: 'TARGETID' for the data, 'TARGETID_DATA' for the randoms.
+    targetid : array
+        The data targets with a weight, sorted.
+    weights : array
+        Their imaging weights.
+    syscol : str
+        Name of the imaging weight column, e.g. 'WEIGHT_IMLIN' or 'WEIGHT_SN'.
+    numproc : int, default=1
+        Catalogs updated at a time, in forked processes.
+    """
+    import h5py
+
+    def write(file):
+        """Update the weight columns of one catalog, ``file`` a pair of a path and the data target column."""
+        path, key = file
+        with h5py.File(str(path), 'r+') as h5file:
+            group = h5file['LSS']
+            if UPDATING_ATTR in group.attrs:
+                raise ValueError('{} was left half-updated by an earlier write of its weights: make it again'.format(path))
+            weight, weight_sys, target = group['WEIGHT'][...], group['WEIGHT_SYS'][...], group[key][...]
+            index = np.clip(np.searchsorted(targetid, target), 0, len(targetid) - 1)
+            found = targetid[index] == target
+            new = np.array(weight_sys, dtype='f8')
+            new[found] = weights[index[found]]
+            columns = {'WEIGHT': weight / weight_sys * new, 'WEIGHT_SYS': new}
+            if RANDOMS_SYSCOL or key != 'TARGETID_DATA': columns[syscol] = new
+            group.attrs[UPDATING_ATTR] = 1
+            for name, value in columns.items():
+                if name in group and group[name].dtype == value.dtype and group[name].shape == value.shape:
+                    group[name][...] = value
+                else:
+                    if name in group: del group[name]
+                    group.create_dataset(name, data=value, **_dataset_options(value, path))
+            del group.attrs[UPDATING_ATTR]
+
+    fork_map(write, files, numproc=numproc)
 
 
 def write_catalog(array, fn):
     """
-    Write one catalog, under the single ``LSS`` group the survey catalogs come as an extension.
+    Write one catalog, under the single ``LSS`` group the survey catalogs come as an extension; a clustering catalog in the format
+    :data:`CLUSTERING_DTYPES` and :data:`CLUSTERING_COMPRESSION` set.
 
-    HDF5, not FITS: a FITS file holds its numbers the other way round from the machine, so
-    writing one is mostly byte order conversion, and measured on a clustering random of nine
-    million rows that is 7.8 s against 1.2 s. HDF5 keeps them native, and one dataset per
-    column is what a reader that wants three of twelve columns can take advantage of.
+    HDF5, not FITS: a FITS file holds its numbers the other way round from the machine, so writing one is mostly byte order
+    conversion, and measured on a clustering random of nine million rows that is 7.8 s against 1.2 s. HDF5 keeps them native, and
+    one dataset per column is what a reader that wants three of twelve columns can take advantage of. The file is written next to
+    its destination then renamed, so that a job killed while writing leaves the previous file whole.
 
-    The file is written next to its destination then renamed, so that a job killed while writing
-    (the imaging weights rewrite every catalog of a mock in place) leaves the previous file whole.
+    Parameters
+    ----------
+    array : array
+        The catalog; fixed width strings are written as bytes.
+    fn : str, Path
+        File name; ``_clustering.`` in it marks a clustering catalog.
     """
     import h5py
     array = as_table(array)
+    dtypes = CLUSTERING_DTYPES if '_clustering.' in Path(fn).name else {}
     tmp_fn = str(fn) + '.tmp'
     with h5py.File(tmp_fn, 'w') as file:
         group = file.create_group('LSS')
         for name in array.colnames:
             column = array[name].value
+            if name in dtypes: column = column.astype(dtypes[name])
             # hdf5 has no unicode type, so a fixed width string goes in as bytes. That is what a
             # fits file holds as well, PHOTSYS coming back from one as '1A', so a reader gets the
             # same thing either way.
             if column.dtype.kind == 'U':
                 column = column.astype('S{:d}'.format(column.dtype.itemsize // 4))
-            group.create_dataset(name, data=column)
+            group.create_dataset(name, data=column, **_dataset_options(column, fn))
     os.replace(tmp_fn, fn)
     logger.info('wrote {} ({:d} rows)'.format(fn, len(array)))
 
 
-def _write_one(index):
-    """Write the catalog at ``index`` of the pending writes."""
-    fn, array = _writes[index]
-    write_catalog(array, fn)
-    return index
-
-
 def write_catalogs(writes, numproc=1):
     """
-    Write several catalogs, in parallel.
+    Write several catalogs (:func:`write_catalog`), ``numproc`` at a time in forked processes, which inherit the catalogs instead
+    of having them sent (:func:`~mockfactory.utils.fork_map`).
 
-    Writing is not limited by the disk. A fits file holds its numbers the other way round from
-    the machine, so writing one is mostly byte order conversion, and that happens under the
-    global interpreter lock: measured on a compute node, six threads write six catalogs in
-    exactly the time one thread takes, and six processes take a fifth of it. The pool is forked
-    once the catalogs exist, so a worker inherits them instead of having them sent.
+    Parameters
+    ----------
+    writes : list
+        Pairs of a file name and a catalog.
+    numproc : int, default=1
+        Catalogs written at a time.
     """
-    global _writes
-    _writes = list(writes)
-    try:
-        if numproc > 1 and len(_writes) > 1:
-            import multiprocessing
-            with multiprocessing.get_context('fork').Pool(min(numproc, len(_writes))) as pool:
-                for _ in pool.imap_unordered(_write_one, range(len(_writes))):
-                    pass
-        else:
-            for index in range(len(_writes)):
-                _write_one(index)
-    finally:
-        _writes = []
+    fork_map(lambda write: write_catalog(write[1], write[0]), writes, numproc=numproc)

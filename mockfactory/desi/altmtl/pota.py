@@ -46,6 +46,7 @@ class _HardwareCache(object):
     hundred distinct run dates, so this is worth caching.
     """
     def __init__(self, margins=None):
+        """Start an empty cache, with the exclusion ``margins`` (fiberassign's defaults if ``None``)."""
         if margins is None:
             from fiberassign.hardware import get_default_exclusion_margins
             margins = get_default_exclusion_margins()
@@ -53,6 +54,7 @@ class _HardwareCache(object):
         self.ranges = []
 
     def get(self, rundate):
+        """Return the focal plane state at ``rundate``: the cached one whose validity range holds it, else loaded and cached."""
         from fiberassign.hardware import load_hardware
 
         date = _parse_datetime(rundate)
@@ -65,7 +67,19 @@ class _HardwareCache(object):
 
 
 def embed_sphere(ra, dec):
-    """Unit vectors of sky coordinates, which is what a tree over the sky has to be built on."""
+    """
+    Return the unit vectors of sky coordinates, which is what a tree over the sky has to be built on.
+
+    Parameters
+    ----------
+    ra, dec : array
+        Positions, in degrees.
+
+    Returns
+    -------
+    vectors : array
+        Of shape ``(..., 3)``.
+    """
     phi = np.radians(np.asarray(ra, dtype='f8'))
     theta = np.radians(90. - np.asarray(dec, dtype='f8'))
     return np.stack([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi),
@@ -89,8 +103,24 @@ def get_targets_in_tile(targets, tile, tile_radius=None, tree=None):
     """
     Return the targets of ``targets`` within one tile.
 
-    ``targets`` must be sorted by declination: the search is narrowed by declination first,
-    with a bisection, which is what makes this affordable over a survey's worth of tiles.
+    Without ``tree``, ``targets`` must be sorted by declination: the search is narrowed by declination first, with a bisection,
+    which is what makes this affordable over a survey's worth of tiles, then cut on the angular distance to the tile centre.
+
+    Parameters
+    ----------
+    targets : array
+        Target catalog, with 'RA' and 'DEC', sorted by declination without ``tree``.
+    tile : row
+        The tile, with 'RA' and 'DEC'.
+    tile_radius : float, default=None
+        Half-width of the declination slice, in degrees; defaults to the focal plane radius times :data:`TILE_RADIUS_MARGIN`.
+    tree : scipy.spatial.cKDTree, default=None
+        Tree over ``targets`` (:func:`build_target_tree`), queried once instead of the declination slice.
+
+    Returns
+    -------
+    targets : array
+        The targets within the focal plane radius of the tile centre.
     """
     import desimodel.focalplane
 
@@ -273,9 +303,113 @@ def compute_potential_assignments_one_tile(tile, targets, columns, hardware_cach
     return potential
 
 
+#: HDF5 group of the potential assignment files (the FITS ones name their table the same).
+POTA_GROUP = 'LSS'
+#: Compression of the HDF5 potential assignment files (hdf5plugin.Blosc arguments; None, none): blosc zstd level 1 with byte shuffle,
+#: as the clustering catalogs, 5 times smaller.
+POTA_COMPRESSION = dict(cname='zstd', clevel=1, shuffle=1)
+#: The target columns the catalogs need on every potential assignment (mockfactory.desi.lsscat): the targeting bits that select a
+#: tracer, and the priorities the assignment table also carries (combine_data would otherwise take the winning target's). Every other
+#: target column is joined from the target catalog once there is one row per target (make_full_data).
+LSSCAT_COLUMNS = ('BGS_TARGET', 'DESI_TARGET', 'PRIORITY', 'SUBPRIORITY')
+
+
+class PotentialWriter(object):
+    """
+    Write potential assignments one tile after the other, as :func:`compute_potential_assignments` computes them.
+
+    To HDF5 (a .h5 or .hdf5 file): one compressed (:data:`POTA_COMPRESSION`), resizable dataset per column in group
+    :data:`POTA_GROUP`, the column order in its attribute 'columns', so that a reader takes a few columns without the others
+    (:func:`read_potential_assignments`). Else to a FITS table, extension :data:`POTA_GROUP`.
+
+    Parameters
+    ----------
+    fn : str, Path
+        The file to write; its suffix sets the format.
+    """
+    def __init__(self, fn):
+        """Open ``fn`` for writing, HDF5 or FITS after its suffix."""
+        self.hdf5, self.size = Path(fn).suffix in ('.h5', '.hdf5'), None
+        if self.hdf5:
+            import h5py
+            self.file = h5py.File(str(fn), 'w')
+            self.group = self.file.create_group(POTA_GROUP)
+        else:
+            import fitsio
+            self.file = fitsio.FITS(str(fn), 'rw', clobber=True)
+
+    def append(self, array):
+        """
+        Append ``array``, the potential assignments of one tile (a structured array, the same columns every call).
+
+        Parameters
+        ----------
+        array : array
+            Potential assignments.
+        """
+        array = np.asarray(array)
+        if not self.hdf5:
+            if self.size is None: self.file.write(array, extname=POTA_GROUP)
+            else: self.file[-1].append(array)
+        else:
+            if self.size is None:
+                import hdf5plugin
+                self.group.attrs['columns'] = list(array.dtype.names)  # the column order, which HDF5 does not keep
+                options = {} if POTA_COMPRESSION is None else dict(hdf5plugin.Blosc(**POTA_COMPRESSION))
+                for name in array.dtype.names:
+                    shape = array[name].shape[1:]
+                    self.group.create_dataset(name, shape=(0,) + shape, maxshape=(None,) + shape, dtype=array[name].dtype.newbyteorder('='),
+                                              chunks=(1 << 20,) + shape, **options)
+            for name in array.dtype.names:
+                dataset = self.group[name]
+                dataset.resize((self.size or 0) + len(array), axis=0)
+                dataset[self.size or 0:] = array[name]
+        self.size = (self.size or 0) + len(array)
+
+    def close(self):
+        """Close the file."""
+        self.file.close()
+
+
+def read_potential_assignments(fn, columns=None, rows=None):
+    """
+    Read potential assignments, as :func:`compute_potential_assignments` writes them (HDF5 or FITS).
+
+    From HDF5, each column is read whole and cut in memory, which is contiguous, unlike a FITS row read.
+
+    Parameters
+    ----------
+    fn : str, Path
+        Potential assignment file.
+    columns : list, default=None
+        Columns to read, in the file's order whatever the order given; those the file lacks are left out. ``None``: all.
+    rows : array, default=None
+        Indices of the rows to read. ``None``: all.
+
+    Returns
+    -------
+    potential : array
+        Structured array.
+    """
+    import fitsio
+    if Path(fn).suffix not in ('.h5', '.hdf5'):
+        names = fitsio.FITS(str(fn))[1].get_colnames()
+        return fitsio.read(str(fn), columns=[name for name in names if columns is None or name in columns], rows=rows)
+    import h5py
+    import hdf5plugin  # noqa: F401  blosc
+    with h5py.File(str(fn), 'r') as file:
+        group = file[POTA_GROUP]
+        names = [name.decode() if isinstance(name, bytes) else str(name) for name in group.attrs['columns']] if 'columns' in group.attrs else sorted(group)
+        names = [name for name in names if columns is None or name in columns]
+        toret = np.empty(group[names[0]].shape[0] if rows is None else len(rows), dtype=[(name, group[name].dtype) for name in names])
+        for name in names:
+            toret[name] = group[name][...] if rows is None else group[name][...][rows]
+    return toret
+
+
 def compute_potential_assignments(targets_fn, output_fn, tiles_fn, program='DARK', numproc=1,
                                   collisions=True, output_dir=None, tile_temp_dir=None,
-                                  fiberassign_dir=None):
+                                  fiberassign_dir=None, columns=None):
     """
     Compute the potential assignments of a whole survey, and write them to ``output_fn``.
 
@@ -308,6 +442,11 @@ def compute_potential_assignments(targets_fn, output_fn, tiles_fn, program='DARK
     fiberassign_dir : str, default=None
         Directory of the real fiberassign files.
 
+    columns : list, default=None
+        The target columns carried into every potential assignment (TARGETID always). ``None``: for an HDF5 ``output_fn``, those the
+        catalogs read on every row (:data:`LSSCAT_COLUMNS`; 65 bytes a row instead of 163 for a dark mock), the others joined from
+        the target catalog once there is a row per target; for a FITS one, all of them.
+
     Returns
     -------
     output_fn : Path
@@ -321,7 +460,8 @@ def compute_potential_assignments(targets_fn, output_fn, tiles_fn, program='DARK
     if tile_temp_dir is None: tile_temp_dir = output_dir
 
     targets = read_targets(targets_fn)
-    columns = list(targets.colnames)
+    if columns is None and output_fn.suffix in ('.h5', '.hdf5'): columns = list(LSSCAT_COLUMNS)
+    columns = list(targets.colnames) if columns is None else ['TARGETID'] + [name for name in columns if name != 'TARGETID']
     # The per-tile selection bisects on declination, so the catalog has to be sorted by it.
     if not np.all(targets['DEC'][:-1] <= targets['DEC'][1:]):
         logger.info('Sorting {:d} targets by declination.'.format(len(targets)))
@@ -339,8 +479,8 @@ def compute_potential_assignments(targets_fn, output_fn, tiles_fn, program='DARK
     logger.info('Loaded {:d} distinct focal plane state(s).'.format(len(hardware_cache.ranges)))
 
     utils.mkdir(output_fn.parent)
-    tmp_fn = output_fn.parent / (output_fn.name + '.tmp')
-    fits = fitsio.FITS(str(tmp_fn), 'rw', clobber=True)
+    tmp_fn = output_fn.parent / (output_fn.name + '.tmp' + output_fn.suffix)
+    writer = PotentialWriter(tmp_fn)
     ntotal = ncollision = 0
 
     start = time.time()
@@ -365,13 +505,10 @@ def compute_potential_assignments(targets_fn, output_fn, tiles_fn, program='DARK
     for itile, potential in enumerate(results):
         ntotal += potential.size
         if collisions: ncollision += int(potential['COLLISION'].sum())
-        if itile == 0:
-            fits.write(potential, extname='LSS')
-        else:
-            fits[-1].append(potential)
+        writer.append(potential)
         if (itile + 1) % 200 == 0:
             logger.info('Processed {:d}/{:d} tiles.'.format(itile + 1, len(tiles)))
-    fits.close()
+    writer.close()
     os.rename(tmp_fn, output_fn)
     if pool is not None: pool.shutdown()
     logger.info('Wrote {:d} potential assignments ({:d} collisions) to {}.'.format(
@@ -380,6 +517,7 @@ def compute_potential_assignments(targets_fn, output_fn, tiles_fn, program='DARK
 
 
 def _read_header(tileid_and_dir):
+    """Read the header keywords of the real fiberassign file of one tile the potential assignments need (RUNDATE...)."""
     import fitsio
     tileid, fiberassign_dir = tileid_and_dir
     header = fitsio.read_header(utils.get_fiberassign_fn(tileid, fiberassign_dir=fiberassign_dir))
@@ -387,6 +525,7 @@ def _read_header(tileid_and_dir):
 
 
 def _read_headers(tileids, fiberassign_dir=None, numproc=1):
+    """Read :func:`_read_header` for each of ``tileids``, ``numproc`` files at a time."""
     args = [(tileid, fiberassign_dir) for tileid in tileids]
     if numproc > 1:
         from multiprocessing import Pool

@@ -257,3 +257,49 @@ class truncnorm_gen(_truncnorm_gen):
 
 
 truncnorm = truncnorm_gen(name='truncnorm', momtype=1)
+
+
+#: The function and items the workers of :func:`fork_map` inherit at fork.
+_forked = None
+
+
+def _call_forked(index):
+    """The worker of :func:`fork_map`: ``func(items[index])``, both inherited at fork."""
+    func, items = _forked
+    return func(items[index])
+
+
+def fork_map(func, items, numproc=1):
+    """
+    Return ``[func(item) for item in items]``, computed ``numproc`` at a time in forked processes.
+
+    The workers inherit ``func`` and ``items`` at fork: neither is pickled, so ``func`` may be a closure and an item a catalog of
+    gigabytes; only the results are sent back. A worker the kernel kills (for memory, say) raises ``BrokenProcessPool``
+    (concurrent.futures), where a multiprocessing pool would start another and wait forever for the task the dead one held.
+
+    Parameters
+    ----------
+    func : callable
+        Function of one item.
+    items : iterable
+        The items.
+    numproc : int, default=1
+        Number of processes; with 1 (or a single item), a loop in the calling process.
+
+    Returns
+    -------
+    results : list
+        ``func(item)`` for each item, in order.
+    """
+    global _forked
+    items = list(items)
+    if numproc <= 1 or len(items) <= 1:
+        return [func(item) for item in items]
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    _forked = (func, items)
+    try:
+        with ProcessPoolExecutor(max_workers=min(numproc, len(items)), mp_context=multiprocessing.get_context('fork')) as pool:
+            return list(pool.map(_call_forked, range(len(items))))
+    finally:
+        _forked = None

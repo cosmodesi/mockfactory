@@ -57,6 +57,16 @@ def read_ebv_diff(fn=EBV_FN):
     """
     Return the 'EBV_DIFF_GR' and 'EBV_DIFF_RZ' maps, DESI minus SFD reddening, in nested healpix ordering
     (the file is in ring ordering).
+
+    Parameters
+    ----------
+    fn : str, Path, default=EBV_FN
+        Reddening map file, with the columns 'EBV_DESI_GR', 'EBV_SFD_GR', 'EBV_DESI_RZ' and 'EBV_SFD_RZ'.
+
+    Returns
+    -------
+    ebv_diff : dict
+        Healpix maps (nested), keyed by 'EBV_DIFF_GR' and 'EBV_DIFF_RZ'.
     """
     import fitsio
     import healpy as hp
@@ -73,6 +83,23 @@ def get_template_maps(maps, names, ebv_diff=None):
     Depths ('DEPTH' in the name, the band last) are corrected for Galactic extinction with the 'EBV' map, as the survey
     pipeline does before fitting: ``depth * 10**(-0.4 * A_band / E(B-V) * EBV)``. 'EBV_DIFF_GR' and 'EBV_DIFF_RZ' come
     from ``ebv_diff`` (:func:`read_ebv_diff`), which is read when needed and not given.
+
+    Parameters
+    ----------
+    maps : structured array, dict
+        Observing condition maps of one imaging survey, with the columns ``names`` (but the 'EBV_DIFF_' ones) and,
+        for depths, 'EBV'.
+
+    names : list
+        Template names.
+
+    ebv_diff : dict, default=None
+        'EBV_DIFF_GR' and 'EBV_DIFF_RZ' maps, see :func:`read_ebv_diff`.
+
+    Returns
+    -------
+    maps : dict
+        Healpix map of each template, as float64.
     """
     toret = {}
     for name in names:
@@ -91,6 +118,31 @@ def get_template_values(ra, dec, maps, names, nside=256, nest=True):
     """
     Return the values of the templates ``names`` at positions ``ra``, ``dec`` (degrees), an array of shape
     (len(names), len(ra)). ``maps`` is a dictionary of healpix maps, see :func:`get_template_maps`.
+
+    Parameters
+    ----------
+    ra : array
+        Right ascension (degree).
+
+    dec : array
+        Declination (degree).
+
+    maps : dict
+        Healpix map of each template, see :func:`get_template_maps`.
+
+    names : list
+        Template names.
+
+    nside : int, default=256
+        Healpix nside of the maps.
+
+    nest : bool, default=True
+        Whether the maps are in nested ordering.
+
+    Returns
+    -------
+    values : array of shape (len(names), len(ra))
+        Template values, the value of the pixel each position falls in.
     """
     import healpy as hp
     pix = hp.ang2pix(nside, np.radians(90. - np.asarray(dec)), np.radians(np.asarray(ra)), nest=nest)
@@ -102,6 +154,32 @@ def select_photometric_region(ra, dec, region, photsys=None):
     Return the mask of positions in the photometric ``region``: 'N' (BASS/MzLS), 'S' (DECaLS, DES included), and for the
     quasars 'DES' and 'SnotDES', the DES footprint being that of ``regressis``. ``photsys`` defaults to
     :func:`~mockfactory.desi.lsscat.get_photsys` of the positions.
+
+    ``photsys`` may be str or bytes; bytes (as read from a fits or hdf5 catalog) are compared as such, without casting to str.
+
+    Parameters
+    ----------
+    ra : array
+        Right ascension (degree).
+
+    dec : array
+        Declination (degree).
+
+    region : str
+        Photometric region, 'N', 'S', 'DES' or 'SnotDES'.
+
+    photsys : array, default=None
+        Imaging survey of each position, 'N' or 'S'.
+
+    Returns
+    -------
+    mask : array of bool
+        Whether each position is in ``region``.
+
+    Raises
+    ------
+    ValueError
+        If ``region`` is unknown.
     """
     if photsys is None: photsys = get_photsys(ra, dec)
     photsys = np.asarray(photsys)
@@ -132,7 +210,8 @@ class LinearRegression(object):
 
     def __init__(self, data_values, data_weights, randoms_values, randoms_weights, nbins=10, tail=0.5, names=None):
         """
-        Set up the regression.
+        Set up the regression: drop data and randoms with an undefined template value and those in the tails, bin the
+        templates over the data range left, and precompute the binned random counts and the error of each bin.
 
         Parameters
         ----------
@@ -176,12 +255,14 @@ class LinearRegression(object):
         ntemplates, nb = len(data_values), self.nbins + 2
 
         def digitize(values):
+            """Return the flattened bin index of template ``values``, shape (ntemplates, nobjects)."""
             # bin index, 1 to nbins inside the edges, 0 and nbins + 1 outside, offset by nbins + 2 per template so that all
             # templates share one bincount; a value on the last edge goes to the last bin
             index = np.floor(self.normalize(values) * self.nbins).astype('i8') + 1 - (values == self.edges[:, -1:])
             return np.clip(index, 0, nb - 1) + nb * np.arange(ntemplates)[:, None]
 
         def bincount(index, weights):
+            """Return the weighted count in each bin of each template, flattened, from :func:`digitize` indices."""
             # weighted count in each bin of each template, flattened, the bins outside the edges dropped
             return np.bincount(index.ravel(), weights=np.tile(weights, len(index)), minlength=ntemplates * nb).reshape(ntemplates, nb)[:, 1:-1].ravel()
 
@@ -206,14 +287,30 @@ class LinearRegression(object):
         self.coefficients = None
 
     def normalize(self, values):
-        """Return the template ``values`` mapped onto [0, 1] by the bin edges."""
+        """
+        Return the template ``values`` mapped onto [0, 1] by the bin edges, the first edge to 0 and the last to 1.
+
+        Parameters
+        ----------
+        values : array of shape (ntemplates, nobjects)
+            Template values.
+
+        Returns
+        -------
+        normalized : array of shape (ntemplates, nobjects)
+            Normalized values; outside [0, 1] for values beyond the edges.
+        """
         return (np.atleast_2d(values) - self.edges[:, :1]) / (self.edges[:, -1:] - self.edges[:, :1])
 
     def _binned_data(self, weights):
+        """Return the data count, weighted by the data weights times ``weights`` (per object, or a scalar), in each bin
+        of each template, flattened: a bincount over the cells, then over their bins."""
         cells = np.bincount(self._data_cell, weights=self._data_weights * weights, minlength=self._cell_bin.shape[1])
         return np.bincount(self._cell_bin.ravel(), weights=np.tile(cells, len(self._cell_bin)), minlength=self._randoms_binned.size)
 
     def _residual(self, coefficients):
+        """Return the imaging weight of each data object and the density contrast minus one in each bin, for
+        ``coefficients``; cached for the last coefficients."""
         # imaging weight of each data object, and density contrast minus one in each bin; kept for the next call, as migrad
         # asks for chi2 and grad at the same coefficients
         coefficients = np.array(coefficients, dtype='f8')
@@ -223,7 +320,19 @@ class LinearRegression(object):
         return self._last[1:]
 
     def chi2(self, coefficients):
-        """chi2 of the weighted density contrast against one, over all bins of all templates."""
+        """
+        Return the chi2 of the weighted density contrast against one, over all bins of all templates.
+
+        Parameters
+        ----------
+        coefficients : array
+            Constant ``c0`` then one coefficient per template.
+
+        Returns
+        -------
+        chi2 : float
+            Sum over bins of (density contrast - 1)**2 / error**2.
+        """
         residual = self._residual(coefficients)[1]
         return np.sum(residual**2 / self._error**2)
 
@@ -232,6 +341,16 @@ class LinearRegression(object):
         Gradient of :meth:`chi2`. With ``m = 1 / (1 + c0 + c.x)`` the weight of a data object, ``dchi2 / dm`` is its data
         weight times the sum, over the bins it falls in, of ``2 residual normalization / (randoms count * error**2)``,
         and ``dm / dc = -m**2 (1, x)``.
+
+        Parameters
+        ----------
+        coefficients : array
+            Constant ``c0`` then one coefficient per template.
+
+        Returns
+        -------
+        grad : array
+            Derivative of the chi2 with respect to each coefficient, the constant first.
         """
         model, residual = self._residual(coefficients)
         dbin = 2. * residual * self.normalization / (self._randoms_binned * self._error**2)
@@ -239,7 +358,25 @@ class LinearRegression(object):
         return np.concatenate([[dmodel.sum()], self._data_normalized.dot(dmodel)])
 
     def density(self, coefficients=None):
-        """Return the bin centers and the density contrast, weighted with ``coefficients`` (``None`` for unweighted), and its error."""
+        """
+        Return the bin centers and the density contrast, weighted with ``coefficients`` (``None`` for unweighted), and its error.
+
+        Parameters
+        ----------
+        coefficients : array, default=None
+            Constant ``c0`` then one coefficient per template; ``None`` for no imaging weights.
+
+        Returns
+        -------
+        centers : array of shape (ntemplates, nbins)
+            Bin centers, in template units.
+
+        density : array of shape (ntemplates, nbins)
+            Weighted data over random count, normalised to one on average.
+
+        error : array of shape (ntemplates, nbins)
+            Error of each bin (1e10 for an empty bin).
+        """
         weights = 1. if coefficients is None else self._residual(coefficients)[0]
         shape = (len(self.names), self.nbins)
         centers = (self.edges[:, :-1] + self.edges[:, 1:]) / 2.
@@ -248,7 +385,23 @@ class LinearRegression(object):
     def fit(self, guess=None):
         """
         Minimise :meth:`chi2` with ``iminuit``'s migrad and the analytic gradient :meth:`grad`, from ``guess`` (zeros by
-        default), and return the coefficients as a dictionary, the constant under 'constant'.
+        default), and return the coefficients as a dictionary, the constant under 'constant'. The coefficients are also
+        stored as :attr:`coefficients`, the default of :meth:`weights`.
+
+        Parameters
+        ----------
+        guess : array, default=None
+            Starting coefficients, the constant first.
+
+        Returns
+        -------
+        coefficients : dict
+            Fitted coefficients, keyed by 'constant' and the template names.
+
+        Raises
+        ------
+        RuntimeError
+            If migrad does not converge.
         """
         from iminuit import Minuit
         if guess is None: guess = np.zeros(len(self.names) + 1, dtype='f8')
@@ -266,6 +419,19 @@ class LinearRegression(object):
         """
         Return the imaging weights for template ``values`` (any objects, outliers included), with the fitted coefficients
         by default; one for objects with an undefined template value.
+
+        Parameters
+        ----------
+        values : array of shape (ntemplates, nobjects)
+            Template values.
+
+        coefficients : array, default=None
+            Constant then one coefficient per template; defaults to those of :meth:`fit`.
+
+        Returns
+        -------
+        weights : array of shape (nobjects,)
+            Imaging weights ``1 / (1 + c0 + sum_i c_i x_i)``, with ``x_i`` the values mapped by :meth:`normalize`.
         """
         coefficients = self.coefficients if coefficients is None else np.asarray(coefficients)
         values = np.atleast_2d(values)
@@ -285,8 +451,10 @@ def compute_imaging_weights(data, randoms, maps_north, maps_south, fit_maps, zra
     data : table
         Data, with 'RA', 'DEC', 'Z', and, unless ``data_weights`` is given, 'WEIGHT' (and if present 'WEIGHT_FKP',
         'WEIGHT_SYS'). 'PHOTSYS' is used if present, else computed from the positions.
-    randoms : table
-        Randoms, with the same columns.
+    randoms : table, list
+        Randoms, with the same columns; or a list of random catalogs, or of functions returning one, read one at a time in that
+        order: the randoms enter the fit only as their weighted count per pixel, accumulated catalog after catalog in the order of
+        their rows (the same additions as on the catalogs stacked), so that they are never all held at once.
     maps_north, maps_south : structured arrays
         Observing condition maps of the two imaging surveys, as returned by :func:`~mockfactory.desi.lsscat.read_hpmaps`.
     fit_maps : list
@@ -309,39 +477,62 @@ def compute_imaging_weights(data, randoms, maps_north, maps_south, fit_maps, zra
     coefficients : dict
         Fitted coefficients, ``{(region, zrange): {name: value}}``.
     """
-    weights = []
-    for kind, catalog, catalog_weights in [('data', data, data_weights), ('randoms', randoms, randoms_weights)]:
-        if catalog_weights is None:
-            # WEIGHT * WEIGHT_FKP / WEIGHT_SYS, the weights the survey pipeline regresses the clustering catalogs with; it
-            # divides the data by WEIGHT_ZFAIL and multiplies it back, and the randoms only divides
-            catalog_weights = np.asarray(catalog['WEIGHT'], dtype='f8')
-            if 'WEIGHT_FKP' in catalog.dtype.names: catalog_weights = catalog_weights * catalog['WEIGHT_FKP']
-            if 'WEIGHT_SYS' in catalog.dtype.names: catalog_weights = catalog_weights / catalog['WEIGHT_SYS']
-            if kind == 'randoms' and 'WEIGHT_ZFAIL' in catalog.dtype.names: catalog_weights = catalog_weights / catalog['WEIGHT_ZFAIL']
-        weights.append(np.asarray(catalog_weights, dtype='f8'))
-    data_weights, randoms_weights = weights
+    def default_weights(kind, catalog):
+        """Return the fit weights of ``catalog``, ``kind`` 'data' or 'randoms' (the latter also divided by ``WEIGHT_ZFAIL``)."""
+        # WEIGHT * WEIGHT_FKP / WEIGHT_SYS, the weights the survey pipeline regresses the clustering catalogs with; it
+        # divides the data by WEIGHT_ZFAIL and multiplies it back, and the randoms only divides
+        catalog_weights = np.asarray(catalog['WEIGHT'], dtype='f8')
+        if 'WEIGHT_FKP' in catalog.dtype.names: catalog_weights = catalog_weights * catalog['WEIGHT_FKP']
+        if 'WEIGHT_SYS' in catalog.dtype.names: catalog_weights = catalog_weights / catalog['WEIGHT_SYS']
+        if kind == 'randoms' and 'WEIGHT_ZFAIL' in catalog.dtype.names: catalog_weights = catalog_weights / catalog['WEIGHT_ZFAIL']
+        return np.asarray(catalog_weights, dtype='f8')
+
+    data_weights = default_weights('data', data) if data_weights is None else np.asarray(data_weights, dtype='f8')
     if any(name.startswith('EBV_DIFF_') for name in fit_maps) and ebv_diff is None: ebv_diff = read_ebv_diff()
-    photsys = {name: (np.asarray(catalog['PHOTSYS']) if 'PHOTSYS' in catalog.dtype.names else None)
-               for name, catalog in [('data', data), ('randoms', randoms)]}
     import healpy as hp
-    pix = {name: hp.ang2pix(nside, np.radians(90. - np.asarray(catalog['DEC'])), np.radians(np.asarray(catalog['RA'])), nest=nest)
-           for name, catalog in [('data', data), ('randoms', randoms)]}
+    npix = hp.nside2npix(nside)
+
+    def get_pixels(catalog):
+        """Return the healpix (at ``nside``, ``nest``) of each object of ``catalog``."""
+        return hp.ang2pix(nside, np.radians(90. - np.asarray(catalog['DEC'])), np.radians(np.asarray(catalog['RA'])), nest=nest)
+
+    def get_photsys(catalog):
+        """Return the 'PHOTSYS' column of ``catalog``, or ``None`` if absent (then computed from the positions)."""
+        return np.asarray(catalog['PHOTSYS']) if 'PHOTSYS' in catalog.dtype.names else None
+
+    zranges = [tuple(zrange) for zrange in zranges]
+    # the randoms of a pixel share its template values: they enter the regression as their weighted count per pixel, summed here
+    # a random catalog at a time, row after row (np.add.at: the additions np.bincount makes over the catalogs stacked, in its order)
+    randoms_counts = {(region, zrange): np.zeros(npix, dtype='f8') for region in regions for zrange in zranges}
+    randoms_size = dict.fromkeys(randoms_counts, 0)
+    offset = 0
+    for catalog in (randoms if isinstance(randoms, (list, tuple)) else [randoms]):
+        if callable(catalog): catalog = catalog()
+        if randoms_weights is None: catalog_weights = default_weights('randoms', catalog)
+        else: catalog_weights = np.asarray(randoms_weights, dtype='f8')[offset:offset + len(catalog)]
+        offset += len(catalog)
+        pixels, photsys = get_pixels(catalog), get_photsys(catalog)
+        for region in regions:
+            in_region = select_photometric_region(catalog['RA'], catalog['DEC'], region, photsys=photsys)
+            for zrange in zranges:
+                sel = in_region & (catalog['Z'] > zrange[0]) & (catalog['Z'] < zrange[1])
+                np.add.at(randoms_counts[region, zrange], pixels[sel], catalog_weights[sel])
+                randoms_size[region, zrange] += int(sel.sum())
+        del catalog, catalog_weights, pixels, photsys
+
+    pix_data, photsys_data = get_pixels(data), get_photsys(data)
     weights, coefficients = np.ones(len(data), dtype='f8'), {}
     for region in regions:
         maps = get_template_maps(maps_north if region == 'N' else maps_south, fit_maps, ebv_diff=ebv_diff)
-        in_data = select_photometric_region(data['RA'], data['DEC'], region, photsys=photsys['data'])
-        in_randoms = select_photometric_region(randoms['RA'], randoms['DEC'], region, photsys=photsys['randoms'])
+        in_data = select_photometric_region(data['RA'], data['DEC'], region, photsys=photsys_data)
         for zrange in zranges:
-            zrange = tuple(zrange)
             sel_data = in_data & (data['Z'] > zrange[0]) & (data['Z'] < zrange[1])
-            sel_randoms = in_randoms & (randoms['Z'] > zrange[0]) & (randoms['Z'] < zrange[1])
-            data_values = np.vstack([maps[name][pix['data'][sel_data]] for name in fit_maps])
-            # the randoms of a pixel share its template values: they enter the regression as their weighted count per pixel
-            randoms_counts = np.bincount(pix['randoms'][sel_randoms], weights=randoms_weights[sel_randoms], minlength=hp.nside2npix(nside))
-            pixels = np.flatnonzero(randoms_counts)
-            logger.info('Fitting region {} and {} < z < {}, {:d} randoms in {:d} pixels.'.format(region, *zrange, sel_randoms.sum(), pixels.size))
+            data_values = np.vstack([maps[name][pix_data[sel_data]] for name in fit_maps])
+            counts = randoms_counts[region, zrange]
+            pixels = np.flatnonzero(counts)
+            logger.info('Fitting region {} and {} < z < {}, {:d} randoms in {:d} pixels.'.format(region, *zrange, randoms_size[region, zrange], pixels.size))
             regression = LinearRegression(data_values, data_weights[sel_data], np.vstack([maps[name][pixels] for name in fit_maps]),
-                                          randoms_counts[pixels], nbins=nbins, tail=tail, names=fit_maps)
+                                          counts[pixels], nbins=nbins, tail=tail, names=fit_maps)
             coefficients[region, zrange] = regression.fit()
             weights[sel_data] = regression.weights(data_values)
     return weights, coefficients

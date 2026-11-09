@@ -6,6 +6,7 @@ import numpy as np
 
 # The table helpers are shared with altmtl; imported here so the stages keep one import.
 from ..tables import NULL, as_table, set_column, encode_keys, match, join_left  # noqa: F401
+from ...utils import fork_map  # noqa: F401
 
 
 logger = logging.getLogger('lsscat')
@@ -70,3 +71,4 @@ def get_galactic_cap(ra, dec):
     import astropy.units as u
     coord = SkyCoord(ra=np.asarray(ra) * u.degree, dec=np.asarray(dec) * u.degree, frame='icrs')
     return np.asarray(coord.galactic.b.value) > 0.
+
